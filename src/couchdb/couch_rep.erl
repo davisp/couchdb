@@ -702,12 +702,12 @@ open_doc_revs(#http_db{uri=DbUrl, headers=Headers} = DbS, DocId, Revs0,
     
     JsonResults = case length(Revs) > MaxN of
     false ->
-        Url = BaseUrl ++ "&open_revs=" ++ lists:flatten(?JSON_ENCODE(Revs)),
+        Url = BaseUrl ++ "&open_revs=" ++ binary_to_list(?JSON_ENCODE(Revs)),
         do_http_request(Url, get, Headers);
     true ->
         {_, Rest, Acc} = lists:foldl(
         fun(Rev, {Count, RevsAcc, AccResults}) when Count =:= MaxN ->
-            QSRevs = lists:flatten(?JSON_ENCODE(lists:reverse(RevsAcc))),
+            QSRevs = ?JSON_ENCODE(lists:reverse(RevsAcc)),
             Url = BaseUrl ++ "&open_revs=" ++ QSRevs,
             {1, [Rev], AccResults++do_http_request(Url, get, Headers)};
         (Rev, {Count, RevsAcc, AccResults}) ->
@@ -756,7 +756,12 @@ should_flush(_DocCount) ->
 %% @doc Sum of process and binary memory utilization for all processes in list
 memory_footprint(PidList) ->
     ProcessMemory = lists:foldl(fun(Pid, Acc) ->
-        Acc + element(2,process_info(Pid, memory))
+        try
+            Info = process_info(Pid, memory),
+            Acc + element(2, Info)
+        catch
+            _:_ -> Acc
+        end
     end, 0, PidList),
     
     BinaryMemory = lists:foldl(fun(Pid, Acc) ->
@@ -769,8 +774,14 @@ memory_footprint(PidList) ->
 %% @spec binary_memory(pid()) -> integer()
 %% @doc Memory utilization of all binaries referenced by this process.
 binary_memory(Pid) ->
-    lists:foldl(fun({_Id, Size, _NRefs}, Acc) -> Size+Acc end,
-        0, element(2,process_info(Pid, binary))).
+    BinInfo = try
+        element(2, process_info(Pid, binary))
+    catch
+        _:_ -> []
+    end,
+    lists:foldl(fun({_Id, Size, _NRefs}, Acc) ->
+            Size+Acc end,
+        0, BinInfo).
 
 update_doc(#http_db{uri=DbUrl, headers=Headers}, #doc{id=DocId}=Doc, Options) ->
     [] = Options,

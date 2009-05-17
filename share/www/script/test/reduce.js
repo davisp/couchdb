@@ -164,6 +164,6 @@ couchTests.reduce = function(debug) {
   
   var difference = results.rows[0].value.stdDeviation - 28.722813232690143;
   // account for floating point rounding error
-  T(Math.abs(difference) < 0.0000000001);
+  T(Math.abs(difference) < 0.00005);
   
 };
