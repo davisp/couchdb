@@ -77,6 +77,7 @@ start_server(IniFiles) ->
     end,
 
     ok = couch_util:start_driver(LibDir),
+    ok = eep0018:start_driver(LibDir),
 
     BaseChildSpecs =
     {{one_for_all, 10, 3600}, 

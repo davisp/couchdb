@@ -14,8 +14,10 @@
 -define(DESIGN_DOC_PREFIX0, "_design").
 -define(DESIGN_DOC_PREFIX, "_design/").
 
--define(JSON_ENCODE(V), mochijson2:encode(V)).
--define(JSON_DECODE(V), mochijson2:decode(V)).
+%-define(JSON_ENCODE(V), mochijson2:encode(V)).
+%-define(JSON_DECODE(V), mochijson2:decode(V)).
+-define(JSON_ENCODE(V), eep0018:encode_json(V)).
+-define(JSON_DECODE(V), eep0018:decode_json(V)).
 
 -define(b2l(V), binary_to_list(V)).
 -define(l2b(V), list_to_binary(V)).
