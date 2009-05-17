@@ -93,7 +93,7 @@ couchTests.list_views = function(debug) {
               entry.content = row.value;
               // We'll also let you return just an E4X object
               // if you aren't setting headers.
-              return entry;
+              return entry.toString();
             } else {
               return "</feed>";
             }

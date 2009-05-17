@@ -25,7 +25,7 @@ specific language governing permissions and limitations under the License.
 #endif
 
 int gExitCode = 0;
-int gStackChunkSize = 8L * 1024L;
+int gStackChunkSize = 8192;
 
 int
 EncodeChar(uint8 *utf8Buffer, uint32 ucs4Char) {
@@ -193,6 +193,16 @@ bufferTooSmall:
     return JS_FALSE;
 }
 
+void
+MyBreakFunction() {}
+
+static void
+PrintError(JSContext *context, const char *message, JSErrorReport *report) {
+    MyBreakFunction();
+    if (!report || !JSREPORT_IS_WARNING(report->flags))
+        fprintf(stderr, "%s\n", message);
+}
+
 static JSBool
 EvalInContext(JSContext *context, JSObject *obj, uintN argc, jsval *argv,
               jsval *rval) {
@@ -202,8 +212,7 @@ EvalInContext(JSContext *context, JSObject *obj, uintN argc, jsval *argv,
     const jschar *src;
     size_t srclen;
     JSBool ok;
-    jsval v;
-
+    jsval v; 
     sandbox = NULL;
     if (!JS_ConvertArguments(context, argc, argv, "S / o", &str, &sandbox))
         return JS_FALSE;
@@ -213,6 +222,7 @@ EvalInContext(JSContext *context, JSObject *obj, uintN argc, jsval *argv,
         JS_ReportOutOfMemory(context);
         return JS_FALSE;
     }
+    JS_SetErrorReporter(sub_context, PrintError);
 
     src = JS_GetStringChars(str);
     srclen = JS_GetStringLength(str);
@@ -229,7 +239,7 @@ EvalInContext(JSContext *context, JSObject *obj, uintN argc, jsval *argv,
         *rval = OBJECT_TO_JSVAL(sandbox);
         ok = JS_TRUE;
     } else {
-        ok = JS_EvaluateUCScript(sub_context, sandbox, src, srclen, NULL, -1,
+        ok = JS_EvaluateUCScript(sub_context, sandbox, src, srclen, "subcx", 1,
                                  rval);
         ok = JS_TRUE;
     }
@@ -397,17 +407,11 @@ ExecuteScript(JSContext *context, JSObject *obj, const char *filename) {
 static uint32 gBranchCount = 0;
 
 static JSBool
-BranchCallback(JSContext *context, JSScript *script) {
+BranchCallback(JSContext *context) {
     if ((++gBranchCount & 0x3fff) == 1) {
         JS_MaybeGC(context);
     }
     return JS_TRUE;
-}
-
-static void
-PrintError(JSContext *context, const char *message, JSErrorReport *report) {
-    if (!report || !JSREPORT_IS_WARNING(report->flags))
-        fprintf(stderr, "%s\n", message);
 }
 
 JSBool ThrowError(JSContext *cx, const char *message)
@@ -1214,8 +1218,9 @@ main(int argc, const char * argv[]) {
     if (!context)
         return 1;
     JS_SetErrorReporter(context, PrintError);
-    JS_SetBranchCallback(context, BranchCallback);
-    JS_ToggleOptions(context, JSOPTION_NATIVE_BRANCH_CALLBACK);
+    JS_SetOperationCallback(context, BranchCallback);
+    //JS_SetBranchCallback(context, BranchCallback);
+    //JS_ToggleOptions(context, JSOPTION_NATIVE_BRANCH_CALLBACK);
     JS_ToggleOptions(context, JSOPTION_XML);
 
     global = JS_NewObject(context, NULL, NULL, NULL);

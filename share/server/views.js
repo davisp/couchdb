@@ -46,13 +46,13 @@ var Views = (function() {
         reductions[i] = null;
       }
     }
-    var reduce_line = toJSON(reductions);
+    var reduce_line = JSON.stringify(reductions);
     var reduce_length = reduce_line.length;
     if (query_config && query_config.reduce_limit &&
           reduce_length > 200 && ((reduce_length * 2) > line.length)) {
       throw {
         error:"reduce_overflow_error",
-        reason: "Reduce output must shrink more rapidly. Current output: '"+reduce_line+"'"
+        reason: "Reduce value is growing too rapidly."
       };
     } else {
       print("[true," + reduce_line + "]");
@@ -103,7 +103,7 @@ var Views = (function() {
         map_results = [];
         try {
           funs[i](doc);
-          buf.push(toJSON(map_results));
+          buf.push(JSON.stringify(map_results));
         } catch (err) {
           if (err == "fatal_error") {
             // Only if it's a "fatal_error" do we exit. What's a fatal error?
@@ -121,7 +121,7 @@ var Views = (function() {
           buf.push("[]");
         }
       }
-      print("[" + buf.join(", ") + "]");
+      print("[" + buf.join(",") + "]");
     }
   }
 })();
