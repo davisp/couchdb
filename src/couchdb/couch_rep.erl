@@ -211,13 +211,19 @@ handle_call({replicate_doc, {Id, Revs}}, {Pid,_}, #state{enum_pid=Pid} = State) 
     case should_flush(lists:flatlength([Docs|Buffer])) of
         true ->
             Docs2 = lists:flatten([Docs|Buffer]),
-            {ok, Errors} = update_docs(Target, Docs2, [], replicated_changes),
-            dump_update_errors(Errors),
-            ets:update_counter(Stats, doc_write_failures, length(Errors)),
-            ets:update_counter(Stats, docs_written, length(Docs2) -
-                    length(Errors)),
-            {ok, _, Ctxt} = do_checkpoint(Source, Target, Context, Seq, Stats),
-            {[], Ctxt};
+            try update_docs(Target, Docs2, [], replicated_changes) of
+            {ok, Errors} ->
+                dump_update_errors(Errors),
+                ets:update_counter(Stats, doc_write_failures, length(Errors)),
+                ets:update_counter(Stats, docs_written, length(Docs2) -
+                        length(Errors)),
+                {ok, _, Ctxt} = do_checkpoint(Source, Target, Context, Seq, Stats),
+                {[], Ctxt}
+            catch
+            throw:attachment_write_failed ->
+                ?LOG_ERROR("attachment request failed during write to disk", []),
+                exit({internal_server_error, replication_link_failure})
+            end;
         false ->
             {[Docs | Buffer], Context}
     end,
@@ -272,11 +278,17 @@ terminate(normal, State) ->
         stats = Stats
     } = State,
     
-    {ok, Errors} = update_docs(Target, lists:flatten(Buffer), [], replicated_changes),
-    dump_update_errors(Errors),
-    ets:update_counter(Stats, doc_write_failures, length(Errors)),
-    ets:update_counter(Stats, docs_written, lists:flatlength(Buffer) -
-            length(Errors)),
+    try update_docs(Target, lists:flatten(Buffer), [], replicated_changes) of
+    {ok, Errors} ->
+        dump_update_errors(Errors),
+        ets:update_counter(Stats, doc_write_failures, length(Errors)),
+        ets:update_counter(Stats, docs_written, lists:flatlength(Buffer) -
+                length(Errors))
+    catch
+    throw:attachment_write_failed ->
+        ?LOG_ERROR("attachment request failed during final write", []),
+        exit({internal_server_error, replication_link_failure})
+    end,
     
     couch_task_status:update("Finishing"),
     
@@ -385,7 +397,7 @@ attachment_stub_converter(DbS, Id, Rev, {Name, {stub, Type, Length}}) ->
     {Pos, [RevId|_]} = Rev,
     Url = lists:flatten([DbUrl, url_encode(Id), "/", url_encode(?b2l(Name)),
         "?rev=", ?b2l(couch_doc:rev_to_str({Pos,RevId}))]),
-    ?LOG_DEBUG("Attachment URL ~p", [Url]),
+    ?LOG_DEBUG("Attachment URL ~s", [Url]),
     {ok, RcvFun} = make_attachment_stub_receiver(Url, Headers, Name, 
         Type, Length),
     {Name, {Type, {RcvFun, Length}}}.
@@ -396,7 +408,7 @@ make_attachment_stub_receiver(Url, Headers, Name, Type, Length) ->
 make_attachment_stub_receiver(Url, _Headers, _Name, _Type, _Length, 0) ->
     ?LOG_ERROR("streaming attachment request failed after 10 retries: ~s", 
         [Url]),
-    exit(attachment_request_failed);
+    exit({attachment_request_failed, ?l2b(["failed to replicate ", Url])});
     
 make_attachment_stub_receiver(Url, Headers, Name, Type, Length, Retries) ->
     %% start the process that receives attachment data from ibrowse
@@ -409,7 +421,9 @@ make_attachment_stub_receiver(Url, Headers, Name, Type, Length, Retries) ->
     ReqId = 
     case ibrowse:send_req_direct(Conn, Url, Headers, get, [], Opts, infinity) of
         {ibrowse_req_id, X} -> X;
-        {error, _Reason} -> exit(attachment_request_failed)
+        {error, Reason} ->
+            exit({attachment_request_failed,
+                ?l2b(["ibrowse error on ", Url, " : ", atom_to_list(Reason)])})
     end,
     
     %% tell our receiver about the ReqId it needs to look for
@@ -419,7 +433,10 @@ make_attachment_stub_receiver(Url, Headers, Name, Type, Length, Retries) ->
     %% wait for headers to ensure that we have a 200 status code
     %% this is where we follow redirects etc
     Pid ! {self(), gimme_status}, 
-    receive {Pid, {status, StreamStatus, StreamHeaders}} -> 
+    receive
+    {'EXIT', Pid, attachment_request_failed} ->
+        make_attachment_stub_receiver(Url, Headers, Name, Type, Length, Retries-1);
+    {Pid, {status, StreamStatus, StreamHeaders}} -> 
         ?LOG_DEBUG("streaming attachment Status ~p Headers ~p",
             [StreamStatus, StreamHeaders]),
         
@@ -433,7 +450,12 @@ make_attachment_stub_receiver(Url, Headers, Name, Type, Length, Retries) ->
             %% be the one to actually receive the ibrowse data.
             {ok, fun() -> 
                 Pid ! {self(), gimme_data}, 
-                receive {Pid, Data} -> Data end
+                receive 
+                    {Pid, Data} -> 
+                        Data;
+                    {'EXIT', Pid, attachment_request_failed} ->
+                        throw(attachment_write_failed)
+                end
             end};
         ResponseCode >= 300, ResponseCode < 400 ->
             % follow the redirect
@@ -505,7 +527,13 @@ do_checkpoint(Source, Target, Context, NewSeqNum, Stats) ->
         % commit tgt sync
         {ok, TgtInstanceStartTime2} = ensure_full_commit(Target),
         
-        receive {SrcCommitPid, {ok, SrcInstanceStartTime2}} -> ok end,
+        SrcInstanceStartTime2 =
+        receive
+        {SrcCommitPid, {ok, Timestamp}} ->
+            Timestamp;
+        {'EXIT', SrcCommitPid, {http_request_failed, _}} ->
+            exit(replication_link_failure)
+        end,
         
         RecordSeqNum =
         if SrcInstanceStartTime2 == SrcInstanceStartTime andalso
@@ -562,10 +590,12 @@ do_http_request(Url, Action, Headers) ->
 do_http_request(Url, Action, Headers, JsonBody) ->
     do_http_request(Url, Action, Headers, JsonBody, 10).
 
+do_http_request(Url, Action, Headers, Body, Retries) when is_binary(Url) ->
+    do_http_request(?b2l(Url), Action, Headers, Body, Retries);
 do_http_request(Url, Action, _Headers, _JsonBody, 0) ->
     ?LOG_ERROR("couch_rep HTTP ~p request failed after 10 retries: ~s", 
         [Action, Url]),
-    exit({http_request_failed, Url});
+    exit({http_request_failed, ?l2b(["failed to replicate ", Url])});
 do_http_request(Url, Action, Headers, JsonBody, Retries) ->
     ?LOG_DEBUG("couch_rep HTTP ~p request: ~s", [Action, Url]),
     Body =
@@ -702,19 +732,19 @@ open_doc_revs(#http_db{uri=DbUrl, headers=Headers} = DbS, DocId, Revs0,
     
     JsonResults = case length(Revs) > MaxN of
     false ->
-        Url = BaseUrl ++ "&open_revs=" ++ binary_to_list(?JSON_ENCODE(Revs)),
+        Url = ?l2b([BaseUrl ++ "&open_revs=" | ?JSON_ENCODE(Revs)]),
         do_http_request(Url, get, Headers);
     true ->
         {_, Rest, Acc} = lists:foldl(
         fun(Rev, {Count, RevsAcc, AccResults}) when Count =:= MaxN ->
             QSRevs = ?JSON_ENCODE(lists:reverse(RevsAcc)),
-            Url = BaseUrl ++ "&open_revs=" ++ QSRevs,
+            Url = ?l2b(BaseUrl ++ "&open_revs=" ++ QSRevs),
             {1, [Rev], AccResults++do_http_request(Url, get, Headers)};
         (Rev, {Count, RevsAcc, AccResults}) ->
             {Count+1, [Rev|RevsAcc], AccResults}
         end, {0, [], []}, Revs),
-        Acc ++ do_http_request(BaseUrl ++ "&open_revs=" ++ 
-            lists:flatten(?JSON_ENCODE(lists:reverse(Rest))), get, Headers)
+        Acc ++ do_http_request(?l2b(BaseUrl ++ "&open_revs=" ++
+            ?JSON_ENCODE(lists:reverse(Rest))), get, Headers)
     end,
     
     Results =
@@ -739,7 +769,8 @@ open_doc_revs(Db, DocId, Revs, Options) ->
 should_flush(DocCount) when DocCount > ?BUFFER_NDOCS ->
     true;
 should_flush(_DocCount) ->
-    MeAndMyLinks = [self()|element(2,process_info(self(),links))],
+    MeAndMyLinks = [self()|
+        [P || P <- element(2,process_info(self(),links)), is_pid(P)]],
     
     case length(MeAndMyLinks)/2 > ?BUFFER_NATTACHMENTS of
     true -> true;
@@ -756,12 +787,7 @@ should_flush(_DocCount) ->
 %% @doc Sum of process and binary memory utilization for all processes in list
 memory_footprint(PidList) ->
     ProcessMemory = lists:foldl(fun(Pid, Acc) ->
-        try
-            Info = process_info(Pid, memory),
-            Acc + element(2, Info)
-        catch
-            _:_ -> Acc
-        end
+        Acc + element(2, process_info(Pid, memory))
     end, 0, PidList),
     
     BinaryMemory = lists:foldl(fun(Pid, Acc) ->
