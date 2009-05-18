@@ -46,7 +46,7 @@ var Views = (function() {
         reductions[i] = null;
       }
     }
-    var reduce_line = JSON.stringify(reductions);
+    var reduce_line = toJSON(reductions);
     var reduce_length = reduce_line.length;
     if (query_config && query_config.reduce_limit &&
           reduce_length > 200 && ((reduce_length * 2) > line.length)) {
@@ -103,7 +103,7 @@ var Views = (function() {
         map_results = [];
         try {
           funs[i](doc);
-          buf.push(JSON.stringify(map_results));
+          buf.push(toJSON(map_results));
         } catch (err) {
           if (err == "fatal_error") {
             // Only if it's a "fatal_error" do we exit. What's a fatal error?

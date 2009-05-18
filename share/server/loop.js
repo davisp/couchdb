@@ -18,7 +18,7 @@ try {
   sandbox.emit = emit;
   sandbox.sum = sum;
   sandbox.log = log;
-  sandbox.toJSON = JSON.stringify;
+  sandbox.toJSON = toJSON;
   sandbox.respondWith = respondWith;
   sandbox.registerType = registerType;
 } catch (e) {}
@@ -44,7 +44,7 @@ var dispatch = {
 };
 
 while (line = readline()) {
-  cmd = JSON.parse(line)
+  cmd = eval(line)
   line_length = line.length
   try {
     cmdkey = cmd.shift();

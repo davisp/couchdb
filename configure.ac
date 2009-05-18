@@ -101,8 +101,8 @@ AC_ARG_VAR([FLAGS], [general flags to prepend to LDFLAGS and CPPFLAGS])
 CPPFLAGS="$JS_FLAGS -DXP_UNIX $ERLANG_CFLAGS $CPPFLAGS"
 LDFLAGS="-lm -L/usr/local/lib -L/opt/local/lib $ERLANG_LFLAGS $LD_FLAGS"
 
-AC_CHECK_LIB([mozjs], [JS_NewContext], [], [
-    AC_CHECK_LIB([js], [JS_NewContext], [], [
+AC_CHECK_LIB([js], [JS_NewContext], [], [
+    AC_CHECK_LIB([mozjs], [JS_NewContext], [], [
         AC_MSG_ERROR([Could not find the js library.
 
 Is the Mozilla SpiderMonkey library installed?])])])
