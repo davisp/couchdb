@@ -31,6 +31,30 @@ AC_PROG_CC
 AC_PROG_LIBTOOL
 AC_PROG_LN_S
 
+AC_PATH_PROG([ERL], [erl])
+
+if test x${ERL} = x; then
+    AC_MSG_ERROR([Could not find the `erl' executable. Is Erlang installed?])
+fi
+
+erlang_version_error="The installed Erlang version is less than 5.6.0 (R12B)."
+
+version="`${ERL} -version 2>&1 | ${SED} "s/[[^0-9]]/ /g"`"
+
+if test `echo $version | ${AWK} "{print \\$1}"` -lt 5; then
+    AC_MSG_ERROR([$erlang_version_error])
+fi
+
+if test `echo $version | ${AWK} "{print \\$2}"` -lt 6; then
+    AC_MSG_ERROR([$erlang_version_error])
+fi
+
+AC_PATH_PROG([ERLC], [erlc])
+
+if test x${ERLC} = x; then
+    AC_MSG_ERROR([Could not find the `erlc' executable. Is Erlang installed?])
+fi
+
 AC_MSG_CHECKING([for pthread_create in -lpthread])
 
 original_LIBS="$LIBS"
@@ -47,15 +71,13 @@ else
     AC_MSG_RESULT([no])
 fi
 
-AC_ARG_WITH([erlang], [AC_HELP_STRING([--with-erlang=PATH],
-    [set PATH to the Erlang include directory])], [
-    ERLANG_FLAGS="-I$withval"
-], [
-    ERLANG_FLAGS="-I${libdir}/erlang/usr/include"
-    ERLANG_FLAGS="$ERLANG_FLAGS -I/usr/lib/erlang/usr/include"
-    ERLANG_FLAGS="$ERLANG_FLAGS -I/usr/local/lib/erlang/usr/include"
-    ERLANG_FLAGS="$ERLANG_FLAGS -I/opt/local/lib/erlang/usr/include"
-])
+# Check for erlang
+prog="io:format(\"~s~n\", [[code:root_dir()]]), init:stop()."
+ERL_DIR="`erl -noshell -noinput -eval "$prog"`"
+ERTS_DIR=`ls -d $ERL_DIR/erts*`
+EI_DIR=`ls -d $ERL_DIR/lib/erl_interface*`
+ERLANG_CFLAGS="-I$ERTS_DIR/include -I$EI_DIR/include"
+ERLANG_LFLAGS="-L$EI_DIR/lib"
 
 AC_ARG_WITH([js-include], [AC_HELP_STRING([--with-js-include=PATH],
     [set PATH to the SpiderMonkey include directory])], [
@@ -76,13 +98,8 @@ AC_ARG_WITH([js-lib], [AC_HELP_STRING([--with-js-lib=PATH],
 
 AC_ARG_VAR([FLAGS], [general flags to prepend to LDFLAGS and CPPFLAGS])
 
-LIB_FLAGS="$JS_LIB_FLAGS -L/usr/local/lib -L/opt/local/lib"
-LIBS="$LIB_FLAGS $LIBS"
-# XP_UNIX required for jsapi.h and has been tested to work on Linux and Darwin.
-FLAGS="$LIB_FLAGS $ERLANG_FLAGS $JS_FLAGS -DXP_UNIX $FLAGS"
-CPPFLAGS="$FLAGS $CPPFLAGS"
-# manually linking libm is requred for FreeBSD 7.0
-LDFLAGS="$FLAGS -lm $LDFLAGS"
+CPPFLAGS="$JS_FLAGS -DXP_UNIX $ERLANG_CFLAGS $CPPFLAGS"
+LDFLAGS="-lm -L/usr/local/lib -L/opt/local/lib $ERLANG_LFLAGS $LD_FLAGS"
 
 AC_CHECK_LIB([mozjs], [JS_NewContext], [], [
     AC_CHECK_LIB([js], [JS_NewContext], [], [
@@ -94,6 +111,15 @@ AC_CHECK_HEADER([jsapi.h], [], [
     AC_MSG_ERROR([Could not find the jsapi header.
 
 Are the Mozilla SpiderMonkey headers installed?])])
+
+AC_CHECK_HEADER([ei.h], [], [
+    AC_MSG_ERROR([Coucld not find the 'ei.h' header.])])
+
+AC_CHECK_LIB([ei], [ei_decode_atom], [], [
+    AC_MSG_ERROR([Could not find the Erlang interface library.
+
+Is Erlang installed?])])
+
 
 AC_CHECK_ICU([3])
 
@@ -268,6 +294,7 @@ AC_CONFIG_FILES([etc/Makefile])
 AC_CONFIG_FILES([share/Makefile])
 AC_CONFIG_FILES([src/couchdb/couch.app.tpl])
 AC_CONFIG_FILES([src/couchdb/Makefile])
+AC_CONFIG_FILES([src/eep0018/Makefile])
 AC_CONFIG_FILES([src/ibrowse/Makefile])
 AC_CONFIG_FILES([src/mochiweb/Makefile])
 AC_CONFIG_FILES([test/Makefile])

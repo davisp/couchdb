@@ -13,6 +13,9 @@ max_dbs_open = 100
 batch_save_size = 1000 ; number of docs at which to save a batch
 batch_save_interval = 1000 ; milliseconds after which to save batches
 
+[eep0018]
+util_driver_dir = %eep0018privlibdir%
+
 [httpd]
 port = 5984
 bind_address = 127.0.0.1

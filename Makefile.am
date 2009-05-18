@@ -10,7 +10,8 @@
 ## License for the specific language governing permissions and limitations
 ## under the License.
 
-SUBDIRS = bin etc src/couchdb src/ibrowse src/mochiweb share test var utils
+SUBDIRS = bin etc src/couchdb src/eep0018 src/ibrowse src/mochiweb \
+          share test var utils
 
 localdoc_DATA = AUTHORS.gz BUGS.gz CHANGES.gz NEWS.gz README.gz THANKS.gz
 

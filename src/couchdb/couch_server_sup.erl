@@ -69,15 +69,21 @@ start_server(IniFiles) ->
     _ -> ok
     end,
 
-    LibDir =
+    CouchLibDir =
     case couch_config:get("couchdb", "util_driver_dir", null) of
     null ->
         filename:join(code:priv_dir(couch), "lib");
     LibDir0 -> LibDir0
     end,
+    ok = couch_util:start_driver(CouchLibDir),
 
-    ok = couch_util:start_driver(LibDir),
-    ok = eep0018:start_driver(LibDir),
+    Eep0018LibDir =
+    case couch_config:get("eep0018", "util_driver_dir", null) of
+    null ->
+        filename:join(code:priv_dir(eep0018), "lib");
+    EepLibDir0 -> EepLibDir0
+    end,
+    ok = eep0018:start_driver(Eep0018LibDir),
 
     BaseChildSpecs =
     {{one_for_all, 10, 3600}, 

@@ -216,6 +216,7 @@ start_couchdb () {
     command="`%ICU_CONFIG% --invoke` \
         %ERL% $interactive_option -smp auto -sasl errlog_type error +K true \
         -pa %localerlanglibdir%/%couchdbebindir% \
+            %localerlanglibdir%/%eep0018ebindir% \
             %localerlanglibdir%/%mochiwebebindir% \
             %localerlanglibdir%/%ibrowseebindir% \
         -eval \"application:load(ibrowse)\" \

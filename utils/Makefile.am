@@ -24,6 +24,7 @@ run: ../bin/couchdb.tpl
 	    -e "s|%localerlanglibdir%|$(abs_top_srcdir)/src|g" \
 	    -e "s|%mochiwebebindir%|mochiweb|g" \
 	    -e "s|%couchdbebindir%|couchdb|g" \
+        -e "s|%eep0018ebindir%|eep0018|g" \
 	    -e "s|%ibrowseebindir%|ibrowse|g" \
 	    -e "s|%defaultini%|default_dev.ini|g" \
 	    -e "s|%localini%|local_dev.ini|g" \

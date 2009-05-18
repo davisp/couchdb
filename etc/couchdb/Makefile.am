@@ -11,7 +11,9 @@
 ## under the License.
 
 couchprivlibdir = $(localerlanglibdir)/couch-$(version)/priv/lib
+eep0018privlibdir = $(localerlanglibdir)/eep0018-$(version)/priv/lib
 devcouchprivlibdir = $(abs_top_srcdir)/src/couchdb/.libs
+deveep0018privlibdir = $(abs_top_srcdir)/src/eep0018/.libs
 
 localconf_DATA = default.ini
 noinst_DATA = default_dev.ini
@@ -31,6 +33,7 @@ default.ini: default.ini.tpl
 	    -e "s|%localstatelibdir%|$(localstatelibdir)|g" \
 	    -e "s|%localstatelogdir%|$(localstatelogdir)|g" \
 	    -e "s|%couchprivlibdir%|$(couchprivlibdir)|g" \
+        -e "s|%eep0018privlibdir%|$(eep0018privlibdir)|g" \
 	    -e "s|%couchjs_command_name%|$(couchjs_command_name)|g" \
 	< $< > $@
 
@@ -41,6 +44,7 @@ default_dev.ini: default.ini.tpl
 	    -e "s|%localstatelibdir%|$(abs_top_srcdir)/tmp/lib|g" \
 	    -e "s|%localstatelogdir%|$(abs_top_srcdir)/tmp/log|g" \
 	    -e "s|%couchprivlibdir%|$(devcouchprivlibdir)|g" \
+        -e "s|%eep0018privlibdir%|$(deveep0018privlibdir)|g" \
 	    -e "s|%couchjs_command_name%|$(couchjs_dev_command_name)|g" \
 	< $< > $@
 
