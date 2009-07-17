@@ -277,7 +277,7 @@ init([]) ->
     % 'query_servers' specifies an OS command-line to execute.
     lists:foreach(fun({Lang, Command}) ->
         true = ets:insert(Langs, {?l2b(Lang),
-                          couch_os_process, start_link, [Command]})
+                          couch_query_servers, os_proc, [Command]})
     end, couch_config:get("query_servers")),
     % 'native_query_servers' specifies a {Module, Func, Arg} tuple.
     lists:foreach(fun({Lang, SpecStr}) ->
@@ -362,6 +362,14 @@ new_process(Langs, Lang) ->
     _ ->
         {unknown_query_language, Lang}
     end.
+
+os_proc(Command) ->
+    CommOpts = [
+        {writer, fun couch_os_process:writeterm/2},
+        {reader, fun couch_os_process:readterm/1}
+    ],
+    PortOpts = [{packet, 4}, binary, exit_status, hide],
+    couch_os_process:start_link(Command, CommOpts, PortOpts);
 
 proc_prompt(Proc, Args) ->
     {Mod, Func} = Proc#proc.prompt_fun,

@@ -57,7 +57,8 @@ var Views = (function() {
         reason: "Reduce output must shrink more rapidly: "+reduce_preview+""
       };
     } else {
-      print("[true," + reduce_line + "]");
+      //console_log(toJSON([true, reductions]));
+      writeobject([true, reductions]);
     }
   };
 
@@ -105,7 +106,8 @@ var Views = (function() {
         map_results = [];
         try {
           funs[i](doc);
-          buf.push(toJSON(map_results));
+          //console_log(toJSON(map_results));
+          buf.push(map_results);
         } catch (err) {
           if (err == "fatal_error") {
             // Only if it's a "fatal_error" do we exit. What's a fatal error?
@@ -120,10 +122,10 @@ var Views = (function() {
               reason: "function raised fatal exception"};
           }
           log("function raised exception (" + err + ") with doc._id " + doc._id);
-          buf.push("[]");
+          buf.push([]);
         }
       }
-      print("[" + buf.join(", ") + "]");
+      writeobject(buf);
     }
   }
 })();

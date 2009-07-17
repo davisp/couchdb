@@ -16,6 +16,7 @@
 -export([start_link/1, start_link/2, start_link/3, stop/1]).
 -export([set_timeout/2, prompt/2]).
 -export([send/2, writeline/2, readline/1, writejson/2, readjson/1]).
+-export([writeterm/2, readterm/1]).
 -export([init/1, terminate/2, handle_call/3, handle_cast/2, handle_info/2, code_change/3]).
 
 -include("couch_db.hrl").
@@ -101,30 +102,50 @@ readjson(OsProc) when is_record(OsProc, os_proc) ->
     end.
 
 
+writeterm(OsProc, Data) when is_record(OsProc, os_proc) ->
+    %io:format("SENDING: ~p =>~n~p~n", [Data, term_to_binary(Data)]),
+    true = port_command(OsProc#os_proc.port, term_to_binary(Data)).
+
+readterm(OsProc) when is_record(OsProc, os_proc) ->
+    #os_proc{port=Port} = OsProc,
+    receive
+    {Port, {data, Data}} ->
+        %io:format("RAW RESPONSE:~n~p~n", [Data]),
+        Resp = binary_to_term(Data),
+        %io:format("RESPONSE: ~p~n", [Resp]),
+        Resp;
+    {Port, Err} ->
+        catch port_close(Port),
+        throw({os_process_error, Err})
+    after OsProc#os_proc.timeout ->
+        catch port_close(Port),
+        throw({os_process_error, "OS process timed out."})
+    end.
+
 % gen_server API
 init([Command, Options, PortOptions]) ->
-    case code:priv_dir(couch) of
-    {error, bad_name} ->
-        % small hack, in dev mode "app" is couchdb. Fixing requires renaming
-        % src/couch to src/couch. Not really worth the hassle.-Damien
-        PrivDir = code:priv_dir(couchdb);
-    PrivDir -> ok
-    end,
-    Spawnkiller = filename:join(PrivDir, "couchspawnkillable"),
+    %case code:priv_dir(couch) of
+    %{error, bad_name} ->
+    %    % small hack, in dev mode "app" is couchdb. Fixing requires renaming
+    %    % src/couch to src/couch. Not really worth the hassle.-Damien
+    %    PrivDir = code:priv_dir(couchdb);
+    %PrivDir -> ok
+    %end,
+    %Spawnkiller = filename:join(PrivDir, "couchspawnkillable"),
     BaseProc = #os_proc{
         command=Command,
-        port=open_port({spawn, Spawnkiller ++ " " ++ Command}, PortOptions),
+        port=open_port({spawn, Command}, PortOptions),
         writer=fun writejson/2,
         reader=fun readjson/1
     },
-    KillCmd = readline(BaseProc),
-    Pid = self(),
-    spawn(fun() ->
-            % this ensure the real os process is killed when this process dies.
-            erlang:monitor(process, Pid),
-            receive _ -> ok end,
-            os:cmd(?b2l(KillCmd))
-        end),
+    %KillCmd = readline(BaseProc),
+    %Pid = self(),
+    %spawn(fun() ->
+    %        % this ensure the real os process is killed when this process dies.
+    %        erlang:monitor(process, Pid),
+    %        receive _ -> ok end,
+    %        os:cmd(?b2l(KillCmd))
+    %    end),
     OsProc =
     lists:foldl(fun(Opt, Proc) ->
         case Opt of

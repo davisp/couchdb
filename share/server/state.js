@@ -22,13 +22,13 @@ var State = (function() {
       funsrc = [];
       query_config = config;
       gc();
-      print("true"); // indicates success
+      writeobject(true);
     },
     addFun : function(newFun) {
       // Compile to a function and add it to funs array
       funsrc.push(newFun);
       funs.push(compileFunction(newFun));
-      print("true");
+      writeobject(true);
     }
   }
 })();

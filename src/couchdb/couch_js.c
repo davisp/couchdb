@@ -21,6 +21,779 @@ specific language governing permissions and limitations under the License.
 #include <curl/curl.h>
 #include "config.h"
 
+#define SMALL_INTEGER 'a'
+#define INTEGER       'b'
+#define FLOAT         'c'
+#define ATOM          'd'
+#define NEW_FLOAT     'F'
+#define SMALL_TUPLE   'h'
+#define LARGE_TUPLE   'i'
+#define NIL           'j'
+#define STRING        'k'
+#define LIST          'l'
+#define BINARY        'm'
+#define SMALL_BIG     'n'
+#define LARGE_BIG     'o'
+
+#define VERSION_MAGIC 131
+
+JSBool EncodeString(const jschar *src, size_t srclen, char *dst, size_t *dstlenp);
+JSBool DecodeString(const char *src, size_t srclen, jschar *dst, size_t *dstlenp);
+static JSBool _log(JSContext *context, JSObject *obj, uintN argc, jsval *argv, jsval *rval, FILE* fp);
+char* _MakeTerm(JSContext* cx, jsval val, char* buf, int* size, int* used);
+jsval _MakeJSObject(JSContext* cx, char* data, int* remaining);
+
+
+char*
+_EnsureBuf(char* buf, int* size, int* used, int request)
+{
+    if(request < *used)
+    {
+        return buf;
+    }
+    
+    while(*size < *used + request) *size *= 2;
+    buf = realloc(buf, *size);
+    return buf;
+}
+
+char*
+_ErlMakeAtom(char* buf, int* size, int* used, char* data, unsigned short len)
+{
+    unsigned short nlen = htons(len);
+    buf = _EnsureBuf(buf, size, used, 3 + len);
+    if(buf == NULL) return NULL;
+    buf[*used] = ATOM;
+    memcpy(buf+(*used)+1, &nlen, 2);
+    memcpy(buf+(*used)+3, data, len);
+    *used += 3 + len;
+    return buf;
+}
+
+char*
+_ErlMakeString(JSContext* cx, jsval val, char* buf, int* size, int* used)
+{
+    size_t cl, bl, nbl;
+    JSString *str;
+    jschar *chars;
+
+    str = JS_ValueToString(cx, val);
+    chars = JS_GetStringChars(str);
+    cl = JS_GetStringLength(str);
+    if(!EncodeString(chars, cl, NULL, &bl))
+        return NULL;
+    
+    buf = _EnsureBuf(buf, size, used, 5+bl);
+    if(buf == NULL) return NULL;
+
+    buf[*used] = BINARY;
+    nbl = htonl(bl);
+    memcpy(buf+(*used)+1, &nbl, 4);
+
+    if(!EncodeString(chars, cl, buf+(*used)+5, &bl))
+        return NULL;
+
+    *used += 5 + bl;
+    return buf;
+}
+
+char*
+_ErlMakeInt(JSContext* cx, jsval val, char* buf, int* size, int* used)
+{
+    int32_t rval;
+    
+    if(!JS_ValueToInt32(cx, val, &rval))
+    {
+        return NULL;
+    }
+    
+    if((unsigned int) rval < 255)
+    {
+        buf = _EnsureBuf(buf, size, used, 2);
+        if(buf == NULL) return NULL;
+        buf[*used] = SMALL_INTEGER;
+        buf[(*used)+1] = (char) rval;
+        *used += 2;
+    }
+    else
+    {
+        buf = _EnsureBuf(buf, size, used, 5);
+        if(buf == NULL) return NULL;
+        buf[*used] = INTEGER;
+        rval = htonl(rval);
+        memcpy(buf+(*used)+1, &rval, 4);
+        *used += 5;
+    }
+
+    return buf;    
+}
+
+char*
+_ErlMakeFloat(JSContext* cx, jsval val, char* buf, int* size, int* used)
+{
+    double rval;
+    
+    if(!JS_ValueToNumber(cx, val, &rval))
+    {
+        return NULL;
+    }
+    
+    buf = _EnsureBuf(buf, size, used, 32);
+    if(buf == NULL) return NULL;
+    buf[*used] = FLOAT;
+    snprintf(buf+(*used)+1, 31, "%.20e", rval);
+    *used += 32;
+    return buf;
+}
+
+char*
+_ErlMakeArray(JSContext* cx, JSObject* obj, char* buf, int* size, int* used)
+{
+    unsigned int length, nlen;
+    jsval v;
+    int i;
+    
+    if(!JS_GetArrayLength(cx, obj, &length)) return NULL;
+    
+    buf = _EnsureBuf(buf, size, used, 5);
+    if(buf == NULL) return NULL;
+
+    buf[*used] = LIST;
+    nlen = htonl(length);
+    memcpy(buf+(*used)+1, &nlen, 4);
+    *used += 5;
+
+    for(i = 0; i < length; i++)
+    {
+        if(!JS_GetElement(cx, obj, i, &v))
+        {
+            return NULL;
+        }
+        
+        buf = _MakeTerm(cx, v, buf, size, used);
+        if(buf == NULL) return NULL;
+    }
+    
+    buf = _EnsureBuf(buf, size, used, 1);
+    if(buf == NULL) return NULL;
+    buf[*used] = NIL;
+    *used += 1;
+    
+    return buf;
+}
+
+char*
+_ErlMakeObject(JSContext* cx, JSObject* obj, char* buf, int* size, int *used)
+{
+    JSObject* iter;
+    JSString* key;
+    jsid idp;
+    jsval val;
+    jschar* keyname;
+    size_t keylen;
+    int count = 0;
+    int lengthpos;
+    
+    buf = _EnsureBuf(buf, size, used, 7);
+    if(buf == NULL) return NULL;
+    
+    buf[*used] = SMALL_TUPLE;
+    buf[(*used) + 1] = (char) 1;
+    buf[(*used) + 2] = LIST;
+    
+    // Remember the byte offset where length goes so we can write it
+    // after enumerating the properties.
+    lengthpos = *used + 3;
+    *used += 7;
+    
+    iter = JS_NewPropertyIterator(cx, obj);
+    if(iter == NULL) return NULL;
+    
+    while(JS_NextProperty(cx, iter, &idp))
+    {
+        // Done iterating, write length and bail.
+        if(idp == JSVAL_VOID)
+        {
+            count = htonl(count);
+            memcpy(buf+lengthpos, &count, 4);
+            
+            buf = _EnsureBuf(buf, size, used, 1);
+            if(buf == NULL) return NULL;
+            buf[*used] = NIL;
+            *used += 1;
+            
+            return buf;
+        }
+
+        buf = _EnsureBuf(buf, size, used, 2);
+        buf[*used] = SMALL_TUPLE;
+        buf[(*used) + 1] = 2;
+        *used += 2;
+
+        if(!JS_IdToValue(cx, idp, &val)) return NULL;
+
+        buf = _ErlMakeString(cx, val, buf, size, used);
+        if(buf == NULL) return NULL;
+        
+        key = JS_ValueToString(cx, val);
+        keyname = JS_GetStringChars(key);
+        keylen = JS_GetStringLength(key);
+        
+        if(!JS_GetUCProperty(cx, obj, keyname, keylen, &val)) return NULL;
+        
+        buf = _MakeTerm(cx, val, buf, size, used);
+        count += 1;
+    }
+    
+    // ERROR GETTING NEXT PROPERTY
+    return NULL;
+}
+
+char*
+_MakeTerm(JSContext* cx, jsval val, char* buf, int* size, int* used)
+{
+    JSObject* obj = NULL;
+    JSType type = JS_TypeOfValue(cx, val);
+    
+    //fprintf(stderr, "CONVERTING TYPE: %d\n", (int) type);
+    
+    if(val == JSVAL_NULL)
+    {
+        return _ErlMakeAtom(buf, size, used, "null", 4);
+    }
+    else if(val == JSVAL_VOID)
+    {
+        return NULL;
+    }
+    else if(type == JSTYPE_BOOLEAN)
+    {
+        if(val == JSVAL_TRUE)
+            return _ErlMakeAtom(buf, size, used, "true", 4);
+        else
+            return _ErlMakeAtom(buf, size, used, "false", 5);
+    }
+    else if(type == JSTYPE_STRING)
+    {
+        return _ErlMakeString(cx, val, buf, size, used);
+    }
+    else if(type == JSTYPE_NUMBER)
+    {
+        if(JSVAL_IS_INT(val))
+            return _ErlMakeInt(cx, val, buf, size, used);
+        else
+            return _ErlMakeFloat(cx, val, buf, size, used);
+    }
+    else if(type == JSTYPE_OBJECT)
+    {
+        obj = JSVAL_TO_OBJECT(val);
+        if(JS_IsArrayObject(cx, obj))
+        {
+            return _ErlMakeArray(cx, obj, buf, size, used);
+        }
+        return _ErlMakeObject(cx, obj, buf, size, used);
+    }
+    
+    fprintf(stderr, "UNKNOWN JSVAL TYPE: %d\n", (int) type);
+    return NULL;
+}
+
+static JSBool
+WriteObject(JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval)
+{
+    char* buf;
+    int length = 1024;
+    int used = 0;
+    int nused;
+    int i;
+    
+    //_log(cx, obj, argc, argv, rval, stderr);
+    
+    buf = malloc(length);
+    if(buf == NULL) return JS_FALSE;
+    used += 4; // For length
+    buf[used] = (char) VERSION_MAGIC;
+    used += 1;
+    
+    if(argc < 1) return JS_FALSE;
+    buf = _MakeTerm(cx, argv[0], buf, &length, &used);
+    if(buf == NULL)
+    {
+        free(buf);
+        return JS_FALSE;
+    }
+    
+    nused = htonl(used-4);
+    memcpy(buf, &nused, 4);
+
+    fwrite(buf, 1, used, stdout);
+    fflush(stdout);
+    free(buf);
+    
+    return JS_TRUE;
+}
+
+char*
+_ReadData(int* length)
+{
+    size_t read;
+    char* buf = NULL;
+    
+    read = fread(length, 1, 4, stdin);
+    *length = ntohl(*length);
+    
+    if(read != 4) return NULL;
+    if(*length < 0 || *length > 0x100000) return NULL;
+        
+    buf = (char*) malloc(*length);
+    if(buf == NULL) return NULL;
+
+    read = 0;
+    while(read < *length) {
+        read += fread(buf+read, 1, (*length)-read, stdin);
+    }
+    
+    if(read != *length)
+    {
+        free(buf);
+        return NULL;
+    }
+    
+    return buf;
+}
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+jsval
+_MakeSpecial(JSContext* cx, char* data, int* remaining)
+{
+    unsigned int length;
+    memcpy(&length, data, 2);
+    length = ntohs(length);
+    *remaining -= (2 + length);
+    data += 2;
+    
+    if(strncmp(data, "true", MIN(length, 4)) == 0)
+    {
+        return JSVAL_TRUE;
+    }
+    else if(strncmp(data, "false", MIN(length, 5)) == 0)
+    {
+        return JSVAL_FALSE;
+    }
+    else if(strncmp(data, "null", MIN(length, 4)) == 0)
+    {
+        return JSVAL_NULL;
+    }
+
+    return JSVAL_VOID;
+}
+
+jsval
+_MakeInt(JSContext* cx, char* data, int* remaining, char type)
+{
+    unsigned int val;
+    jsval ret;
+
+    if(type == SMALL_INTEGER)
+    {
+        val = (unsigned char) data[0];
+        *remaining -= 1;
+        return INT_TO_JSVAL(val);
+    }
+    else
+    {
+        memcpy(&val, data, 4);
+        *remaining -= 4;
+        val = ntohl(val);
+        if(INT_FITS_IN_JSVAL(val))
+        {
+            return INT_TO_JSVAL(val);
+        }
+        else
+        {
+            if(!JS_NewNumberValue(cx, val, &ret))
+            {
+                return JSVAL_VOID;
+            }
+            
+            return ret;
+        }
+    }
+}
+
+jsval
+_MakeBigNum(JSContext* cx, char* data, int* remaining, char type)
+{
+    // Note to self, check for overflow.
+    
+    jsval ret;
+    int32_t val = 0;
+    int length = 0;
+    unsigned int factor;
+    char sign = 0;
+    int i;
+        
+    if(type == SMALL_BIG)
+    {
+        length = (unsigned char) data[0];
+        *remaining -= 1;
+        data += 1;
+    }
+    else
+    {
+        memcpy(&val, data, 4);
+        val = ntohl(val);
+        *remaining -= 4;
+        data += 4;
+    }
+    
+    sign = data[0];
+    *remaining -= 1;
+    data += 1;
+    
+    if(length > 4)
+    {
+        if(sign == 0)
+        {
+            return JS_GetPositiveInfinityValue(cx);
+        }
+        else
+        {
+            return JS_GetNegativeInfinityValue(cx);
+        }
+    }
+    
+    for(i = 0; i < length; i++)
+    {
+        factor = (unsigned int) data[i];
+        val += factor << (i*8);
+    }
+    
+    if(sign == 1) val *= -1;
+        
+    if(INT_FITS_IN_JSVAL(val))
+    {
+        return INT_TO_JSVAL(val);
+    }
+    else
+    {
+        if(!JS_NewNumberValue(cx, val, &ret))
+        {
+            return JSVAL_VOID;
+        }
+        
+        return ret;
+    }
+}
+
+jsval
+_MakeFloat(JSContext* cx, char* data, int* remaining, char type)
+{
+    double val;
+    jsval ret;
+    
+    if(type == NEW_FLOAT)
+    {
+        memcpy(&val, data, 8);
+        *remaining -= 8;
+    }
+    else
+    {
+        sscanf(data, "%lf", &val);
+        *remaining -= 31;
+    }
+
+    if(!JS_NewNumberValue(cx, val, &ret))
+    {
+        return JSVAL_VOID;
+    }
+    
+    return ret;
+}
+
+jsval
+_MakeString(JSContext* cx, char* data, int* remaining)
+{
+    int length;
+    JSString* str;
+    jschar* chars;
+    size_t charslen;
+    
+    memcpy(&length, data, 4);
+    length = ntohl(length);
+    
+    if(!DecodeString(data+4, length+1, NULL, &charslen))
+    {
+        return JSVAL_VOID;
+    }
+    
+    chars = JS_malloc(cx, (charslen + 1) * sizeof(jschar));
+    if(chars == NULL) return JSVAL_VOID;
+    
+    if(!DecodeString(data+4, length+1, chars, &charslen))
+    {
+        JS_free(cx, chars);
+        return JSVAL_VOID;
+    }
+    chars[charslen] = '\0';
+    
+    str = JS_NewUCString(cx, chars, charslen - 1);
+    if(!str)
+    {
+        JS_free(cx, chars);
+        return JSVAL_VOID;
+    }
+
+    *remaining -= (4 + length);
+    return STRING_TO_JSVAL(str);
+}
+
+jsval
+_MakeArray(JSContext* cx, char* data, int* remaining, char type)
+{
+    int length;
+    unsigned int ulen;
+    JSObject* ret;
+    jsval val;
+    int left;
+    int i;
+
+    if(type == STRING)
+    {
+        memcpy(&ulen, data, 2);
+        length = ntohs(ulen);
+        *remaining -= 2;
+        data += 2;
+    }
+    else
+    {
+        memcpy(&length, data, 4);
+        *remaining -= 4;
+        data += 4;
+        length = ntohl(length);
+    }
+
+    ret = JS_NewArrayObject(cx, 0, NULL);
+    if(ret == NULL) return JSVAL_VOID;
+
+    for(i = 0; i < length; i++)
+    {
+        if(type == STRING) // list of one byte integers.
+        {
+            val = _MakeInt(cx, data, remaining, SMALL_INTEGER);
+            data += 1;
+        }
+        else
+        {
+            left = *remaining;
+            val = _MakeJSObject(cx, data, remaining);
+            data += (left - *remaining);
+        }
+
+        if(val == JSVAL_VOID) return val;
+        JS_SetElement(cx, ret, i, &val);
+    }
+    
+    if(type == LIST && data[0] != NIL)
+    {
+        return JSVAL_VOID;
+    }
+    else if(type == LIST)
+    {
+        *remaining -= 1;
+    }
+    
+    return OBJECT_TO_JSVAL(ret);
+}
+
+jschar*
+_MakeKey(JSContext* cx, char* data, int* remaining, size_t* charslen)
+{
+    char type;
+    size_t length;
+    unsigned short atomlen;
+    jschar* chars;
+    
+    type = data[0];
+    *remaining -= 1;
+    data += 1;
+    
+    if(type == BINARY)
+    {
+        memcpy(&length, data, 4);
+        length = ntohl(length);
+        *remaining -= 4;
+        data += 4;
+    }
+    else if(type == ATOM)
+    {
+        memcpy(&atomlen, data, 2);
+        atomlen = ntohs(atomlen);
+        length = (size_t) atomlen;
+        *remaining -= 2;
+        data += 2;
+    }
+    
+    if(!DecodeString(data, length, NULL, charslen))
+    {
+        return JS_FALSE;
+    }
+    
+    chars = JS_malloc(cx, (*charslen + 1) * sizeof(jschar));
+    
+    if(!DecodeString(data, length, chars, charslen))
+    {
+        JS_free(cx, chars);
+        return NULL;
+    }
+    chars[*charslen] = '\0';
+    
+    *remaining -= length;
+    return chars;
+}
+
+jsval
+_MakeObject(JSContext* cx, char* data, int* remaining)
+{
+    int length;
+    JSObject* ret;
+    jschar* key;
+    size_t klen;
+    jsval val;
+    int i;
+    int before;
+    
+    if(data[0] != 1) return JSVAL_VOID;
+    *remaining -= 1;
+    data += 1;
+        
+    if(data[0] != LIST) return JSVAL_VOID;
+    memcpy(&length, data+1, 4);
+    *remaining -= 5;
+    data += 5;
+    length = ntohl(length);
+    
+    ret = JS_NewObject(cx, NULL, NULL, NULL);
+    if(ret == NULL) return JSVAL_VOID;
+
+    for(i = 0; i < length; i++)
+    {
+        if(data[0] != SMALL_TUPLE) return JSVAL_VOID;
+        if(data[1] != 2) return JSVAL_VOID;
+        *remaining -= 2;
+        data += 2;
+
+        before = *remaining;
+        key = _MakeKey(cx, data, remaining, &klen);
+        if(key == NULL) return JSVAL_VOID;
+        data += before - *remaining;
+        
+        before = *remaining;
+        val = _MakeJSObject(cx, data, remaining);
+        if(val == JSVAL_VOID)
+        {
+            JS_free(cx, key);
+            return JSVAL_VOID;
+        }
+        data += before - *remaining;
+                
+        if(!JS_SetUCProperty(cx, ret, key, klen, &val))
+        {
+            JS_free(cx, key);
+            return JSVAL_VOID;
+        }
+        
+        JS_free(cx, key);
+    }
+    
+    if(data[0] != NIL)
+    {
+        fprintf(stderr, "NO END NIL FOR OBJECT LIST: %c\n", data[0]);
+        return JSVAL_VOID;
+    }
+    *remaining -= 1;
+    
+    return OBJECT_TO_JSVAL(ret);
+}
+
+jsval
+_MakeJSObject(JSContext* cx, char* data, int* remaining)
+{
+    char type = data[0];
+    data += 1;
+    *remaining -= 1;
+    
+    //fprintf(stderr, "MAKING OBJECT TYPE: '%c' %d\n", type, *remaining);
+    
+    if(type == ATOM)
+    {
+        return _MakeSpecial(cx, data, remaining);
+    }
+    else if(type == SMALL_INTEGER || type == INTEGER)
+    {
+        return _MakeInt(cx, data, remaining, type);
+    }
+    else if(type == SMALL_BIG || type == LARGE_BIG)
+    {
+        return _MakeBigNum(cx, data, remaining, type);
+    }
+    else if(type == FLOAT || type == NEW_FLOAT)
+    {
+        return _MakeFloat(cx, data, remaining, FLOAT);
+    }
+    else if(type == BINARY)
+    {
+        return _MakeString(cx, data, remaining);
+    }
+    else if(type == STRING || type == LIST)
+    {
+        return _MakeArray(cx, data, remaining, type);
+    }
+    else if(type == SMALL_TUPLE)
+    {
+        return _MakeObject(cx, data, remaining);
+    }
+    
+    fprintf(stderr, "INVALID TYPE: '%c'\n", type);
+    return JSVAL_VOID;
+}
+
+static JSBool
+ReadObject(JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval)
+{
+    JSBool ret = JS_FALSE;
+    JSObject* actual = NULL;
+    int length = -1;
+    char* buf = NULL;
+    
+    buf = _ReadData(&length);
+    if(buf == NULL) return JS_FALSE;
+    
+    if(buf[0] != (char) VERSION_MAGIC) goto done;
+
+    length -= 1;
+    *rval = _MakeJSObject(cx, buf+1, &length);
+    if(length != 0)
+    {
+        return JSVAL_VOID;
+    }
+
+    if(*rval == JSVAL_VOID)
+    {
+        goto done;
+    }
+
+    JS_MaybeGC(cx);
+
+    ret = JS_TRUE;
+
+done:
+    free(buf);
+    return ret;
+}
+
+
+
+
 #ifndef CURLOPT_COPYPOSTFIELDS
    #define CURLOPT_COPYPOSTFIELDS 10165
 #endif
@@ -257,7 +1030,7 @@ GC(JSContext *context, JSObject *obj, uintN argc, jsval *argv, jsval *rval) {
 }
 
 static JSBool
-Print(JSContext *context, JSObject *obj, uintN argc, jsval *argv, jsval *rval) {
+_log(JSContext *context, JSObject *obj, uintN argc, jsval *argv, jsval *rval, FILE* fp) {
     uintN i;
     size_t cl, bl;
     JSString *str;
@@ -278,14 +1051,27 @@ Print(JSContext *context, JSObject *obj, uintN argc, jsval *argv, jsval *rval) {
             JS_free(context, bytes);
             return JS_FALSE;
         }
-        fprintf(stdout, "%s%s", i ? " " : "", bytes);
+        fprintf(fp, "%s%s", i ? " " : "", bytes);
         JS_free(context, bytes);
     }
 
-    fputc('\n', stdout);
-    fflush(stdout);
+    fputc('\n', fp);
+    fflush(fp);
     return JS_TRUE;
 }
+
+static JSBool
+Print(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+{
+    _log(cx, obj, argc, argv, rval, stdout);
+}
+
+static JSBool
+Log(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *rval)
+{
+    _log(cx, obj, argc, argv, rval, stderr);
+}
+
 
 static JSBool
 Quit(JSContext *context, JSObject *obj, uintN argc, jsval *argv, jsval *rval) {
@@ -1253,8 +2039,11 @@ main(int argc, const char * argv[]) {
     if (!JS_DefineFunction(context, global, "evalcx", EvalInContext, 0, 0)
      || !JS_DefineFunction(context, global, "gc", GC, 0, 0)
      || !JS_DefineFunction(context, global, "print", Print, 0, 0)
+     || !JS_DefineFunction(context, global, "console_log", Log, 0, 0)
      || !JS_DefineFunction(context, global, "quit", Quit, 0, 0)
      || !JS_DefineFunction(context, global, "readline", ReadLine, 0, 0)
+     || !JS_DefineFunction(context, global, "readobject", ReadObject, 0, 0)
+     || !JS_DefineFunction(context, global, "writeobject", WriteObject, 1, 0)
      || !JS_DefineFunction(context, global, "seal", Seal, 0, 0)
      || !JS_DefineFunction(context, global, "gethttp", GetHttp, 1, 0)
      || !JS_DefineFunction(context, global, "headhttp", HeadHttp, 1, 0)

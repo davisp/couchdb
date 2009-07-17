@@ -15,7 +15,7 @@ var Validate = {
     var validateFun = compileFunction(funSrc);
     try {
       validateFun(newDoc, oldDoc, userCtx);
-      print("1");
+      writeobject(1);
     } catch (error) {
       respond(error);
     }

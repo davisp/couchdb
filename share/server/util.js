@@ -97,7 +97,7 @@ function recursivelySeal(obj) {
 // prints the object as JSON, and rescues and logs any toJSON() related errors
 function respond(obj) {
   try {
-    print(toJSON(obj));
+    writeobject(obj);
   } catch(e) {
     log("Error converting object to JSON: " + e.toString());
   }

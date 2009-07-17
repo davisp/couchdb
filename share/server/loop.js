@@ -46,9 +46,8 @@ var dispatch = {
   "filter"   : Filter.filter
 };
 
-while (line = eval(readline())) {
-  cmd = eval(line);
-  line_length = line.length;
+while (cmd = readobject()) {
+  //console_log(toJSON(cmd));
   try {
     cmdkey = cmd.shift();
     if (dispatch[cmdkey]) {
