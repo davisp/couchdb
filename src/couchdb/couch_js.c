@@ -42,7 +42,7 @@ JSBool DecodeString(const char *src, size_t srclen, jschar *dst, size_t *dstlenp
 static JSBool _log(JSContext *context, JSObject *obj, uintN argc, jsval *argv, jsval *rval, FILE* fp);
 char* _MakeTerm(JSContext* cx, jsval val, char* buf, int* size, int* used);
 jsval _MakeJSObject(JSContext* cx, char* data, int* remaining);
-
+jschar* _MakeKey(JSContext* cx, char* data, int* remaining, size_t* charslen);
 
 char*
 _EnsureBuf(char* buf, int* size, int* used, int request)
@@ -263,6 +263,7 @@ _MakeTerm(JSContext* cx, jsval val, char* buf, int* size, int* used)
     }
     else if(val == JSVAL_VOID)
     {
+        JS_ReportError(cx, "Cannot encode 'undefined' value as JSON");
         return NULL;
     }
     else if(type == JSTYPE_BOOLEAN)
@@ -273,6 +274,10 @@ _MakeTerm(JSContext* cx, jsval val, char* buf, int* size, int* used)
             return _ErlMakeAtom(buf, size, used, "false", 5);
     }
     else if(type == JSTYPE_STRING)
+    {
+        return _ErlMakeString(cx, val, buf, size, used);
+    }
+    else if(type == JSTYPE_XML)
     {
         return _ErlMakeString(cx, val, buf, size, used);
     }
@@ -301,13 +306,15 @@ static JSBool
 WriteObject(JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval)
 {
     char* buf;
+    char* ret;
     int length = 1024;
     int used = 0;
     int nused;
     int i;
     
-    //_log(cx, obj, argc, argv, rval, stderr);
-    
+    fprintf(stderr, "<= WRITING\n");
+    _log(cx, obj, argc, argv, rval, stderr);
+
     buf = malloc(length);
     if(buf == NULL) return JS_FALSE;
     used += 4; // For length
@@ -328,7 +335,8 @@ WriteObject(JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval)
     fwrite(buf, 1, used, stdout);
     fflush(stdout);
     free(buf);
-    
+   
+    fprintf(stderr, "<= DONE\n");
     return JS_TRUE;
 }
 
@@ -343,7 +351,7 @@ _ReadData(int* length)
     
     if(read != 4) return NULL;
     if(*length < 0 || *length > 0x100000) return NULL;
-        
+
     buf = (char*) malloc(*length);
     if(buf == NULL) return NULL;
 
@@ -366,6 +374,11 @@ jsval
 _MakeSpecial(JSContext* cx, char* data, int* remaining)
 {
     unsigned int length;
+    int before;
+    size_t charslen;
+    jschar* chars;
+    JSString* str;
+
     memcpy(&length, data, 2);
     length = ntohs(length);
     *remaining -= (2 + length);
@@ -383,8 +396,24 @@ _MakeSpecial(JSContext* cx, char* data, int* remaining)
     {
         return JSVAL_NULL;
     }
+    else
+    {
+        // Undo
+        data -= 3;
+        *remaining += (3+length);
 
-    return JSVAL_VOID;
+        chars = _MakeKey(cx, data, remaining, &charslen);
+        if(chars == NULL) return JSVAL_VOID;
+
+        str = JS_NewUCString(cx, chars, charslen);
+        if(!str)
+        {
+            JS_free(cx, chars);
+            return JSVAL_VOID;
+        }
+
+        return STRING_TO_JSVAL(str);
+    }
 }
 
 jsval
@@ -605,6 +634,14 @@ _MakeArray(JSContext* cx, char* data, int* remaining, char type)
     return OBJECT_TO_JSVAL(ret);
 }
 
+jsval
+_MakeEmptyArray(JSContext* cx, char* data, int* remaining)
+{
+    JSObject* ret = JS_NewArrayObject(cx, 0, NULL);
+    if(ret == NULL) return JSVAL_VOID;
+    return OBJECT_TO_JSVAL(ret);
+}
+
 jschar*
 _MakeKey(JSContext* cx, char* data, int* remaining, size_t* charslen)
 {
@@ -632,10 +669,14 @@ _MakeKey(JSContext* cx, char* data, int* remaining, size_t* charslen)
         *remaining -= 2;
         data += 2;
     }
+    else
+    {
+        return NULL;
+    }
     
     if(!DecodeString(data, length, NULL, charslen))
     {
-        return JS_FALSE;
+        return NULL;
     }
     
     chars = JS_malloc(cx, (*charslen + 1) * sizeof(jschar));
@@ -661,20 +702,27 @@ _MakeObject(JSContext* cx, char* data, int* remaining)
     jsval val;
     int i;
     int before;
-    
+   
     if(data[0] != 1) return JSVAL_VOID;
     *remaining -= 1;
     data += 1;
         
+    ret = JS_NewObject(cx, NULL, NULL, NULL);
+    if(ret == NULL) return JSVAL_VOID;
+
+    // Empty object
+    if(data[0] == NIL)
+    {
+        *remaining -= 1;
+        return OBJECT_TO_JSVAL(ret);
+    }
+
     if(data[0] != LIST) return JSVAL_VOID;
     memcpy(&length, data+1, 4);
     *remaining -= 5;
     data += 5;
     length = ntohl(length);
     
-    ret = JS_NewObject(cx, NULL, NULL, NULL);
-    if(ret == NULL) return JSVAL_VOID;
-
     for(i = 0; i < length; i++)
     {
         if(data[0] != SMALL_TUPLE) return JSVAL_VOID;
@@ -722,7 +770,7 @@ _MakeJSObject(JSContext* cx, char* data, int* remaining)
     data += 1;
     *remaining -= 1;
     
-    //fprintf(stderr, "MAKING OBJECT TYPE: '%c' %d\n", type, *remaining);
+    fprintf(stderr, "MAKING OBJECT TYPE: '%c' %d\n", type, *remaining);
     
     if(type == ATOM)
     {
@@ -748,6 +796,10 @@ _MakeJSObject(JSContext* cx, char* data, int* remaining)
     {
         return _MakeArray(cx, data, remaining, type);
     }
+    else if(type == NIL)
+    {
+        return _MakeEmptyArray(cx, data, remaining);
+    }
     else if(type == SMALL_TUPLE)
     {
         return _MakeObject(cx, data, remaining);
@@ -764,7 +816,8 @@ ReadObject(JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval)
     JSObject* actual = NULL;
     int length = -1;
     char* buf = NULL;
-    
+
+    fprintf(stderr, "=> READING\n");
     buf = _ReadData(&length);
     if(buf == NULL) return JS_FALSE;
     
@@ -774,11 +827,13 @@ ReadObject(JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval)
     *rval = _MakeJSObject(cx, buf+1, &length);
     if(length != 0)
     {
+        fprintf(stderr, "Didn't use up buffer.\n");
         return JSVAL_VOID;
     }
 
     if(*rval == JSVAL_VOID)
     {
+        fprintf(stderr, "RETURNED VOID\n");
         goto done;
     }
 
@@ -788,6 +843,7 @@ ReadObject(JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval)
 
 done:
     free(buf);
+    fprintf(stderr, "=> DONE\n");
     return ret;
 }
 
@@ -2071,5 +2127,6 @@ main(int argc, const char * argv[]) {
     JS_DestroyRuntime(runtime);
     JS_ShutDown();
 
+    fprintf(stderr, "EXITING: %d\n", gExitCode);
     return gExitCode;
 }

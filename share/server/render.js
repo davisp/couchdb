@@ -98,8 +98,9 @@ function getRow() {
   } else {
     blowChunks();
   }
-  var line = readline();
-  var json = eval(line);
+  //var line = readline();
+  //var json = eval(line);
+  var json = readobject();
   if (json[0] == "list_end") {
     lastRow = true;
     return null;

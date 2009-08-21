@@ -18,6 +18,7 @@
 -export([send/2, writeline/2, readline/1, writejson/2, readjson/1]).
 -export([writeterm/2, readterm/1]).
 -export([init/1, terminate/2, handle_call/3, handle_cast/2, handle_info/2, code_change/3]).
+-export([new_proc/1]).
 
 -include("couch_db.hrl").
 
@@ -30,6 +31,14 @@
      reader,
      timeout=5000
     }).
+
+new_proc(Command) ->
+    CommOpts = [
+        {writer, fun couch_os_process:writeterm/2},
+        {reader, fun couch_os_process:readterm/1}
+    ],
+    PortOpts = [{packet, 4}, binary, exit_status, hide],
+    couch_os_process:start_link(Command, CommOpts, PortOpts).
 
 start_link(Command) ->
     start_link(Command, []).
@@ -103,17 +112,33 @@ readjson(OsProc) when is_record(OsProc, os_proc) ->
 
 
 writeterm(OsProc, Data) when is_record(OsProc, os_proc) ->
-    %io:format("SENDING: ~p =>~n~p~n", [Data, term_to_binary(Data)]),
+    io:format("SENDING: ~p =>~n~p~n", [Data, term_to_binary(Data)]),
+    %io:format("SENDING LENGTH: ~p~n", [size(term_to_binary(Data))]),
     true = port_command(OsProc#os_proc.port, term_to_binary(Data)).
 
 readterm(OsProc) when is_record(OsProc, os_proc) ->
     #os_proc{port=Port} = OsProc,
     receive
     {Port, {data, Data}} ->
-        %io:format("RAW RESPONSE:~n~p~n", [Data]),
-        Resp = binary_to_term(Data),
-        %io:format("RESPONSE: ~p~n", [Resp]),
-        Resp;
+        io:format("RAW RESPONSE:~n~p~n", [Data]),
+        case binary_to_term(Data) of
+            [<<"log">>, Msg] when is_binary(Msg) ->
+                % we got a message to log. Log it and continue
+                ?LOG_INFO("OS Process :: ~s", [Msg]),
+                io:format("Reading after log~n", []),
+                Resp = readterm(OsProc),
+                io:format("Read: ~p~n", [Resp]),
+                Resp;
+            {[{<<"error">>, Id}, {<<"reason">>, Reason}]} ->
+                io:format("Throwing?~n", []),
+                throw({list_to_atom(binary_to_list(Id)),Reason});
+            {[{<<"reason">>, Reason}, {<<"error">>, Id}]} ->
+                io:format("Throwing?~n", []),
+                throw({list_to_atom(binary_to_list(Id)),Reason});
+            Else ->
+                io:format("Done~n", []),
+                Else
+        end;
     {Port, Err} ->
         catch port_close(Port),
         throw({os_process_error, Err})
@@ -168,10 +193,14 @@ handle_call({set_timeout, TimeOut}, _From, OsProc) ->
 handle_call({prompt, Data}, _From, OsProc) ->
     #os_proc{writer=Writer, reader=Reader} = OsProc,
     try
+        io:format("And how!~n", []),
         Writer(OsProc, Data),
-        {reply, {ok, Reader(OsProc)}, OsProc}
+        Resp = Reader(OsProc),
+        io:format("Sending response!~n", []),
+        {reply, {ok, Resp}, OsProc}
     catch
         throw:OsError ->
+            io:format("Caught?~n", []),
             {stop, normal, OsError, OsProc}
     end.
 

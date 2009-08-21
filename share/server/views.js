@@ -49,7 +49,7 @@ var Views = (function() {
     var reduce_line = toJSON(reductions);
     var reduce_length = reduce_line.length;
     if (query_config && query_config.reduce_limit &&
-          reduce_length > 200 && ((reduce_length * 2) > line.length)) {
+          reduce_length > 200 && ((reduce_length * 2) > reduce_line.length)) {
       var reduce_preview = "Current output: '"+(reduce_line.substring(0,100) + "'... (first 100 of "+reduce_length+' bytes)');
 
       throw {
@@ -125,7 +125,16 @@ var Views = (function() {
           buf.push([]);
         }
       }
-      writeobject(buf);
+      try {
+        writeobject(buf);
+      } catch(err) {
+        log("Failed to encode JSON: " + err + " :: " + doc._id);
+        buf = [];
+        for(var i = 0; i < funs.length; i++) {
+          buf.push([]);
+        }
+        writeobject(buf);
+      }
     }
   }
 })();
