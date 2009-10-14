@@ -1,9 +1,9 @@
 
--module(ejson_encode).
+-module(couch_json_enc).
 
 -export([value/1]).
 
--include("ejson.hrl").
+-include("couch_json.hrl").
 
 value({O}) when is_list(O) ->
     object(O, [<<?LC:8/integer>>]);
@@ -79,6 +79,10 @@ string(Bin, Acc) ->
     end.
 
 fast_string(<<>>, Pos) ->
+    Pos;
+fast_string(<<C:8/integer, Rest/binary>>, Pos) when
+            C == ?DQ; C == ?RS; C == ?FS; C == ?BS;
+            C == ?FF; C == ?NL; C == ?CR; C == ?TB ->
     Pos;
 fast_string(<<C, Rest/binary>>, Pos) when C >= ?SP, C < 16#7F ->
     fast_string(Rest, Pos+1);

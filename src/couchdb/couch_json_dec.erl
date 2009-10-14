@@ -1,9 +1,9 @@
 
--module(ejson_decode).
+-module(couch_json_dec).
 
 -export([value/1]).
 
--include("ejson.hrl").
+-include("couch_json.hrl").
 
 value(Bin) ->
     case strip(Bin) of

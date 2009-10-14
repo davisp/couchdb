@@ -60,7 +60,7 @@ prompt(Pid, Data) ->
 % Utility functions for reading and writing
 % in custom functions
 writeline(OsProc, Data) when is_record(OsProc, os_proc) ->
-    port_command(OsProc#os_proc.port, Data ++ "\n").
+    port_command(OsProc#os_proc.port, <<Data/binary, "\n">>).
 
 readline(OsProc) when is_record(OsProc, os_proc) ->
     readline(OsProc, []).
