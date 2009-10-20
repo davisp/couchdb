@@ -114,13 +114,14 @@
       this.db = db;
       this.isDirty = false;
       this.isTempView = viewName == "_temp_view";
-      page = this;
-
-      var templates = {
+      
+      this.templates = {
         javascript: "function(doc) {\n  emit(null, doc);\n}",
         python: "def fun(doc):\n  yield None, doc",
         ruby: "{|doc|\n  emit(nil, doc);\n}"
       }
+
+      page = this;
 
       this.newDocument = function() {
         location.href = "document.html?" + encodeURIComponent(db.name);
@@ -189,12 +190,14 @@
           });
           $("#grouptruenotice").show();
         } else if (viewName == "_temp_view") {
+          /*
           page.viewLanguage = $.cookies.get(db.name + ".language", page.viewLanguage);
           page.updateViewEditor(
             $.cookies.get(db.name + ".map", templates[page.viewLanguage]),
             $.cookies.get(db.name + ".reduce", "")
           );
           $("#grouptruenotice").show();
+          */
         } else {
           page.updateDocumentListing();
         }
@@ -632,7 +635,7 @@
               $.cookies.remove(db.name + ".reduce");
             }
             $.cookies.set(db.name + ".language", page.viewLanguage);
-            db.query(mapFun, reduceFun, page.viewLanguage, options);
+            db.query(page.editor.getContent(), null, page.viewLanguage, options);
           } else if (viewName == "_design_docs") {
             options.startkey = options.descending ? "_design0" : "_design";
             options.endkey = options.descending ? "_design" : "_design0";

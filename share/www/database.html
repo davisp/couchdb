@@ -28,6 +28,10 @@ specific language governing permissions and limitations under the License.
     <script src="script/futon.js?0.9.0"></script>
     <script src="script/futon.browse.js?0.9.0"></script>
     <script src="script/futon.format.js?0.9.0"></script>
+    
+    <style type="text/css">*:focus { outline: 0; }</style>
+    <script src="bespin/dojo.js"></script>
+    <script src="bespin/editor.js"></script>
     <script>
       var page = new $.futon.CouchDatabasePage();
       $.futon.navigation.ready(function() {
@@ -59,16 +63,14 @@ specific language governing permissions and limitations under the License.
         $("#viewcode button.saveas").click(function() {
           page.saveViewAs();
         });
-        $("#viewcode textarea").makeResizable({
+
+        /*
+        $("#viewcode resizer").makeResizable({
           always: true,
           grippie: $("#viewcode .bottom"),
           vertical: true
         });
-        $("#viewcode td.map").makeResizable({
-          always: true,
-          grippie: $("#viewcode td.splitter"),
-          horizontal: true
-        });
+        */
 
         // Restore preferences/state from cookies
         var desc = $.cookies.get(page.db.name + ".desc");
@@ -79,7 +81,9 @@ specific language governing permissions and limitations under the License.
         page.populateViewsMenu();
         page.populateViewEditor();
         if (page.isTempView) {
-          $("#viewcode").show().removeClass("collapsed").find("textarea")[0].focus();
+          $("#viewcode").show()
+          .removeClass("collapsed")
+          //.find("textarea")[0].focus();
           $("#documents").hide();
         }
 
@@ -120,6 +124,19 @@ specific language governing permissions and limitations under the License.
           }
         });
       });
+      
+      
+      dojo.addOnLoad(function() {
+        page.editor = new bespin.editor.Component('editor', {
+          language: "js",
+          loadfromdiv: true
+        });
+        
+        page.viewLanguage = $.cookies.get(
+            page.db.name + ".language", page.viewLanguage
+        );
+        page.editor.setContent(page.templates[page.viewLanguage]);
+      });
     </script>
   </head>
 
@@ -153,17 +170,7 @@ specific language governing permissions and limitations under the License.
           <a id="designdoc-link"></a>
           <span id="view-toggle">View Code</span>
         </div>
-        <table summary="View functions" cellspacing="0"><tr>
-          <td class="code map">
-            <label for="viewcode_map">Map Function:</label>
-            <textarea id="viewcode_map" class="map" rows="5" cols="20" spellcheck="false" wrap="off"></textarea>
-          </td>
-          <td class="splitter"></td>
-          <td class="code reduce">
-            <label for="viewcode_reduce">Reduce Function (optional):</label>
-            <textarea id="viewcode_reduce" class="reduce" rows="5" cols="20" spellcheck="false" wrap="off"></textarea>
-          </td>
-        </tr></table>
+        <div id="editor" style="height: 300px;"></div>
         <div class="bottom">
           <button class="save" type="button" disabled>Save</button>
           <button class="saveas" type="button">Save As…</button>

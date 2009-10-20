@@ -1,0 +1,29 @@
+<html>
+  <head>
+    <title>Bespin Test</title>
+    <link type="text/css" rel="stylesheet" href="style/editor.css">
+    <style type="text/css">*:focus { outline: 0; }</style>
+    <script src="/_utils/bespin/dojo.js"></script>
+    <script src="/_utils/bespin/editor.js"></script>
+    <script src="/_utils/script/syntax/codemirror/_base.js"></script>
+    <script>
+      var _editorComponent;
+
+      // Loads and configures the objects that the editor needs
+      dojo.addOnLoad(function() {
+        _editorComponent = new bespin.editor.Component('editor', {
+          language: "js",
+          loadfromdiv: true
+        });
+      });
+    </script>
+  </head>
+  <body>
+    <div id="editor" style="height: 300px; border: 10px solid #ddd; -moz-border-radius: 10px; -webkit-border-radius: 10px;">var foo = "whee";
+ 
+    function flubber() {
+        return "tweeble";
+    }
+    </div>
+  </body>
+</html>
