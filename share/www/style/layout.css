@@ -558,3 +558,8 @@ form#replicator p.actions { padding: 1px; clear: left; margin: 0;
 #status td.object, #status td.pid {
   font-family: "DejaVu Sans Mono",Monaco,monospace; font-size: 11px;
 }
+
+/* Bespin Editor */
+
+*:focus { outline: 0px; }
+

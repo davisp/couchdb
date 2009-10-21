@@ -114,14 +114,14 @@
       this.db = db;
       this.isDirty = false;
       this.isTempView = viewName == "_temp_view";
+
+      page = this;
       
-      this.templates = {
+      templates = {
         javascript: "function(doc) {\n  emit(null, doc);\n}",
         python: "def fun(doc):\n  yield None, doc",
         ruby: "{|doc|\n  emit(nil, doc);\n}"
       }
-
-      page = this;
 
       this.newDocument = function() {
         location.href = "document.html?" + encodeURIComponent(db.name);
@@ -166,8 +166,8 @@
               clearTimeout(dirtyTimeout);
               dirtyTimeout = setTimeout(function() {
                 var buttons = $("#viewcode button.save, #viewcode button.revert");
-                page.isDirty = ($("#viewcode_map").val() != page.storedViewCode.map)
-                  || ($("#viewcode_reduce").val() != (page.storedViewCode.reduce || ""))
+                page.isDirty = (page.map_editor.getContent() != page.storedViewCode.map)
+                  || (page.red_editor.getContent() != (page.storedViewCode.reduce || ""))
                   || page.viewLanguage != page.storedViewLanguage;
                 if (page.isDirty) {
                   buttons.removeAttr("disabled");
@@ -176,28 +176,18 @@
                 }
               }, 100);
             }
-            $("#viewcode textarea").bind("input", updateDirtyState);
-            if ($.browser.msie || $.browser.safari) {
-              $("#viewcode textarea").bind("paste", updateDirtyState)
-                                     .bind("change", updateDirtyState)
-                                     .bind("keydown", updateDirtyState)
-                                     .bind("keypress", updateDirtyState)
-                                     .bind("keyup", updateDirtyState)
-                                     .bind("textInput", updateDirtyState);
-            }
+            bespin.subscribe('editor:document:changed', updateDirtyState);
             $("#language").change(updateDirtyState);
             page.updateDocumentListing();
           });
           $("#grouptruenotice").show();
         } else if (viewName == "_temp_view") {
-          /*
           page.viewLanguage = $.cookies.get(db.name + ".language", page.viewLanguage);
           page.updateViewEditor(
             $.cookies.get(db.name + ".map", templates[page.viewLanguage]),
             $.cookies.get(db.name + ".reduce", "")
           );
           $("#grouptruenotice").show();
-          */
         } else {
           page.updateDocumentListing();
         }
@@ -225,13 +215,13 @@
             select.change(function() {
               var language = $("#language").val();
               if (language != page.viewLanguage) {
-                var mapFun = $("#viewcode_map").val();
+                var mapFun = page.map_editor.getContent();
                 if (mapFun == "" || mapFun == templates[page.viewLanguage]) {
                   // no edits made, so change to the new default
-                  $("#viewcode_map").val(templates[language]);
+                  page.map_editor.setContent(templates[language]);
                 }
                 page.viewLanguage = language;
-                $("#viewcode_map")[0].focus();
+                page.map_editor.focus();
               }
               return false;
             });
@@ -331,13 +321,12 @@
 
       this.updateViewEditor = function(mapFun, reduceFun) {
         if (!mapFun) return;
-        $("#viewcode_map").val(mapFun);
-        $("#viewcode_reduce").val(reduceFun);
+        page.map_editor.setContent(mapFun);
+        page.red_editor.setContent(reduceFun);
         var lines = Math.max(
           mapFun.split("\n").length,
           reduceFun.split("\n").length
         );
-        $("#viewcode textarea").attr("rows", Math.min(15, Math.max(3, lines)));
       }
 
       this.saveViewAs = function() {
@@ -389,8 +378,8 @@
               callback(errors);
             } else {
               var viewCode = {
-                map: $("#viewcode_map").val(),
-                reduce: $("#viewcode_reduce").val() || undefined
+                map: page.map_editor.getContent(),
+                reduce: page.red_editor.getContent() || undefined
               };
               var docId = ["_design", data.docid].join("/");
               function save(doc) {
@@ -455,8 +444,8 @@
             }
             doc.language = page.viewLanguage;
             var viewDef = doc.views[localViewName];
-            viewDef.map = $("#viewcode_map").val();
-            viewDef.reduce = $("#viewcode_reduce").val() || undefined;
+            viewDef.map = page.map_editor.getContent();
+            viewDef.reduce = page.red_editor.getContent() || undefined;
             db.saveDoc(doc, {
               success: function(resp) {
                 page.isDirty = false;
@@ -625,9 +614,9 @@
         } else {
           if (viewName == "_temp_view") {
             $("#viewcode").show().removeClass("collapsed");
-            var mapFun = $("#viewcode_map").val();
+            var mapFun = page.map_editor.getContent();
             $.cookies.set(db.name + ".map", mapFun);
-            var reduceFun = $.trim($("#viewcode_reduce").val()) || null;
+            var reduceFun = $.trim(page.red_editor.getContent()) || null;
             if (reduceFun) {
               $.cookies.set(db.name + ".reduce", reduceFun);
               options.group = true;
@@ -635,15 +624,15 @@
               $.cookies.remove(db.name + ".reduce");
             }
             $.cookies.set(db.name + ".language", page.viewLanguage);
-            db.query(page.editor.getContent(), null, page.viewLanguage, options);
+            db.query(mapFun, reduceFun, page.viewLanguage, options);
           } else if (viewName == "_design_docs") {
             options.startkey = options.descending ? "_design0" : "_design";
             options.endkey = options.descending ? "_design" : "_design0";
             db.allDocs(options);
           } else {
             $("#viewcode").show();
-            var currentMapCode = $("#viewcode_map").val();
-            var currentReduceCode = $.trim($("#viewcode_reduce").val()) || null;
+            var currentMapCode = page.map_editor.getContent();
+            var currentReduceCode = $.trim(page.red_editor.getContent()) || null;
             if (currentReduceCode) {
               options.group = true;
             }
