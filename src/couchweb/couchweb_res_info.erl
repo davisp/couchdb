@@ -31,11 +31,11 @@ content_types_provided(Wrq, Ctx) ->
     ], Wrq, Ctx}.
 
 to_json(Wrq, Ctx) ->
-    Body = couch_util:json_encode({[
+    Body = {[
         {couchdb, <<"Welcome">>},
         {version, list_to_binary(couch_server:get_version())}
-    ]}) ++ <<"\n">>,
-    {Body, Wrq, Ctx}.
+    ]},
+    {?JSON_ENCODE(Body) ++ <<"\n">>, Wrq, Ctx}.
 
 to_text(Wrq, Ctx) ->
     to_json(Wrq, Ctx).

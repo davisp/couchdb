@@ -32,8 +32,7 @@ content_types_provided(Wrq, Ctx) ->
 
 to_json(Wrq, Ctx) ->
     {ok, DbNames} = couch_server:all_databases(),
-    Body = couch_util:json_encode(DbNames) ++ <<"\n">>,
-    {Body, Wrq, Ctx}.
+    {?JSON_ENCODE(DbNames) ++ <<"\n">>, Wrq, Ctx}.
 
 to_text(Wrq, Ctx) ->
     to_json(Wrq, Ctx).
