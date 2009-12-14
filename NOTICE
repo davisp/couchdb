@@ -41,3 +41,8 @@ This product also includes the following third-party components:
  * mimeparse.js (http://code.google.com/p/mimeparse/)
 
    Copyright 2009, Chris Anderson <jchris@apache.org>
+
+ * WebMachine (http://hg.basho.com/webmachine)
+
+   Copyright 2009, Basho Technologies
+

@@ -369,3 +369,7 @@ For the src/etap component:
   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
   OTHER DEALINGS IN THE SOFTWARE.
 
+For the src/webmachine component:
+
+  This component is under the Apache 2.0 license as described
+  at the top of this notice list.

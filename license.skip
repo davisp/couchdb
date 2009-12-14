@@ -73,6 +73,7 @@
 ^src/etap/*
 ^src/ibrowse/*
 ^src/mochiweb/*
+^src/webmachine/*
 ^stamp-h1
 ^test/bench/Makefile
 ^test/bench/Makefile.in
