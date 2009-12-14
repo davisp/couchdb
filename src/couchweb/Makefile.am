@@ -10,4 +10,29 @@
 ## License for the specific language governing permissions and limitations under
 ## the License.
 
-SUBDIRS = couchdb couchweb erlang-oauth etap ibrowse mochiweb webmachine
+couchweblibdir = $(localerlanglibdir)/couchweb-$(version)
+couchwebincludedir = $(couchweblibdir)/include
+couchwebebindir = $(couchweblibdir)/ebin
+
+couchwebebin_DATA = $(compiled_files)
+
+CLEANFILES = $(compiled_files)
+
+source_files = \
+	couchweb.app \
+	couchweb.erl \
+	couchweb_app.erl \
+	couchweb_res_info.erl \
+	couchweb_sup.erl
+
+EXTRA_DIST = $(source_files)
+
+compiled_files = \
+    couchweb.beam \
+    couchweb_app.beam \
+	couchweb_res_info.beam \
+	couchweb_sup.beam
+
+%.beam: %.erl
+	$(ERLC) -I$(top_srcdir)/src/ $(ERLC_FLAGS) $<
+

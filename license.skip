@@ -69,6 +69,9 @@
 ^src/couchdb/priv/couchspawnkillable
 ^src/couchdb/priv/couch_icu_driver.la
 ^src/couchdb/priv/stat_descriptions.cfg
+^src/couchweb/.*beam
+^src/couchweb/Makefile
+^src/couchweb/Makefile.in
 ^src/erlang-oauth/*
 ^src/etap/*
 ^src/ibrowse/*

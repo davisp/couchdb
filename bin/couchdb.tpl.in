@@ -211,8 +211,12 @@ start_couchdb () {
         touch $PID_FILE
         interactive_option="+Bd -noinput"
     fi
-    command="%ERL% $interactive_option -sasl errlog_type error +K true \
-        -env ERL_LIBS %localerlanglibdir% -couch_ini $start_arguments -s couch"
+    command="%ERL% $interactive_option +K true \
+        -sasl errlog_type error \
+        -env ERL_LIBS %localerlanglibdir% \
+        -couch_ini $start_arguments \
+        -s couch \
+        -s couchweb"
     if test "$BACKGROUND" = "true" -a "$RECURSED" = "false"; then
         $0 $background_start_arguments -b -r $RESPAWN_TIMEOUT -p $PID_FILE \
             -o $STDOUT_FILE -e $STDERR_FILE -R &

@@ -25,9 +25,11 @@ run: ../bin/couchdb.tpl
 	    -e "s|%localini%|local_dev.ini|g" \
 	    -e "s|%localerlanglibdir%|foo \
 			-pa $(abs_top_builddir)\/src\/couchdb \
+			-pa $(abs_top_builddir)\/src\/couchweb \
 			-pa $(abs_top_builddir)\/src\/erlang-oauth \
 			-pa $(abs_top_builddir)\/src\/ibrowse \
-			-pa $(abs_top_builddir)\/src\/mochiweb|g" \
+			-pa $(abs_top_builddir)\/src\/mochiweb \
+			-pa $(abs_top_builddir)\/src\/webmachine|g" \
 	    -e "s|%localconfdir%|$(abs_top_builddir)/etc/couchdb|g" \
 	    -e "s|%localstatelogdir%|$(abs_top_builddir)/tmp/log|g" \
 	    -e "s|%localstatelibdir%|$(abs_top_builddir)/tmp/lib|g" \
