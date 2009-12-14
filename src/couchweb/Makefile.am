@@ -24,6 +24,7 @@ source_files = \
 	couchweb_app.erl \
 	couchweb_res_all_dbs.erl \
 	couchweb_res_info.erl \
+	couchweb_res_uuids.erl \
 	couchweb_sup.erl
 
 EXTRA_DIST = $(source_files)
@@ -33,6 +34,7 @@ compiled_files = \
     couchweb_app.beam \
 	couchweb_res_all_dbs.beam \
 	couchweb_res_info.beam \
+	couchweb_res_uuids.beam \
 	couchweb_sup.beam
 
 %.beam: %.erl
