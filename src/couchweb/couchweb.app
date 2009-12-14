@@ -16,6 +16,7 @@
   {modules, [
 	     couchweb,
 	     couchweb_app,
+         couchweb_res_all_dbs,
          couchweb_res_info,
 	     couchweb_sup
 	    ]},
