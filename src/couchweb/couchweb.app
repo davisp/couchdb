@@ -18,6 +18,7 @@
 	     couchweb_app,
          couchweb_res_all_dbs,
          couchweb_res_info,
+         couchweb_res_utils,
          couchweb_res_uuids,
 	     couchweb_sup
 	    ]},
