@@ -23,10 +23,12 @@ source_files = \
 	couchweb.erl \
 	couchweb_app.erl \
 	couchweb_res_all_dbs.erl \
+	couchweb_res_db.erl \
 	couchweb_res_info.erl \
 	couchweb_res_utils.erl \
 	couchweb_res_uuids.erl \
-	couchweb_sup.erl
+	couchweb_sup.erl \
+	couchweb_utils.erl
 
 EXTRA_DIST = $(source_files)
 
@@ -34,10 +36,12 @@ compiled_files = \
     couchweb.beam \
     couchweb_app.beam \
 	couchweb_res_all_dbs.beam \
+	couchweb_res_db.beam \
 	couchweb_res_info.beam \
 	couchweb_res_utils.beam \
 	couchweb_res_uuids.beam \
-	couchweb_sup.beam
+ 	couchweb_sup.beam \
+ 	couchweb_utils.beam
 
 %.beam: %.erl
 	$(ERLC) -I$(top_srcdir)/src/ $(ERLC_FLAGS) $<
