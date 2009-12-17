@@ -24,15 +24,15 @@
 init([]) ->
     {ok, undefined}.
     
-content_types_provided(Wrq, Ctx) ->
+content_types_provided(Req, Ctx) ->
     {[
         {"application/json", to_json},
         {"text/plain", to_text}
-    ], Wrq, Ctx}.
+    ], Req, Ctx}.
 
-to_json(Wrq, Ctx) ->
+to_json(Req, Ctx) ->
     {ok, DbNames} = couch_server:all_databases(),
-    {?JSON_ENCODE(DbNames) ++ <<"\n">>, Wrq, Ctx}.
+    {?JSON_ENCODE(DbNames) ++ <<"\n">>, Req, Ctx}.
 
-to_text(Wrq, Ctx) ->
-    to_json(Wrq, Ctx).
+to_text(Req, Ctx) ->
+    to_json(Req, Ctx).

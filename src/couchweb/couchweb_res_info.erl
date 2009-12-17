@@ -24,18 +24,18 @@
 init([]) ->
     {ok, undefined}.
     
-content_types_provided(Wrq, Ctx) ->
+content_types_provided(Req, Ctx) ->
     {[
         {"application/json", to_json},
         {"text/plain", to_text}
-    ], Wrq, Ctx}.
+    ], Req, Ctx}.
 
-to_json(Wrq, Ctx) ->
+to_json(Req, Ctx) ->
     Body = {[
         {couchdb, <<"Welcome">>},
         {version, list_to_binary(couch_server:get_version())}
     ]},
-    {?JSON_ENCODE(Body) ++ <<"\n">>, Wrq, Ctx}.
+    {?JSON_ENCODE(Body) ++ <<"\n">>, Req, Ctx}.
 
-to_text(Wrq, Ctx) ->
-    to_json(Wrq, Ctx).
+to_text(Req, Ctx) ->
+    to_json(Req, Ctx).

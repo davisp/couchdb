@@ -25,24 +25,24 @@
 init([]) ->
     {ok, undefined}.
     
-content_types_provided(Wrq, Ctx) ->
+content_types_provided(Req, Ctx) ->
     {[
         {"application/json", to_json},
         {"text/plain", to_text}
-    ], Wrq, Ctx}.
+    ], Req, Ctx}.
 
-malformed_request(Wrq, _) ->
-    CountStr = wrq:get_qs_value("count", "1", Wrq),
+malformed_request(Req, _) ->
+    CountStr = wrq:get_qs_value("count", "1", Req),
     case (catch list_to_integer(CountStr)) of
         Count when is_integer(Count) andalso Count > 0 ->
-            {false, Wrq, {count, Count}};
+            {false, Req, {count, Count}};
         _ ->
-            {true, Wrq, undefined}
+            {true, Req, undefined}
     end.
 
-to_json(Wrq, {count, Count}) ->
+to_json(Req, {count, Count}) ->
     UUIDs = [couch_uuids:new() || _ <- lists:seq(1, Count)],
-    {?JSON_ENCODE(UUIDs) ++ <<"\n">>, Wrq, undefined}.
+    {?JSON_ENCODE(UUIDs) ++ <<"\n">>, Req, undefined}.
 
-to_text(Wrq, Ctx) ->
-    to_json(Wrq, Ctx).
+to_text(Req, Ctx) ->
+    to_json(Req, Ctx).
