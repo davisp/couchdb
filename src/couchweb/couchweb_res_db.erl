@@ -63,9 +63,9 @@ resource_exists(Req, Ctx) ->
     case couch_db:open(?l2b(DbName),  [{user_ctx, UserCtx}]) of
         {ok, Db} ->
             {true, Req, Ctx#ctx{db=Db}};
-        _ ->
-            {false, Req, Ctx}
-            %couchweb_utils:error_response(Req, Ctx, Error)
+        Error ->
+            Req2 = couchweb_utils:error_response(Error, Req),
+            {false, Req2, Ctx}
     end.
 
 is_conflict(Req, Ctx) ->
@@ -74,7 +74,8 @@ is_conflict(Req, Ctx) ->
     case couch_db:open(?l2b(DbName),  [{user_ctx, UserCtx}]) of
         {ok, Db} ->
             couch_db:close(Db),
-            {true, Req, Ctx};
+            Req2 = couchweb_utils:error_response({error, database_exists}, Req),
+            {true, Req2, Ctx};
         _ ->
             {false, Req, Ctx}
     end.
@@ -84,15 +85,11 @@ delete_resource(Req, Ctx) ->
     UserCtx =  #user_ctx{},
     case couch_server:delete(?l2b(DbName), [{user_ctx, UserCtx}]) of
     ok ->
-        Req2 = wrq:append_to_response_body(?JSON_ENCODE({[{ok, true}]}), Req),
+        Req2 = couchweb_utils:json_body({[{ok, true}]}, Req),
         {true, Req2, Ctx};
     Error ->
-        {Code, Msg, Reason} = couchweb_utils:error_info(Error),
-        {
-            {halt, Code},
-            wrq:append_to_response_body("~p, ~p.~n", [Msg, Reason], Req), 
-            Ctx
-        }
+        Req2 = couchweb_utils:error_response(Error, Req),
+        {false, Req2, Ctx}
     end.
 
 delete_completed(Req, Ctx) ->
@@ -106,16 +103,12 @@ from_json(Req, Ctx) ->
         {ok, Db} ->
             couch_db:close(Db),
             DocUrl = "/" ++ couch_util:url_encode(DbName),
-            Body = ?JSON_ENCODE({[{ok, true}]}),
-            Req2 = wrq:append_to_response_body(Body, Req),
-            {true, wrq:set_resp_header("Location", DocUrl, Req2), Ctx};
+            Req2 = couchweb_utils:json_body({[{ok, true}]}, Req),
+            Req3 = wrq:set_resp_header("Location", DocUrl, Req2),
+            {true, Req3, Ctx};
         Error ->
-            {Code, Msg, Reason} = couchweb_utils:error_info(Error),
-            {
-                {halt, Code},
-                wrq:append_to_response_body("~p, ~p.~n", [Msg, Reason], Req), 
-                Ctx
-            }
+            Req2 = couchweb_utils:error_response(Req, Error),
+            {false, Req2, Ctx}
     end.
 
 to_json(Req, Ctx=#ctx{db=Db}) ->

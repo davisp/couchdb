@@ -12,17 +12,20 @@
 
 -module(couchweb_utils).
 
--export([doc_etag/1, error_response/3, error_info/1]).
+-export([doc_etag/1, json_body/2, error_response/2, error_info/1]).
 
 -include_lib("couchdb/couch_db.hrl").
 
 doc_etag(#doc{revs={Start, [DiskRev|_]}}) ->
     "\"" ++ ?b2l(couch_doc:rev_to_str({Start, DiskRev})) ++ "\"".
 
-error_response(Req, Ctx, Error) ->
-    {Code, Type, Reason} = error_info(Error),
-    Body = ?JSON_ENCODE({[{error, Type}, {reason, Reason}]}),
-    {{halt, Code}, wrq:set_resp_body(Body, Req), Ctx}.
+json_body(Json, Req) ->
+    wrq:set_resp_body(?JSON_ENCODE(Json) ++ <<"\n">>, Req).
+
+error_response(Error, Req) ->
+    {_Code, Type, Reason} = error_info(Error),
+    Body = ?JSON_ENCODE({[{error, Type}, {reason, Reason}]}) ++ <<"\n">>,
+    wrq:set_resp_body(Body, Req).
 
 error_info({Error, Reason}) when is_list(Reason) ->
     error_info({Error, ?l2b(Reason)});
