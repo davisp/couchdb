@@ -41,40 +41,79 @@ start_link() ->
 stop() ->
     exit(whereis(couch_query_servers), normal).
 
-start_doc_map(Lang, Functions) ->
-    Proc = get_os_process(Lang),
-    lists:foreach(fun(FunctionSource) ->
-        true = proc_prompt(Proc, [<<"add_fun">>, FunctionSource])
-    end, Functions),
-    {ok, Proc}.
+map_support() ->
+    FileName = filename:join([couch_util:priv_dir(), "map_support.js"]),
+    case js_cache:fetch(FileName) of
+        none ->
+            {ok, Contents} = file:read_file(FileName),
+            js_cache:store(FileName, Contents),
+            Contents;
+        Contents ->
+            Contents
+    end.
 
-map_docs(Proc, Docs) ->
-    % send the documents
+start_doc_map(_Lang, Functions) ->
+    {ok, Port} = js_driver:new(),
+    ok = js_driver:define_js(Port, <<"map_support.js">>, map_support(), 5000),
+    lists:foreach(fun(FuncSource) ->
+        Source = <<"map_funs.push(", FuncSource/binary, ");">>,
+        ok = js_driver:define_js(Port, Source)
+    end, Functions),
+    {ok, Port}.
+
+map_docs(Port, Docs) ->
     Results = lists:map(
         fun(Doc) ->
             Json = couch_doc:to_json_obj(Doc, []),
-
-            FunsResults = proc_prompt(Proc, [<<"map_doc">>, Json]),
-            % the results are a json array of function map yields like this:
-            % [FunResults1, FunResults2 ...]
-            % where funresults is are json arrays of key value pairs:
-            % [[Key1, Value1], [Key2, Value2]]
-            % Convert the key, value pairs to tuples like
-            % [{Key1, Value1}, {Key2, Value2}]
+            {ok, Results} = js:call(Port, <<"map_doc">>, [Json]),
             lists:map(
                 fun(FunRs) ->
                     [list_to_tuple(FunResult) || FunResult <- FunRs]
                 end,
-            FunsResults)
+            Results)
         end,
         Docs),
     {ok, Results}.
 
-
 stop_doc_map(nil) ->
     ok;
-stop_doc_map(Proc) ->
-    ok = ret_os_process(Proc).
+stop_doc_map(Port) ->
+    js_driver:destroy(Port).
+
+%start_doc_map(Lang, Functions) ->
+%    Proc = get_os_process(Lang),
+%    lists:foreach(fun(FunctionSource) ->
+%        true = proc_prompt(Proc, [<<"add_fun">>, FunctionSource])
+%    end, Functions),
+%    {ok, Proc}.
+%
+%map_docs(Proc, Docs) ->
+%    % send the documents
+%    Results = lists:map(
+%        fun(Doc) ->
+%            Json = couch_doc:to_json_obj(Doc, []),
+%
+%            FunsResults = proc_prompt(Proc, [<<"map_doc">>, Json]),
+%            % the results are a json array of function map yields like this:
+%            % [FunResults1, FunResults2 ...]
+%            % where funresults is are json arrays of key value pairs:
+%            % [[Key1, Value1], [Key2, Value2]]
+%            % Convert the key, value pairs to tuples like
+%            % [{Key1, Value1}, {Key2, Value2}]
+%            lists:map(
+%                fun(FunRs) ->
+%                    [list_to_tuple(FunResult) || FunResult <- FunRs]
+%                end,
+%            FunsResults)
+%        end,
+%        Docs),
+%    {ok, Results}.
+%
+%
+%stop_doc_map(nil) ->
+%    ok;
+%stop_doc_map(Proc) ->
+%    ok = ret_os_process(Proc).
 
 group_reductions_results([]) ->
     [];

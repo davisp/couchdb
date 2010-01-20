@@ -61,6 +61,10 @@ src/couchdb/priv/couch_icu_driver.la
 src/couchdb/priv/couchjs
 src/couchdb/priv/couchspawnkillable
 src/couchdb/priv/stat_descriptions.cfg
+src/erlang_js/.libs/*
+src/erlang_js/.deps/*
+src/erlang_js/erlang_js.app
+src/erlang_js/priv/spidermonkey_drv.so
 src/erlang-oauth/oauth.app
 src/ibrowse/ibrowse.app
 src/mochiweb/mochiweb.app
