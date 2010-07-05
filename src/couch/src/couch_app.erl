@@ -19,6 +19,7 @@
 -export([start/2, stop/1]).
 
 start(_Type, DefaultIniFiles) ->
+    catch erlang:system_flag(scheduler_bind_type, default_bind),
     IniFiles = get_ini_files(DefaultIniFiles),
     case start_apps([crypto, public_key, sasl, inets, oauth, ssl, ibrowse, mochiweb, os_mon]) of
     ok ->
