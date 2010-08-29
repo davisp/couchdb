@@ -44,8 +44,8 @@ update(Owner, Group) ->
         [{max_size, 100000}, {max_items, 500}]),
     Self = self(),
     ViewEmptyKVs = [{View, []} || View <- Group2#group.views],
-    spawn_link(fun() -> do_maps(Group, MapQueue, WriteQueue, ViewEmptyKVs) end),
-    spawn_link(fun() -> do_writes(Self, Owner, Group2, WriteQueue, Seq == 0) end),
+    spawn_link(fun() -> do_maps(Group2, MapQueue, WriteQueue, ViewEmptyKVs, false) end),
+    spawn_link(fun() -> start_writes(Self, Owner, WriteQueue, Seq == 0) end),
     % compute on all docs modified since we last computed.
     TotalChanges = couch_db:count_changes_since(Db, Seq),
     % update status every half second
@@ -105,9 +105,11 @@ purge_index(#group{db=Db, views=Views, id_btree=IdBtree}=Group) ->
                 View
             end
         end, Views),
-    Group#group{id_btree=IdBtree2,
-            views=Views2,
-            purge_seq=couch_db:get_purge_seq(Db)}.
+    Group#group{
+        id_btree=IdBtree2,
+        views=Views2,
+        purge_seq=couch_db:get_purge_seq(Db)
+    }.
 
 
 load_doc(Db, DocInfo, MapQueue, DocOpts, IncludeDesign) ->
@@ -124,11 +126,16 @@ load_doc(Db, DocInfo, MapQueue, DocOpts, IncludeDesign) ->
         end
     end.
     
-do_maps(Group, MapQueue, WriteQueue, ViewEmptyKVs) ->
+do_maps(Group, MapQueue, WriteQueue, ViewEmptyKVs, GroupSent) ->
     case couch_work_queue:dequeue(MapQueue) of
     closed ->
-        couch_work_queue:close(WriteQueue),
-        couch_view_server:ret_server(Group#group.query_server);
+        % We may not need to map any docs, but we still need to
+        % pass the group before closing.
+        case GroupSent of
+            false -> couch_work_queue:queue(WriteQueue, {group, Group});
+            _ -> ok
+        end,
+        couch_work_queue:close(WriteQueue);
     {ok, Queue} ->
         Docs = [Doc || {_,#doc{deleted=false}=Doc} <- Queue],
         DelKVs = [{Id, []} || {_, #doc{deleted=true,id=Id}} <- Queue],
@@ -136,14 +143,27 @@ do_maps(Group, MapQueue, WriteQueue, ViewEmptyKVs) ->
         {Group1, Results} = view_compute(Group, Docs),
         {ViewKVs, DocIdViewIdKeys} = view_insert_query_results(Docs,
                     Results, ViewEmptyKVs, DelKVs),
+
+        % We have to send the group after we open up the view server.
+        case GroupSent of
+            false -> couch_work_queue:queue(WriteQueue, {group, Group1});
+            _ -> ok
+        end,
+
         couch_work_queue:queue(WriteQueue, {LastSeq, ViewKVs, DocIdViewIdKeys}),
-        do_maps(Group1, MapQueue, WriteQueue, ViewEmptyKVs)
+        do_maps(Group1, MapQueue, WriteQueue, ViewEmptyKVs, true)
     end.
+
+% Wait for the mapper process to send us the group with the open
+% query server.
+start_writes(Parent, Owner, WriteQueue, InitialBuild) ->
+    {ok, [{group, Group}]} = couch_work_queue:dequeue(WriteQueue, 1),
+    do_writes(Parent, Owner, Group, WriteQueue, InitialBuild).
 
 do_writes(Parent, Owner, Group, WriteQueue, InitialBuild) ->
     case couch_work_queue:dequeue(WriteQueue) of
     closed ->
-        Parent ! {new_group, Group};
+        Parent ! {new_group, close_view_server(Group)};
     {ok, Queue} ->
         {NewSeq, ViewKeyValues, DocIdViewIdKeys} = lists:foldl(
             fun({Seq, ViewKVs, DocIdViewIdKeys}, nil) ->
@@ -160,8 +180,13 @@ do_writes(Parent, Owner, Group, WriteQueue, InitialBuild) ->
         Group2 = write_changes(Group, ViewKeyValues, DocIdViewIdKeys, NewSeq,
                 InitialBuild),
         case Owner of
-        nil -> ok;
-        _ -> ok = gen_server:cast(Owner, {partial_update, Parent, Group2})
+            nil ->
+                ok;
+            _ ->
+                % Strip view server references before sending to
+                % the group server.
+                Group3 = strip_view_server(Group2),
+                ok = gen_server:cast(Owner, {partial_update, Parent, Group3})
         end,
         do_writes(Parent, Owner, Group2, WriteQueue, InitialBuild)
     end.
@@ -202,18 +227,10 @@ view_insert_doc_query_results(#doc{id=DocId}=Doc, [ResultKVs|RestResults], [{Vie
 
 view_compute(Group, []) ->
     {Group, []};
-view_compute(#group{def_lang=DefLang, query_server=QueryServerIn}=Group, Docs) ->
-    {ok, QueryServer} =
-    case QueryServerIn of
-    nil -> % doc map not started
-        Definitions = [View#view.def || View <- Group#group.views],
-        couch_view_server:get_server(DefLang, Definitions, []);
-    _ ->
-        {ok, QueryServerIn}
-    end,
-    {ok, Results} = couch_view_server:map(QueryServer, Docs),
-    {Group#group{query_server=QueryServer}, Results}.
-
+view_compute(Group, Docs) ->
+    {Group2, Server} = get_view_server(Group),
+    {ok, Results} = couch_view_server:map(Server, Docs),
+    {Group2, Results}.
 
 
 write_changes(Group, ViewKeyValuesToAdd, DocIdViewIdKeys, NewSeq, InitialBuild) ->
@@ -251,3 +268,82 @@ write_changes(Group, ViewKeyValuesToAdd, DocIdViewIdKeys, NewSeq, InitialBuild) 
     Group#group{views=Views2, current_seq=NewSeq, id_btree=IdBtree2}.
 
 
+% Prepare a view server for map/reduce work. Compile the necessary
+% functions and update the btree's that we're going to be writing
+% to. We store a copy of the reduce function that was generated in
+% couch_view_group:init_group/4 so that we can replace this version
+% when we send the group back. This way view readers aren't using
+% the same view server process that we are.
+get_view_server(#group{view_server=Server}=Group) when Server =/= nil ->
+    {Group, Server};
+get_view_server(Group) ->
+    #group{
+        def_lang=Lang,
+        views=Views,
+        view_server=nil
+    } = Group,
+
+    % Gather functions to compile.
+    {MapFuns, RedFuns} = lists:foldl(fun(View, {MapAcc, RedAcc}) ->
+        ViewId = View#view.id_num,
+        MapFun = View#view.def,
+        RedFuns = [FunSrc || {_Name, FunSrc} <- View#view.reduce_funs],
+        {[MapFun | MapAcc], [[ViewId, RedFuns] | RedAcc]}
+    end, {[], []}, Views),
+    
+    RevMapFuns = lists:reverse(MapFuns), % Order for maps does matter.
+    
+    {ok, Server} = couch_view_server:get_server(Lang, RevMapFuns, RedFuns),
+    
+    % Rebuild the reduce functions
+    Views2 = lists:map(fun(View) ->
+        #view{
+            id_num=ViewId,
+            reduce_funs=RedFuns2,
+            btree=Btree
+        } = View,
+        
+        FunSrcs = [FunSrc || {_Name, FunSrc} <- RedFuns2],
+        ReduceFun = fun
+            (reduce, KVs) ->
+                KVs2 = couch_view:expand_dups(KVs,[]),
+                KVs3 = couch_view:detuple_kvs(KVs2,[]),
+                {ok, Reduced} = couch_view_server:reduce(Server, ViewId, FunSrcs, KVs3),
+                {length(KVs3), Reduced};
+            (rereduce, Reds) ->
+                Count = lists:sum([Count0 || {Count0, _} <- Reds]),
+                UserReds = [UserRedsList || {_, UserRedsList} <- Reds],
+                {ok, Reduced} = couch_view_server:rereduce(Server, ViewId, FunSrcs, UserReds),
+                {Count, Reduced}
+        end,
+
+        OldRed = couch_btree:get_reduce(Btree),
+        Btree2 = couch_btree:set_options(Btree, [{reduce, ReduceFun}]),
+
+        View#view{btree=Btree2, native_red_fun=OldRed}
+    end, Views),
+
+    {Group#group{views=Views2, view_server=Server}, Server}.
+    
+% Before sending a group back to the group server, we strip
+% any references to the view server so we don't leak any
+% handles to it.
+strip_view_server(#group{views=Views}=Group) ->
+    Views2 = lists:map(fun(View) ->
+        #view{
+            btree=Btree,
+            native_red_fun=RedFun
+        } = View,
+        Btree2 = couch_btree:set_options(Btree, [{reduce, RedFun}]),
+        View#view{btree=Btree2}
+    end, Views),
+    Group#group{view_server=nil, views=Views2}.
+
+% We finished updating the view at the end of do_writes. Now
+% we close the view and strip references before sending back.
+close_view_server(#group{view_server=nil}=Group) ->
+    % We never started a view server, nothing to release.
+    Group;
+close_view_server(#group{view_server=Server}=Group) ->
+    couch_view_server:ret_server(Server),
+    strip_view_server(Group#group{view_server=nil}).

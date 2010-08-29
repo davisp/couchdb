@@ -233,6 +233,7 @@
     current_seq=0,
     purge_seq=0,
     query_server=nil,
+    view_server=nil,
     waiting_delayed_commit=nil
     }).
 
@@ -242,6 +243,7 @@
     def,
     btree=nil,
     reduce_funs=[],
+    native_red_fun,
     options=[]
     }).
 

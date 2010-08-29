@@ -39,7 +39,7 @@
 
 -export([is_lightweight/0]).
 -export([get_server/3, ret_server/1]).
--export([map/2, reduce/2, rereduce/2]).
+-export([map/2, reduce/3, rereduce/3]).
 
 -include("couch_db.hrl").
 
@@ -47,18 +47,20 @@ is_lightweight() ->
     true.
 
 get_server(_Arg, Maps, Reds) ->
-    put(map_funs, lists:map(fun(Src) -> compile(map, Src) end, Maps)),
-    put(red_funs, lists:map(fun(Src) -> compile(red, Src) end, Reds)),
-    {ok, nil}.
+    MapFuns = [compile(map, MapSrc) || MapSrc <- Maps],
+    RedFuns = lists:map(fun([ViewId, RedSrcs]) ->
+        {ViewId, [compile(red, RedSrc) || RedSrc <- RedSrcs]}
+    end, Reds),
+    {ok, {MapFuns, RedFuns}}.
 
 ret_server(_) ->
     ok.
 
-map(nil, Docs) ->
+map({MapFuns, _}, Docs) ->
     Results = lists:map(fun(Doc) ->
         Json = to_binary(couch_doc:to_json_obj(Doc, [])),
 
-        FunsResults = lists:map(fun(Fun) -> Fun(Json) end, get(map_funs)),
+        FunsResults = lists:map(fun(Fun) -> Fun(Json) end, MapFuns),
         % the results are a json array of function map yields like this:
         % [FunResults1, FunResults2 ...]
         % where funresults is are json arrays of key value pairs:
@@ -71,20 +73,22 @@ map(nil, Docs) ->
     end, Docs),
     {ok, Results}.
 
-reduce(nil, KVs) ->
+reduce({_, RedFuns}, ViewId, KVs) ->
+    ViewReds = proplists:get_value(ViewId, RedFuns),
     {Keys, Vals} =
     lists:foldl(fun([K, V], {KAcc, VAcc}) ->
         {[K | KAcc], [V | VAcc]}
     end, {[], []}, KVs),
-    run_reduce(lists:reverse(Keys), lists:reverse(Vals), false).
+    run_reduce(ViewReds, lists:reverse(Keys), lists:reverse(Vals), false).
 
-rereduce(nil, Vals) ->
-    run_reduce(null, Vals, true).
+rereduce({_, RedFuns}, ViewId, Vals) ->
+    ViewReds = proplists:get_value(ViewId, RedFuns),
+    run_reduce(ViewReds, null, Vals, true).
 
-run_reduce(Keys, Vals, ReReduce) ->
+run_reduce(RedFuns, Keys, Vals, ReReduce) ->
     Reds = lists:map(fun(Fun) ->
         Fun(Keys, Vals, ReReduce)
-    end, get(red_funs)),
+    end, RedFuns),
     {ok, Reds}.
 
 % thanks to erlview, via:

@@ -14,7 +14,7 @@
 
 -export([is_lightweight/0]).
 -export([get_server/3, ret_server/1]).
--export([map/2, reduce/2, rereduce/2]).
+-export([map/2, reduce/3, rereduce/3]).
 
 -include("couch_db.hrl").
 
@@ -58,11 +58,11 @@ map(Server, Docs) ->
     end, Docs),
     {ok, Results}.
 
-reduce(Server, KVs) ->
-    call(Server, <<"reduce">>, [KVs, false]).
+reduce(Server, ViewId, KVs) ->
+    call(Server, <<"reduce">>, [ViewId, KVs]).
 
-rereduce(Server, Vals) ->
-    call(Server, <<"rereduce">>, [Vals, true]).
+rereduce(Server, ViewId, Vals) ->
+    call(Server, <<"rereduce">>, [ViewId, Vals]).
 
 call(Ctx, Name, Args) ->
     case emonk:call(Ctx, Name, Args) of

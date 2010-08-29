@@ -133,9 +133,13 @@ var compile = function(maps, reds) {
     for(var i = 0; i < maps.length; i++) {
       __map_funs[i] = compile_function(maps[i]);
     }
-    __red_funs = new Array(reds.length);
+    __red_funs = {};
     for(var i = 0; i < reds.length; i++) {
-      __red_funs[i] = compile_function(reds[i]);
+      var view_id = reds[i][0];
+      __red_funs[view_id] = new Array(reds[i][1].length);
+      for(var j = 0; j < reds[i][1].length; j++) {
+        __red_funs[view_id][j] = compile_function(reds[i][1][j]);
+      }
     }
     return respond(true);
   } catch(e) {
@@ -176,16 +180,16 @@ var check_reductions = function(reductions) {
   }
 }
 
-var reduce = function(kvs) {
+var reduce = function(view_id, kvs) {
   var keys = new Array(kvs.length);
   var vals = new Array(kvs.length);
   for(var i = 0; i < kvs.length; i++) {
       keys[i] = kvs[i][0];
       vals[i] = kvs[i][1];
   }
-  var reductions = new Array(__red_funs.length);
-  for(var i = 0; i < __red_funs.length; i++) {
-      reductions[i] = __red_funs[i](keys, vals, false);
+  var reductions = new Array(__red_funs[view_id].length);
+  for(var i = 0; i < __red_funs[view_id].length; i++) {
+      reductions[i] = __red_funs[view_id][i](keys, vals, false);
   }
   if(keys.length > 1) {
     return respond(check_reductions(reductions));
@@ -194,10 +198,10 @@ var reduce = function(kvs) {
   }
 }
 
-var rereduce = function(vals) {
-  var reductions = new Array(__red_funs.length);
-  for(var i = 0; i < __red_funs.length; i++) {
-    reductions[i] = __red_funs[i](null, vals[i], true);
+var rereduce = function(view_id, vals) {
+  var reductions = new Array(__red_funs[view_id].length);
+  for(var i = 0; i < __red_funs[view_id].length; i++) {
+    reductions[i] = __red_funs[view_id][i](null, vals[i], true);
   }
   if(vals.length > 1) {
     return respond(check_reductions(reductions));

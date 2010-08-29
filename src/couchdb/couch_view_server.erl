@@ -14,7 +14,7 @@
 
 -export([is_lightweight/1]).
 -export([get_server/3, ret_server/1]).
--export([map/2, reduce/3, rereduce/3]).
+-export([map/2, reduce/4, rereduce/4]).
 
 % Used to determine if its ok to hold a handle
 % to the server for an extended period of time.
@@ -26,9 +26,12 @@ is_lightweight(Lang) ->
 
 get_server(Lang, Maps, Reds) ->
     {Module, Arg} = get_module_arg(Lang),
-    {OSReds, _} = lists:partition(fun
-        (<<"_", _/binary>>) -> false;
-        (_) -> true
+    OSReds = lists:map(fun([ViewId, RedFuns]) ->
+        {Keepers, _} = lists:partition(fun
+            (<<"_", _/binary>>) -> false;
+            (_) -> true
+        end, RedFuns),
+        [ViewId, Keepers]
     end, Reds),
     {ok, Server} = Module:get_server(Arg, Maps, OSReds),
     {ok, {Module, Server}}.
@@ -52,31 +55,31 @@ map({Module, Server}, Docs) ->
     Module:map(Server, Docs).
 
 
-reduce(_Lang, [], _KVs) ->
+reduce(_Lang, _ViewId, [], _KVs) ->
     {ok, []};
-reduce({Module, Server}, RedSrcs, KVs) ->
+reduce({Module, Server}, ViewId, RedSrcs, KVs) ->
     {_OSFuns, BIFuns} = lists:partition(fun
         (<<"_", _/binary>>) -> false;
         (_OSFun) -> true
     end, RedSrcs),
-    {ok, OSResults} = Module:reduce(Server, KVs),
+    {ok, OSResults} = Module:reduce(Server, ViewId, KVs),
     {ok, BIResults} = builtin_reduce(reduce, BIFuns, KVs, []),
     Resp = recombine(RedSrcs, OSResults, BIResults, []),
     Resp;
-reduce(Lang, RedSrcs, KVs) ->
+reduce(Lang, ViewId, RedSrcs, KVs) ->
     % A heavy view server requires us to not keep a
     % handle to it for very long.
-    {ok, {Module, Server}} = get_server(Lang, [], RedSrcs),
-    try reduce({Module, Server}, RedSrcs, KVs) of
+    {ok, {Module, Server}} = get_server(Lang, [], [[ViewId, RedSrcs]]),
+    try reduce({Module, Server}, ViewId, RedSrcs, KVs) of
         {ok, Results} -> {ok, Results}
     after
         Module:ret_server(Server)
     end.
 
 
-rereduce(_Spec, [], _ReducedValues) ->
+rereduce(_Spec, _ViewId, [], _ReducedValues) ->
     {ok, []};
-rereduce({Module, Server}, RedSrcs, ReducedValues) ->
+rereduce({Module, Server}, ViewId, RedSrcs, ReducedValues) ->
     Grouped = group_reductions_results(ReducedValues),
     {OSFuns, BIFuns} = lists:partition(fun
         ({<<"_", _/binary>>, _}) -> false;
@@ -84,7 +87,7 @@ rereduce({Module, Server}, RedSrcs, ReducedValues) ->
     end, lists:zip(RedSrcs, Grouped)),
     % Gather Value Lists
     OSValLists = lists:map(fun({_Fun, Vals}) -> Vals end, OSFuns),
-    {ok, OSResults} = Module:rereduce(Server, OSValLists),
+    {ok, OSResults} = Module:rereduce(Server, ViewId, OSValLists),
     BIResults = lists:map(fun({Fun, Vals}) ->
         % Make the rereduce values look like KVs
         % for the builtins.
@@ -94,11 +97,11 @@ rereduce({Module, Server}, RedSrcs, ReducedValues) ->
     end, BIFuns),
     Resp = recombine(RedSrcs, OSResults, BIResults, []),
     Resp;
-rereduce(Lang, RedSrcs, ReducedValues) ->
+rereduce(Lang, ViewId, RedSrcs, ReducedValues) ->
     % A heavy view server requires us to not keep
     % a handle to it for very long.
-    {ok, {Module, Server}} = get_server(Lang, [], RedSrcs),
-    try rereduce({Module, Server}, RedSrcs, ReducedValues) of
+    {ok, {Module, Server}} = get_server(Lang, [], [[ViewId, RedSrcs]]),
+    try rereduce({Module, Server}, ViewId, RedSrcs, ReducedValues) of
         {ok, Results} -> {ok, Results}
     after
         Module:ret_server(Server)

@@ -17,7 +17,7 @@
 
 -export([is_lightweight/0]).
 -export([get_server/3, ret_server/1]).
--export([map/2, reduce/2, rereduce/2]).
+-export([map/2, reduce/3, rereduce/3]).
 
 -export([start_link/0]).
 -export([init/1, terminate/2, code_change/3]).
@@ -64,12 +64,12 @@ map(Pid, Docs) ->
     end, Docs),
     {ok, Results}.
 
-reduce(Pid, KVs) ->
-    [true, Reds] = couch_os_process:prompt(Pid, [<<"reduce">>, KVs]),
+reduce(Pid, ViewId, KVs) ->
+    [true, Reds] = couch_os_process:prompt(Pid, [<<"reduce">>, ViewId, KVs]),
     {ok, Reds}.
 
-rereduce(Pid, Vals) ->
-    [true, Reds] = couch_os_process:prompt(Pid, [<<"rereduce">>, Vals]),
+rereduce(Pid, ViewId, Vals) ->
+    [true, Reds] = couch_os_process:prompt(Pid, [<<"rereduce">>, ViewId, Vals]),
     {ok, Reds}.
 
 % This gen_server is repsonsible for handling the OS level processes that
@@ -87,13 +87,21 @@ init([]) ->
     ok = couch_config:register(CodeChange),
     put(max_pids, ?l2i(couch_config:get("view_server_os", ?MAX_PROCS, "32"))),
     put(idle_pids, ?l2i(couch_config:get("view_server_os", ?IDLE_PROCS, "4"))),
-    Pids = ets:new(?MODULE, [ordered_set, private]),
+    Pids = ets:new(?MODULE, [ordered_set, public]),
+    %spawn_link(fun() -> dump_table(Pids) end),
     {ok, {Pids, []}}.
+
+dump_table(Pids) ->
+    lists:foreach(fun({Pid, _Arg, Status, Client}) ->
+        io:format("~p ~p ~p~n", [Pid, Status, Client])
+    end, ets:tab2list(Pids)),
+    timer:sleep(5000),
+    dump_table(Pids).
 
 terminate(_Reason, {Pids, Waiters}) ->
     Mesg = {error, terminating},
     [catch gen_server:reply(W, Mesg) || {W, _} <- Waiters],
-    [couch_util:shutdown_sync(P) || {P,_} <- ets:tab2list(Pids)],
+    [couch_util:shutdown_sync(P) || {P,_,_,_} <- ets:tab2list(Pids)],
     ok.
 
 handle_call({get_server, Arg}, {Client, _}=From, {Pids, Waiters}) ->
@@ -204,9 +212,9 @@ start_waiters_filt(Pids, {{Client, _}=Dest, Arg}=Waiter) ->
     end.
 
 
-start_process(Pids, {Client, Arg}) ->
+start_process(Pids, {{ClientPid, _}=Client, Arg}) ->
     {ok, Pid} = couch_os_process:start_link(Arg),
-    true = ets:insert(Pids, {Pid, Arg, busy, Client}),
+    true = ets:insert(Pids, {Pid, Arg, busy, ClientPid}),
     return_process(Client, Pid).
 
 return_process(Dest, Pid) ->
