@@ -33,6 +33,9 @@ share/Makefile
 src/couchdb/.deps/*
 src/couchdb/Makefile
 src/couchdb/priv/Makefile
+src/emonk/.deps/*
+src/emonk/.libs/*
+src/emonk/priv/*.so
 src/mochiweb/Makefile
 stamp-h1
 test/.deps/
