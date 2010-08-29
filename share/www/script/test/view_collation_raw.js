@@ -37,12 +37,6 @@ couchTests.view_collation_raw = function(debug) {
   values.push({a:2});
   values.push({b:1});
   values.push({b:2});
-  values.push({b:2, a:1}); // Member order does matter for collation.
-                           // CouchDB preserves member order
-                           // but doesn't require that clients will.
-                           // (this test might fail if used with a js engine
-                           // that doesn't preserve order)
-  values.push({b:2, c:2});
 
   // then arrays. compared element by element until different.
   // Longer arrays sort after their prefixes
@@ -120,4 +114,33 @@ couchTests.view_collation_raw = function(debug) {
     endkey : "b", endkey_docid: "11",
     inclusive_end:false}).rows;
   T(rows[rows.length-1].key == "aa");
+  
+  // Member order does matter for collation.
+  // CouchDB preserves member order
+  // but doesn't require that clients will.
+  // (this test might fail if used with a js engine
+  // that doesn't preserve order)
+  db.deleteDb();
+  db.createDb();
+
+  values = [];
+  values.push({a:1, b:3});
+  values.push({b:2, a:1});
+  values.push({b:2, c:2});
+  values.push({b:3});
+  
+  for(var v in values) {
+    T(db.save({foo: values[v]}).ok);
+  }
+ 
+  designDoc._rev = undefined;
+  T(db.save(designDoc).ok);
+  rows = db.view("test/test").rows;
+  result = 0;
+  for(var i = 0; i < values.length; i++) {
+    if(equals(values[i], rows[i].key)) {
+      result += 1;
+    }
+  }
+  T(result == values.length, "JSON member order isn't preserved.");
 };

@@ -563,13 +563,13 @@ init_group(Db, Fd, #group{def_lang=Lang,views=Views}=
                 fun(reduce, KVs) ->
                     KVs2 = couch_view:expand_dups(KVs,[]),
                     KVs3 = couch_view:detuple_kvs(KVs2,[]),
-                    {ok, Reduced} = couch_query_servers:reduce(Lang, FunSrcs,
+                    {ok, Reduced} = couch_view_server:reduce(Lang, FunSrcs,
                         KVs3),
                     {length(KVs3), Reduced};
                 (rereduce, Reds) ->
                     Count = lists:sum([Count0 || {Count0, _} <- Reds]),
                     UserReds = [UserRedsList || {_, UserRedsList} <- Reds],
-                    {ok, Reduced} = couch_query_servers:rereduce(Lang, FunSrcs,
+                    {ok, Reduced} = couch_view_server:rereduce(Lang, FunSrcs,
                         UserReds),
                     {Count, Reduced}
                 end,

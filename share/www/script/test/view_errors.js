@@ -131,12 +131,14 @@ couchTests.view_errors = function(debug) {
       };
       T(db.save(designDoc3).ok);
 
+      /*
       try {
           db.view("infinite/infinite_loop");
           T(0 == 1);
       } catch(e) {
           T(e.error == "os_process_error");
       }
+      */
 
       // Check error responses for invalid multi-get bodies.
       var path = "/test_suite_db/_design/test/_view/no_reduce";
@@ -153,6 +155,11 @@ couchTests.view_errors = function(debug) {
       T(result.reason == "`keys` member must be a array.");
 
       // if the reduce grows to fast, throw an overflow error
+      for(var i = 0; i < 10; i++) {
+        doc._id = undefined;
+        doc._rev = undefined;
+        T(db.save(doc).ok);
+      }
       var path = "/test_suite_db/_design/testbig/_view/reduce_too_big";
       xhr = CouchDB.request("GET", path);
       T(xhr.status == 500);

@@ -175,20 +175,38 @@ fold_reduce({reduce, NthRed, Lang, #view{btree=Bt, reduce_funs=RedFuns}}, Fun, A
     PreResultPadding = lists:duplicate(NthRed - 1, []),
     PostResultPadding = lists:duplicate(length(RedFuns) - NthRed, []),
     {_Name, FunSrc} = lists:nth(NthRed,RedFuns),
+    
+    % If the view server is lightweight, we pre-compile the reduce
+    % functions to save some time.
+    {ok, Ctx} = case couch_view_server:is_lightweight(Lang) of
+        true -> couch_view_server:get_server(Lang, [], [FunSrc]);
+        _ -> {ok, Lang}
+    end,
+
     ReduceFun =
         fun(reduce, KVs) ->
-            {ok, Reduced} = couch_query_servers:reduce(Lang, [FunSrc], detuple_kvs(expand_dups(KVs, []),[])),
+            {ok, Reduced} = couch_view_server:reduce(Ctx, [FunSrc], detuple_kvs(expand_dups(KVs, []),[])),
             {0, PreResultPadding ++ Reduced ++ PostResultPadding};
         (rereduce, Reds) ->
             UserReds = [[lists:nth(NthRed, UserRedsList)] || {_, UserRedsList} <- Reds],
-            {ok, Reduced} = couch_query_servers:rereduce(Lang, [FunSrc], UserReds),
+            {ok, Reduced} = couch_view_server:rereduce(Ctx, [FunSrc], UserReds),
             {0, PreResultPadding ++ Reduced ++ PostResultPadding}
         end,
     WrapperFun = fun({GroupedKey, _}, PartialReds, Acc0) ->
             {_, Reds} = couch_btree:final_reduce(ReduceFun, PartialReds),
             Fun(GroupedKey, lists:nth(NthRed, Reds), Acc0)
         end,
-    couch_btree:fold_reduce(Bt, WrapperFun, Acc, Options).
+
+    try couch_btree:fold_reduce(Bt, WrapperFun, Acc, Options) of
+        Resp -> Resp
+    after
+        % Return the server if we used it.
+        case couch_view_server:is_lightweight(Ctx) of
+            true -> couch_view_server:ret_server(Ctx);
+            _ -> ok
+        end
+    end.
+        
 
 get_key_pos(_Key, [], _N) ->
     0;

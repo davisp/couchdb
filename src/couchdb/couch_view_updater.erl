@@ -78,7 +78,6 @@ update(Owner, Group) ->
                 NewGroup#group{current_seq=couch_db:get_update_seq(Db)}})
     end.
 
-
 purge_index(#group{db=Db, views=Views, id_btree=IdBtree}=Group) ->
     {ok, PurgedIdsRevs} = couch_db:get_last_purged(Db),
     Ids = [Id || {Id, _Revs} <- PurgedIdsRevs],
@@ -129,7 +128,7 @@ do_maps(Group, MapQueue, WriteQueue, ViewEmptyKVs) ->
     case couch_work_queue:dequeue(MapQueue) of
     closed ->
         couch_work_queue:close(WriteQueue),
-        couch_query_servers:stop_doc_map(Group#group.query_server);
+        couch_view_server:ret_server(Group#group.query_server);
     {ok, Queue} ->
         Docs = [Doc || {_,#doc{deleted=false}=Doc} <- Queue],
         DelKVs = [{Id, []} || {_, #doc{deleted=true,id=Id}} <- Queue],
@@ -208,11 +207,11 @@ view_compute(#group{def_lang=DefLang, query_server=QueryServerIn}=Group, Docs) -
     case QueryServerIn of
     nil -> % doc map not started
         Definitions = [View#view.def || View <- Group#group.views],
-        couch_query_servers:start_doc_map(DefLang, Definitions);
+        couch_view_server:get_server(DefLang, Definitions, []);
     _ ->
         {ok, QueryServerIn}
     end,
-    {ok, Results} = couch_query_servers:map_docs(QueryServer, Docs),
+    {ok, Results} = couch_view_server:map(QueryServer, Docs),
     {Group#group{query_server=QueryServer}, Results}.
 
 
