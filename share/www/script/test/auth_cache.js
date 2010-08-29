@@ -14,6 +14,8 @@ couchTests.auth_cache = function(debug) {
 
   if (debug) debugger;
 
+  restartServer();
+
   // Simple secret key generator
   function generateSecret(length) {
     var tab = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" +
