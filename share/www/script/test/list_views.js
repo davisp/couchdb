@@ -182,7 +182,7 @@ couchTests.list_views = function(debug) {
             '  Send(<<"[">>), ' +
             '  Fun = fun({Row}, Sep) -> ' +
             '    Val = couch_util:get_value(<<"key">>, Row, 23), ' +
-            '    Send(list_to_binary(Sep ++ integer_to_list(Val))), ' +
+            '    Send(list_to_binary(Sep ++ integer_to_list(round(Val)))), ' +
             '    {ok, ","} ' +
             '  end, ' +
             '  {ok, _} = FoldRows(Fun, ""), ' +

@@ -29,6 +29,9 @@ CLEANFILES = $(compiled_files) $(doc_base)
 source_files = \
     couch.erl \
     couch_app.erl \
+    couch_app_server.erl \
+    couch_app_server_emonk.erl \
+    couch_app_server_erlang.erl \
     couch_auth_cache.erl \
     couch_btree.erl \
     couch_changes.erl \
@@ -93,6 +96,9 @@ compiled_files = \
     couch.app \
     couch.beam \
     couch_app.beam \
+    couch_app_server.beam \
+    couch_app_server_emonk.beam \
+    couch_app_server_erlang.beam \
     couch_auth_cache.beam \
     couch_btree.beam \
     couch_changes.beam \

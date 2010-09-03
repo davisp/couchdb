@@ -81,7 +81,7 @@ get_js() ->
     case get(mr_support_js) of
         undefined ->
             JS = read_js(),
-            put(mapred_js, JS),
+            put(mr_support_js, JS),
             JS;
         Else ->
             Else

@@ -21,7 +21,7 @@
 -export([get_nested_json_value/2, json_user_ctx/1]).
 -export([proplist_apply_field/2, json_apply_field/2]).
 -export([to_binary/1, to_integer/1, to_list/1, url_encode/1]).
--export([json_encode/1, json_decode/1]).
+-export([json_encode/1, json_decode/1, json_doc/1]).
 -export([verify/2,simple_call/2,shutdown_sync/1]).
 -export([compressible_att_type/1]).
 -export([get_value/2, get_value/3]).
@@ -370,6 +370,9 @@ json_decode(V) ->
         _Type:_Error ->
             throw({invalid_json,V})
     end.
+
+json_doc(nil) -> null;
+json_doc(Doc) -> couch_doc:to_json_obj(Doc, [revs]).
 
 verify([X|RestX], [Y|RestY], Result) ->
     verify(RestX, RestY, (X bxor Y) bor Result);
