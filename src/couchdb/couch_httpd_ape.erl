@@ -25,7 +25,5 @@ handle_ape_req(#httpd{
     JsonDDoc = couch_util:json_doc(DDoc),
     {ok, Pid} = couch_ape_server:get_context(DbName, DDocId, DDocRev, JsonDDoc),
 
-    io:format("Handling ape request: ~p~n", [{DbName, DDocId, DDocRev, JsonDDoc}]),
     {ok, ExtResp} = couch_ape_context:handle_request(Pid, Req, Db),
-    io:format("ExtResp: ~p", [ExtResp]),
     couch_httpd_external:send_external_response(Req, ExtResp).
