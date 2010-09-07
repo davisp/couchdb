@@ -209,7 +209,10 @@ jserl_evalcx(JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval)
     }
     else
     {
-        JS_EvaluateUCScript(subcx, sandbox, src, srclen, NULL, 0, rval);
+        if(!JS_EvaluateUCScript(subcx, sandbox, src, srclen, NULL, 0, rval))
+        {
+            goto done;
+        }
     }
     
     ret = JS_TRUE;
