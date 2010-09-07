@@ -24,21 +24,22 @@ var init_req = function(reqid, req) {
   ctx.sandbox.log = log;
 
   ctx.sandbox.open_doc = function(docid, options) {
-    ctx.requests.push(["open_doc", docid, options]);
+    ctx.requests.push(["open_doc", [docid], options]);
   };
     
   ctx.sandbox.save_doc = function(doc, options) {
-    ctx.requests.push(["save_doc", docid, options]);
+    ctx.requests.push(["save_doc", [doc], options]);
   };
 
-  ctx.sandbox.delete_doc = function(docid, options) {
-    ctx.requests.push(["delete_doc", docid, options]);
+  ctx.sandbox.delete_doc = function(doc, options) {
+    ctx.requests.push(["delete_doc", [doc], options]);
   };
 
   ctx.sandbox.respond = function(resp) {
     ctx.requests.push(["response", resp]);
   };
 
+  eval(ddoc.app);
   ctx.app = erlang.evalcx(ddoc.app, ctx.sandbox);
   if(typeof ctx.app !== "function") {
     throw("Invalid function: " + ddoc.app);
@@ -49,20 +50,24 @@ var init_req = function(reqid, req) {
 
 var next_req = function(reqid) {
   var ctx = requests[reqid];
-  req = ctx.current = ctx.requests.shift();
+  if(ctx.requests.length < 1) {
+    return null;
+  }
+  var req = ctx.current = ctx.requests.shift();
   return [req[0], req[1]];
 };
 
 var respond = function(reqid, resp) {
   var ctx = requests[reqid];
-  ctx.current.callback(resp);
+  log(ctx.current.callback === undefined);
+  ctx.current[2].callback(resp);
   ctx.current = null;
   return true;
 };
 
 var error = function(reqid, err) {
   var ctx = requests[reqid];
-  ctx.current.errback(err);
+  ctx.current[2].errback(err);
   ctx.current = null;
   return true;
 };

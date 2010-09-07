@@ -52,8 +52,12 @@ handle_call({init_req, JsonReq}, _From, State) ->
     {ok, true} = do_call(State#st.ctx, <<"init_req">>, [ReqId, JsonReq]),
     {reply, {ok, ReqId}, State};
 handle_call({next_req, ReqId}, _From, State) ->
-    {ok, [Type, Args]} = do_call(State#st.ctx, <<"next_req">>, [ReqId]),
-    {reply, {ok, Type, Args}, State};
+    case do_call(State#st.ctx, <<"next_req">>, [ReqId]) of
+        {ok, [Type, Args]} ->
+            {reply, {ok, Type, Args}, State};
+        {ok, null} ->
+            {reply, {ok, empty_response}, State}
+    end;
 handle_call({respond, ReqId, Resp}, _From, State) ->
     {ok, true} = do_call(State#st.ctx, <<"respond">>, [ReqId, Resp]),
     {reply, ok, State};
@@ -81,11 +85,13 @@ handle_request_async(Pid, ReqId, Db) ->
         {ok, ReqType, Args} ->
             case handle_request_type(Db, ReqType, Args) of
                 {ok, Resp} ->
-                    ok = gen_server:call(Pid, {respond, Resp});
+                    ok = gen_server:call(Pid, {respond, ReqId, Resp});
                 {error, Err} ->
-                    ok = gen_server:call(Pid, {error, Err})
+                    ok = gen_server:call(Pid, {error, ReqId, Err})
             end,
             handle_request_async(Pid, ReqId, Db);
+        {ok, empty_response} ->
+            {ok, {[{<<"code">>, 500}, {<<"body">>, <<"">>}]}};
         Error ->
             throw({ape_error, Error})
     end.
@@ -107,7 +113,7 @@ handle_request_type(Db, <<"save_doc">>, [{DocProps}]) ->
     {ok, {[{id, Doc#doc.id}, {rev, couch_doc:rev_to_str(Rev)}]}};
 handle_request_type(Db, <<"delete_doc">>, [{DocProps}]) ->
     DocProps2 = {[{<<"_deleted">>, true} | DocProps]},
-    handle_request_type(Db, <<"save_doc">>, DocProps2).
+    handle_request_type(Db, <<"save_doc">>, [DocProps2]).
 
 do_call(Ctx, FName, Args) ->
     handle(Ctx, emonk:call(Ctx, FName, Args)).
