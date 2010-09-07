@@ -39,6 +39,24 @@ var init_req = function(reqid, req) {
     ctx.requests.push(["response", resp]);
   };
 
+  ctx.sandbox.require = function(name, parent) {
+    parent = parent || {};
+    var resolved = resolve(name.split("/"), parent.actual, ddoc, parent.id);
+    var src = "function(module, exports, require) {" + resolved[0] + "}";
+    var func = erlang.evalcx(src, ctx.sandbox);
+    var module = {"id": resolved[2], "actual": resolved[1], "exports": []};
+
+    try { 
+      var reqfunc = function(name) {return require(name, module);};
+      func.apply(null, [module, module.exports, reqfunc]);
+    } catch(e) {
+      var msg = "require('" + name + "') raised error " + e.toSource();
+      throw(["error", "compilation_error", msg]);
+    }
+
+    return module.exports;
+  };  
+
   eval(ddoc.app);
   ctx.app = erlang.evalcx(ddoc.app, ctx.sandbox);
   if(typeof ctx.app !== "function") {
@@ -70,5 +88,40 @@ var error = function(reqid, err) {
   ctx.current[2].errback(err);
   ctx.current = null;
   return true;
+};
+
+var resolve = function(names, parent, current, path) {
+  if(names.length == 0) {
+    if(typeof current != "string") {
+      throw(["error", "bad_require_path", "Require paths must be a string."]);
+    }
+    return [current, parent, path];
+  }
+
+  var n = names.shift();
+  if(n == '..') {
+    if(!(parent && parent.parent)) {
+      var obj = JSON.stringify(current);
+      throw(["error", "bad_require_path", "Object has no parent: " + obj]);
+    }
+    path = path.slice(0, path.lastIndexOf("/"));
+    return resolve(names, parent.parent.parent, parent.parent, path);
+  } else if(n == ".") {
+    if(!parent) {
+      var obj = JSON.stringify(current);
+      throw(["error", "bad_require_path", "Object has no parent: " + obj]);
+    }
+    return resolve(names, parent.parent, parent, path);
+  }
+
+  if(!current[n]) {
+    throw(["error", "bad_require_path", "No such property " + n + ": " + obj]);
+  }
+  
+  var p = current;
+  current = current[n];
+  current.parent = p;
+  path = path ? path + '/' + n : n;
+  return resolve(names, p, current, path);
 };
 

@@ -1,14 +1,8 @@
 function(req) {
-  var mkresponse = function(code, body) {
-    respond({
-      "code": code,
-      "headers": {
-        "Content-Type": "text/plain",
-        "Content-Length": "" + body.length
-      },
-      "body": body
-    });
-  };
+  var util = require("util");
+  for(var i in util) {
+    log("I: " + i);
+  }
 
   open_doc("_design/ape", {
     "callback": function(doc) {
@@ -18,12 +12,13 @@ function(req) {
         newdoc._id = info.id;
         newdoc._rev = info.rev;
         delete_doc(newdoc, {callback: function(info) {
-          mkresponse(200, "Created and deleted: " + info.id + ":" + info.rev);
+          var body = "Created and deleted: " + info.id + ":" + info.rev;
+          util.mkresponse(200, body);
         }});
       }});
     },
     "errback": function(err) {
-      mkresponse(500, "Error: " + JSON.stringify(err) + "\n");
+      util.mkresponse(500, "Error: " + JSON.stringify(err) + "\n");
     }
   });
 }
