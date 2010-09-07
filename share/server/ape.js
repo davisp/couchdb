@@ -36,7 +36,8 @@ var init_req = function(reqid, req) {
   };
 
   ctx.sandbox.query_view = function(view_id, options) {
-    ctx.requests.push(["query_view", [view_id], options]);
+    var opts = options.options || {};
+    ctx.requests.push(["query_view", [view_id, opts], options]);
   };
 
   ctx.sandbox.respond = function(resp) {
@@ -94,7 +95,12 @@ var start_view = function(reqid, info) {
 
 var send_row = function(reqid, row) {
   var ctx = requests[reqid];
-  ctx.current[2].rowback(row);
+  try {
+    ctx.current[2].rowback(row);
+  } catch(e) {
+    if(e === "stop") return false;
+    throw(e);
+  }
   return true;
 };
 

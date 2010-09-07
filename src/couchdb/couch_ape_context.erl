@@ -68,8 +68,11 @@ handle_call({start_view, ReqId, Info}, _From, State) ->
     {ok, true} = do_call(State#st.ctx, <<"start_view">>, [ReqId, Info]),
     {reply, ok, State};
 handle_call({send_row, ReqId, Row}, _From, State) ->
-    {ok, true} = do_call(State#st.ctx, <<"send_row">>, [ReqId, Row]),
-    {reply, ok, State};
+    Resp = case do_call(State#st.ctx, <<"send_row">>, [ReqId, Row]) of
+        {ok, true} -> ok;
+        {ok, false} -> stop
+    end,
+    {reply, Resp, State};
 handle_call({end_view, ReqId}, _From, State) ->
     {ok, true} = do_call(State#st.ctx, <<"end_view">>, [ReqId]),
     {reply, ok, State}.
@@ -125,9 +128,11 @@ handle_request_type(_Pid, _ReqId, Db, <<"save_doc">>, [{DocProps}]) ->
 handle_request_type(Pid, ReqId, Db, <<"delete_doc">>, [{DocProps}]) ->
     DocProps2 = {[{<<"_deleted">>, true} | DocProps]},
     handle_request_type(Pid, ReqId, Db, <<"save_doc">>, [DocProps2]);
-handle_request_type(Pid, ReqId, Db, <<"query_view">>, [null]) ->
-    Args = #view_query_args{},
-    query_view(Pid, ReqId, Db, null, <<"_all_docs">>, Args),
+handle_request_type(Pid, ReqId, Db, <<"query_view">>, [null, {Args}]) ->
+    Keys = proplists:get_value(<<"keys">>, Args),
+    QueryArgs = parse_view_args(Args, Keys, map),
+    io:format("Ohai~n", []),
+    query_view(Pid, ReqId, Db, null, <<"_all_docs">>, QueryArgs),
     {ok, done}.
 
 
@@ -159,8 +164,39 @@ read_js() ->
             throw({error, Reason})
     end.
 
-% special case for special all_docs view
+parse_view_args(Args, Keys, ViewType) ->
+    IsMultiGet = is_list(Keys),
+    ArgsInit = #view_query_args{
+        view_type=ViewType,
+        multi_get=IsMultiGet
+    },
+    QueryArgs = lists:foldl(fun(Other, ArgsAcc) ->
+        {K, V} = Other,
+        Key = list_to_atom(?b2l(K)),
+        try
+            couch_httpd_view:validate_view_query(Key, V, ArgsAcc)
+        catch
+            _:_ ->
+                Fmt = "Ignoring invalid view arg: ~p = ~p", 
+                io:format(Fmt, [K, V]),
+                ArgsAcc
+        end
+    end, ArgsInit, Args),
+    GroupLevel = QueryArgs#view_query_args.group_level,
+    case {ViewType, GroupLevel, IsMultiGet} of
+        {reduce, exact, true} ->
+            QueryArgs;
+        {reduce, _, false} ->
+            QueryArgs;
+        {reduce, _, _} ->
+            Msg = <<"Multi-key fetches for reduce must include group=true">>,
+            throw({query_parse_error, Msg});
+        _ ->
+            QueryArgs
+    end.
+
 query_view(Pid, ReqId, Db, null, <<"_all_docs">>, Args) ->
+    io:format("Args: ~p~n", [Args]),
     #view_query_args{
         limit = Limit,
         skip = SkipCount,
@@ -173,16 +209,22 @@ query_view(Pid, ReqId, Db, null, <<"_all_docs">>, Args) ->
         end_docid = EndDocId,
         inclusive_end = Inclusive
     } = Args,
+    io:format("1~n", []),
     {ok, Info} = couch_db:get_db_info(Db),
+    io:format("2~n", []),
     TotalRowCount = proplists:get_value(doc_count, Info),
+    io:format("3~n", []),
     StartId = if is_binary(StartKey) -> StartKey;
         true -> StartDocId
         end,
     EndId = if is_binary(EndKey) -> EndKey;
         true -> EndDocId
         end,
+    io:format("4~n", []),
     FoldAccInit = {Limit, SkipCount, undefined, []},
+    io:format("5~n", []),
     UpdateSeq = couch_db:get_update_seq(Db),
+    io:format("6~n", []),
     StartResponse = fun(_Req, Etag, RowCount, Offset, _Acc, UpdateSeq) ->
         Obj = {[
             {etag, Etag},
@@ -190,13 +232,15 @@ query_view(Pid, ReqId, Db, null, <<"_all_docs">>, Args) ->
             {offset, Offset},
             {update_seq, UpdateSeq}
         ]},
-        ok = gen_server:call(Pid, {start_view, ReqId, Obj}),
+        R = gen_server:call(Pid, {start_view, ReqId, Obj}),
+        io:format("R: ~p~n", [R]),
         {ok, nil, {Offset, nil}}
     end,
     SendRow = fun(_Resp, Db, Doc, IncludeDocs, {Offset, Acc}) ->
         RowObj = couch_httpd_view:view_row_obj(Db, Doc, IncludeDocs),
-        ok = gen_server:call(Pid, {send_row, ReqId, RowObj}),
-        {ok, {Offset, nil}}
+        Go = gen_server:call(Pid, {send_row, ReqId, RowObj}),
+        io:format("O: ~p~n", [Go]),
+        {Go, {Offset, nil}}
     end,
     FoldlFun = couch_httpd_view:make_view_fold_fun(nil, Args, <<"">>, Db,
         UpdateSeq, TotalRowCount, #view_fold_helper_funs{
@@ -217,6 +261,7 @@ query_view(Pid, ReqId, Db, null, <<"_all_docs">>, Args) ->
         Db, AdapterFun, FoldAccInit, [{start_key, StartId}, {dir, Dir},
             {if Inclusive -> end_key; true -> end_key_gt end, EndId}]
     ),
+    io:format("Ending~n", []),
     ok = gen_server:call(Pid, {end_view, ReqId}).
 
 
