@@ -18,7 +18,14 @@
 
 % /db_name/_design/ddocid/_app/ ++ REST
 handle_ape_req(#httpd{
-        path_parts=[_, _, _, _ | _Rest]
-    }=Req, _Db, _DDoc) ->
-    
-    couch_httpd:send_json(Req, {[{ok, true}]}).
+        path_parts=[DbName, _, _, _ | _Rest]
+    }=Req, Db, #doc{id=DDocId, revs={Start, [DiskRev | _]}}=DDoc) ->
+
+    DDocRev = couch_doc:rev_to_str({Start, DiskRev}),
+    JsonDDoc = couch_util:json_doc(DDoc),
+    {ok, Pid} = couch_ape_server:get_context(DbName, DDocId, DDocRev, JsonDDoc),
+
+    io:format("Handling ape request: ~p~n", [{DbName, DDocId, DDocRev, JsonDDoc}]),
+    {ok, ExtResp} = couch_ape_context:handle_request(Pid, Req, Db),
+    io:format("ExtResp: ~p", [ExtResp]),
+    couch_httpd_external:send_external_response(Req, ExtResp).

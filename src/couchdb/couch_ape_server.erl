@@ -15,15 +15,15 @@
 -export([start_link/0, init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
 
--export([get_context/2]).
+-export([get_context/4]).
 
 -include("couch_db.hrl").
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-get_context(DDocId, DDocRev) ->
-    gen_server:call(?MODULE, {DDocId, DDocRev}).
+get_context(DbName, DDocId, DDocRev, DDoc) ->
+    gen_server:call(?MODULE, {get_ctx, {DbName, DDocId, DDocRev, DDoc}}).
 
 % gen_server callbacks
 
@@ -36,13 +36,13 @@ terminate(Reason, _Contexts) ->
     ?LOG_DEBUG("couch_ape_server shutting down: ~p~n", [Reason]),
     ok.
 
-handle_call({get_ctx, DDocId, DDocRev}, _From, Contexts) ->
-    case ets:lookup(Contexts, {DDocId, DDocRev}) of
+handle_call({get_ctx, Key}, _From, Contexts) ->
+    case ets:lookup(Contexts, Key) of
         [Pid] ->
             {reply, {ok, Pid}, Contexts};
         [] ->
-            {ok, Pid} = couch_ape_contest:start_link({DDocId, DDocRev}),
-            true = ets:insert({{DDocId, DDocRev}, Pid}),
+            {ok, Pid} = couch_ape_context:start_link(Key),
+            true = ets:insert(Contexts, {Key, Pid}),
             {reply, {ok, Pid}, Contexts}
     end.
 

@@ -58,6 +58,9 @@ erlang = {couch_app_server_erlang, nil}
 [app_server_emonk]
 source = %localbuilddatadir%/server/emonk_app.js
 
+[ape_server]
+source = %localbuilddatadir%/server/ape.js
+
 [query_servers]
 javascript = %bindir%/%couchjs_command_name% %localbuilddatadir%/server/main.js
 

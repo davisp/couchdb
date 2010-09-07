@@ -91,7 +91,8 @@ source_files = \
     couch_view_server_erlang.erl \
     couch_view_server_os.erl \
     couch_db_updater.erl \
-    couch_work_queue.erl
+    couch_work_queue.erl \
+    hovercraft.erl
 
 EXTRA_DIST = $(source_files) couch_db.hrl couch_js_functions.hrl
 
@@ -161,7 +162,8 @@ compiled_files = \
     couch_view_server_erlang.beam \
     couch_view_server_os.beam \
     couch_db_updater.beam \
-    couch_work_queue.beam
+    couch_work_queue.beam \
+    hovercraft.beam
 
 # doc_base = \
 #     erlang.png \
