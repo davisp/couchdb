@@ -28,6 +28,8 @@ CLEANFILES = $(compiled_files) $(doc_base)
 
 source_files = \
     couch.erl \
+    couch_ape_context.erl \
+    couch_ape_server.erl \
     couch_app.erl \
     couch_app_server.erl \
     couch_app_server_emonk.erl \
@@ -47,6 +49,7 @@ source_files = \
     couch_file.erl \
     couch_httpd.erl \
     couch_httpd_db.erl \
+    couch_httpd_ape.erl \
     couch_httpd_auth.erl \
     couch_httpd_oauth.erl \
     couch_httpd_external.erl \
@@ -95,6 +98,8 @@ EXTRA_DIST = $(source_files) couch_db.hrl couch_js_functions.hrl
 compiled_files = \
     couch.app \
     couch.beam \
+    couch_ape_context.beam \
+    couch_ape_server.beam \
     couch_app.beam \
     couch_app_server.beam \
     couch_app_server_emonk.beam \
@@ -114,6 +119,7 @@ compiled_files = \
     couch_file.beam \
     couch_httpd.beam \
     couch_httpd_db.beam \
+    couch_httpd_ape.beam \
     couch_httpd_auth.beam \
     couch_httpd_oauth.beam \
     couch_httpd_external.beam \

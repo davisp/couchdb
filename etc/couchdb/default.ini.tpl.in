@@ -86,6 +86,7 @@ uuids={couch_uuids, start, []}
 auth_cache={couch_auth_cache, start_link, []}
 rep_db_changes_listener={couch_rep_db_listener, start_link, []}
 vhosts={couch_httpd_vhost, start_link, []}
+couch_ape_server={couch_ape_server, start_link, []}
 
 [httpd_global_handlers]
 / = {couch_httpd_misc_handlers, handle_welcome_req, <<"Welcome">>}
@@ -123,6 +124,7 @@ _list = {couch_httpd_show, handle_view_list_req}
 _info = {couch_httpd_db,   handle_design_info_req}
 _rewrite = {couch_httpd_rewrite, handle_rewrite_req}
 _update = {couch_httpd_show, handle_doc_update_req}
+_app = {couch_httpd_ape, handle_ape_req}
 
 [uuids]
 ; Known algorithms:
