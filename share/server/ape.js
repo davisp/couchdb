@@ -35,6 +35,10 @@ var init_req = function(reqid, req) {
     ctx.requests.push(["delete_doc", [doc], options]);
   };
 
+  ctx.sandbox.query_view = function(view_id, options) {
+    ctx.requests.push(["query_view", [view_id], options]);
+  };
+
   ctx.sandbox.respond = function(resp) {
     ctx.requests.push(["response", resp]);
   };
@@ -77,9 +81,25 @@ var next_req = function(reqid) {
 
 var respond = function(reqid, resp) {
   var ctx = requests[reqid];
-  log(ctx.current.callback === undefined);
   ctx.current[2].callback(resp);
   ctx.current = null;
+  return true;
+};
+
+var start_view = function(reqid, info) {
+  var ctx = requests[reqid];
+  ctx.current[2].startback(info);
+  return true;
+};
+
+var send_row = function(reqid, row) {
+  var ctx = requests[reqid];
+  ctx.current[2].rowback(row);
+  return true;
+};
+
+var end_view = function(reqid) {
+  ctx.current[2].endback();
   return true;
 };
 
