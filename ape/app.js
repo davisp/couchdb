@@ -1,10 +1,10 @@
 function(req) {
   var util = require("util");
 
-  var run_view = function(opts, callback, body) {
+  var run_view = function(view_name, opts, callback, body) {
     var count = 0;
     body = body || "";
-    query_view(null, {
+    query_view(view_name, {
       "options": opts,
       "startback": function(info) {
         body += JSON.stringify(info) + "\n";
@@ -37,9 +37,9 @@ function(req) {
       save_doc({"other": "and some stuff"}, {
         "callback": function() {}
       });
-      run_view(null, function(body1) {
-        run_view({start_key: "2"}, function(body2) {
-          run_view({end_key: "2"}, function(body3) {
+      run_view(null, null, function(body1) {
+        run_view(null, {start_key: "2"}, function(body2) {
+          run_view(null, {end_key: "2"}, function(body3) {
             util.mkresponse(200, body3);
           }, body2);
         }, body1);

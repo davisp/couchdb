@@ -131,9 +131,35 @@ handle_request_type(Pid, ReqId, Db, <<"delete_doc">>, [{DocProps}]) ->
 handle_request_type(Pid, ReqId, Db, <<"query_view">>, [null, {Args}]) ->
     Keys = proplists:get_value(<<"keys">>, Args),
     QueryArgs = parse_view_args(Args, Keys, map),
-    io:format("Ohai~n", []),
-    query_view(Pid, ReqId, Db, null, <<"_all_docs">>, QueryArgs),
-    {ok, done}.
+    all_docs(Pid, ReqId, Db, null, <<"_all_docs">>, QueryArgs),
+    {ok, done};
+handle_request_type(Pid, ReqId, Db, <<"query_view">>, [ViewInfo, {Args}]) ->
+    [DDocId, ViewName] = ViewInfo,
+    Stale = get_stale(Args),
+    Reduce = get_reduce(Args),
+    Keys = proplists:get_value(<<"keys">>, Args),
+    Result = case couch_view:get_map_view(Db, DDocId, ViewName, Stale) of
+    {ok, View, Group} ->
+        QueryArgs = parse_view_arg(Args, Keys, map),
+        output_mape_view(Pid, ReqId, Db, View, Group, QueryArgs, Keys);
+    {not_found, _Reason} ->
+        case couch_view:get_reduce_view(Db, DDocId, ViewName, Stale) of
+        {ok, ReduceView, Group} ->
+            case Reduce of
+            false ->
+                QueryArgs = parse_view_args(Args, Keys, map_red),
+                MapView = couch_view:extract_map_view(ReduceView),
+                output_map_view(Pid, ReqId, Db, MapView, Group,
+                                                    QueryArgs, Keys);
+            _ ->
+                QueryArgs = parse_view_params(Req, Keys, reduce),
+                output_reduce_view(Pid, ReqId, Db, ReduceView, Group,
+                                                    QueryArgs, Keys)
+            end;
+        {not_found, Reason} ->
+            throw({not_found, Reason})
+        end
+    end.
 
 
 do_call(Ctx, FName, Args) ->
@@ -143,7 +169,6 @@ do_send(Ctx, Mesg) ->
     handle(Ctx, emonk:send(Ctx, get(emonk_ref), Mesg)).
 
 handle(Ctx, Response) ->
-    %io:format("Response: ~p~n", [Response]),
     case Response of
         {ok, Resp} ->
             {ok, Resp};
@@ -151,6 +176,7 @@ handle(Ctx, Response) ->
             ?LOG_INFO("Emonk Log :: ~p", [LogMesg]),
             handle(Ctx, emonk:send(Ctx, Ref, true))
     end.
+
 
 read_js() ->
     FileName = couch_config:get(<<"ape_server">>, <<"source">>),
@@ -163,6 +189,20 @@ read_js() ->
             ?LOG_ERROR(Mesg, []),
             throw({error, Reason})
     end.
+
+
+get_stale(Args) ->
+    case proplists:get_value(<<"stale">>, Args) of
+        undefined -> nil;
+        <<"ok">> -> ok
+    end.
+
+get_reduce(Args) ->
+    case proplists:get_value(<<"reduce">>, Args) of
+        undefined-> true;
+        Bool when is_boolean(Bool) -> Bool
+    end.
+
 
 parse_view_args(Args, Keys, ViewType) ->
     IsMultiGet = is_list(Keys),
@@ -195,8 +235,8 @@ parse_view_args(Args, Keys, ViewType) ->
             QueryArgs
     end.
 
-query_view(Pid, ReqId, Db, null, <<"_all_docs">>, Args) ->
-    io:format("Args: ~p~n", [Args]),
+
+all_docs(Pid, ReqId, Db, null, <<"_all_docs">>, Args) ->
     #view_query_args{
         limit = Limit,
         skip = SkipCount,
@@ -209,22 +249,16 @@ query_view(Pid, ReqId, Db, null, <<"_all_docs">>, Args) ->
         end_docid = EndDocId,
         inclusive_end = Inclusive
     } = Args,
-    io:format("1~n", []),
     {ok, Info} = couch_db:get_db_info(Db),
-    io:format("2~n", []),
     TotalRowCount = proplists:get_value(doc_count, Info),
-    io:format("3~n", []),
     StartId = if is_binary(StartKey) -> StartKey;
         true -> StartDocId
         end,
     EndId = if is_binary(EndKey) -> EndKey;
         true -> EndDocId
         end,
-    io:format("4~n", []),
     FoldAccInit = {Limit, SkipCount, undefined, []},
-    io:format("5~n", []),
     UpdateSeq = couch_db:get_update_seq(Db),
-    io:format("6~n", []),
     StartResponse = fun(_Req, Etag, RowCount, Offset, _Acc, UpdateSeq) ->
         Obj = {[
             {etag, Etag},
@@ -233,13 +267,11 @@ query_view(Pid, ReqId, Db, null, <<"_all_docs">>, Args) ->
             {update_seq, UpdateSeq}
         ]},
         R = gen_server:call(Pid, {start_view, ReqId, Obj}),
-        io:format("R: ~p~n", [R]),
         {ok, nil, {Offset, nil}}
     end,
     SendRow = fun(_Resp, Db, Doc, IncludeDocs, {Offset, Acc}) ->
         RowObj = couch_httpd_view:view_row_obj(Db, Doc, IncludeDocs),
         Go = gen_server:call(Pid, {send_row, ReqId, RowObj}),
-        io:format("O: ~p~n", [Go]),
         {Go, {Offset, nil}}
     end,
     FoldlFun = couch_httpd_view:make_view_fold_fun(nil, Args, <<"">>, Db,
@@ -261,7 +293,17 @@ query_view(Pid, ReqId, Db, null, <<"_all_docs">>, Args) ->
         Db, AdapterFun, FoldAccInit, [{start_key, StartId}, {dir, Dir},
             {if Inclusive -> end_key; true -> end_key_gt end, EndId}]
     ),
-    io:format("Ending~n", []),
     ok = gen_server:call(Pid, {end_view, ReqId}).
 
 
+output_map_view(Pid, ReqId, Db, View, Group, QueryArgs, Keys) ->
+    #view_query_args{
+        limit = Limit,
+        skip = SkipCount
+    } = QueryArgs,
+    {ok, RowCount} = couch_view:get_row_count(View),
+    
+
+
+output_reduce_view(Pid, ReqId, Db, View, Group, QueryArgs, Keys) ->
+    ok.
