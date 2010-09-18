@@ -95,6 +95,7 @@ couch_ape_server={couch_ape_server, start_link, []}
 / = {couch_httpd_misc_handlers, handle_welcome_req, <<"Welcome">>}
 favicon.ico = {couch_httpd_misc_handlers, handle_favicon_req, "%localdatadir%/www"}
 
+_show = {show_request, handle_show_req}
 _utils = {couch_httpd_misc_handlers, handle_utils_dir_req, "%localdatadir%/www"}
 _all_dbs = {couch_httpd_misc_handlers, handle_all_dbs_req}
 _active_tasks = {couch_httpd_misc_handlers, handle_task_status_req}

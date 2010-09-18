@@ -140,8 +140,8 @@ handle_request_type(Pid, ReqId, Db, <<"query_view">>, [ViewInfo, {Args}]) ->
     Keys = proplists:get_value(<<"keys">>, Args),
     Result = case couch_view:get_map_view(Db, DDocId, ViewName, Stale) of
     {ok, View, Group} ->
-        QueryArgs = parse_view_arg(Args, Keys, map),
-        output_mape_view(Pid, ReqId, Db, View, Group, QueryArgs, Keys);
+        QueryArgs = parse_view_args(Args, Keys, map),
+        output_map_view(Pid, ReqId, Db, View, Group, QueryArgs, Keys);
     {not_found, _Reason} ->
         case couch_view:get_reduce_view(Db, DDocId, ViewName, Stale) of
         {ok, ReduceView, Group} ->
@@ -152,7 +152,7 @@ handle_request_type(Pid, ReqId, Db, <<"query_view">>, [ViewInfo, {Args}]) ->
                 output_map_view(Pid, ReqId, Db, MapView, Group,
                                                     QueryArgs, Keys);
             _ ->
-                QueryArgs = parse_view_params(Req, Keys, reduce),
+                QueryArgs = parse_view_args(Args, Keys, reduce),
                 output_reduce_view(Pid, ReqId, Db, ReduceView, Group,
                                                     QueryArgs, Keys)
             end;
@@ -251,12 +251,14 @@ all_docs(Pid, ReqId, Db, null, <<"_all_docs">>, Args) ->
     } = Args,
     {ok, Info} = couch_db:get_db_info(Db),
     TotalRowCount = proplists:get_value(doc_count, Info),
-    StartId = if is_binary(StartKey) -> StartKey;
-        true -> StartDocId
-        end,
-    EndId = if is_binary(EndKey) -> EndKey;
-        true -> EndDocId
-        end,
+    StartId = case is_binary(StartKey) of
+        true -> StartKey;
+        _ -> StartDocId
+    end,
+    EndId = case is_binary(EndKey) of
+        true -> EndKey;
+        _ -> EndDocId
+    end,
     FoldAccInit = {Limit, SkipCount, undefined, []},
     UpdateSeq = couch_db:get_update_seq(Db),
     StartResponse = fun(_Req, Etag, RowCount, Offset, _Acc, UpdateSeq) ->
@@ -296,14 +298,45 @@ all_docs(Pid, ReqId, Db, null, <<"_all_docs">>, Args) ->
     ok = gen_server:call(Pid, {end_view, ReqId}).
 
 
-output_map_view(Pid, ReqId, Db, View, Group, QueryArgs, Keys) ->
+output_map_view(Pid, ReqId, Db, View, Group, Args, Keys) ->
     #view_query_args{
         limit = Limit,
-        skip = SkipCount
-    } = QueryArgs,
-    {ok, RowCount} = couch_view:get_row_count(View),
-    
+        skip = Skip
+    } = Args,
+    {ok, NumRows} = couch_view:get_row_count(View),
+    StartResponse = fun(Req, Etag, RowCount, Offset, RowAcc, UpdateSeq) ->
+        Req2 = nil,
+        RowAcc2 = nil,
+        {ok, Req2, RowAcc2}
+    end,
+    SendRow = fun(Resp, Db, {{Key, DocId}, Value}, IncludeDocs, RowAcc) ->
+        Go = nil,
+        RowAcc2 = nil,
+        {Go, RowAcc2}
+    end,
+    Helpers = #view_fold_helper_funs{
+        start_response = StartResponse,
+        send_row = SendRow,
+        reduce_count=fun couch_view:reduce_to_count/1
+    },
+    FoldAccInit = {Limit, Skip, undefined, []},
+    UpdateSeq = couch_db:get_update_seq(Db),
+    Etag = nil,
+    FoldFun = couch_httpd_view:make_view_fold_fun(
+                    ReqId, Args, Etag, Db, UpdateSeq, NumRows, Helpers
+    ),
+    {ok, LastRed, FoldResult} = couch_view:fold(
+                    View, FoldFun, FoldAccInit, make_key_options(Args)
+    ),
+    FinalCount = couch_view:reduce_to_count(LastRed),
+    finish_view_fold(ReqId, NumRows, FinalCount, FoldResult).
 
 
 output_reduce_view(Pid, ReqId, Db, View, Group, QueryArgs, Keys) ->
+    ok.
+
+finish_view_fold(ReqId, NumRows, FinalCount, FoldResult) ->
+    ok.
+
+make_key_options(Args) ->
     ok.

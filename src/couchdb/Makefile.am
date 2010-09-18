@@ -27,6 +27,7 @@ CLEANFILES = $(compiled_files) $(doc_base)
 # CLEANFILES = $(doc_modules) edoc-info
 
 source_files = \
+    show_headers.erl \
     couch.erl \
     couch_ape_context.erl \
     couch_ape_server.erl \
@@ -97,6 +98,7 @@ source_files = \
 EXTRA_DIST = $(source_files) couch_db.hrl couch_js_functions.hrl
 
 compiled_files = \
+    show_headers.beam \
     couch.app \
     couch.beam \
     couch_ape_context.beam \
