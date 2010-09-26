@@ -11,7 +11,7 @@
 ## the License.
 
 noinst_SCRIPTS = run
-noinst_DATA = test_util.beam
+noinst_DATA = test_util.beam test_web.beam
 
 %.beam: %.erl
 	$(ERLC) $<
