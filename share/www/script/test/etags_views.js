@@ -22,12 +22,16 @@ couchTests.etags_views = function(debug) {
     views : {
       basicView : {
         map : stringFun(function(doc) {
-          emit(doc.integer, doc.string);
+          if(doc.integer && doc.string) {
+            emit(doc.integer, doc.string);
+          }
         })
       },
       withReduce : {
         map : stringFun(function(doc) {
-          emit(doc.integer, doc.string);
+          if(doc.integer && doc.string) {
+            emit(doc.integer, doc.string);
+          }
         }),
         reduce : stringFun(function(keys, values, rereduce) {
           if (rereduce) {
@@ -54,14 +58,43 @@ couchTests.etags_views = function(debug) {
   T(xhr.status == 304);
   // TODO GET with keys (when that is available)
 
+  // verify ETag doesn't change when an update
+  // doesn't change the view group's index
+  T(db.save({"_id":"doc1", "foo":"bar"}).ok);
+  xhr = CouchDB.request("GET", "/test_suite_db/_design/etags/_view/basicView");
+  T(xhr.status == 200);
+  var etag1 = xhr.getResponseHeader("etag");
+  T(etag1 == etag);
+  
+  // verify ETag changes when an update changes the view group's index.
+  T(db.save({"_id":"doc2", "integer":-42, "string":"foostring"}).ok);
+  xhr = CouchDB.request("GET", "/test_suite_db/_design/etags/_view/basicView");
+  T(xhr.status == 200);
+  var etag1 = xhr.getResponseHeader("etag");
+  T(etag1 != etag);
+
   // reduce view
   xhr = CouchDB.request("GET", "/test_suite_db/_design/etags/_view/withReduce");
   T(xhr.status == 200);
   var etag = xhr.getResponseHeader("etag");
-  xhr = CouchDB.request("GET", "/test_suite_db/_design/etags/_view/withReduce", {
+  xhr = CouchDB.request("GET", "/test_suite_db/_design/etags/_view/withReduce",{
     headers: {"if-none-match": etag}
   });
   T(xhr.status == 304);
+
+  // verify ETag doesn't change when an update
+  // doesn't change the view group's index
+  T(db.save({"_id":"doc3", "foo":"bar"}).ok);
+  xhr = CouchDB.request("GET", "/test_suite_db/_design/etags/_view/withReduce");
+  T(xhr.status == 200);
+  var etag1 = xhr.getResponseHeader("etag");
+  T(etag1 == etag);
+  // verify ETag changes when an update changes the view group's index
+  T(db.save({"_id":"doc4", "integer":-42, "string":"foostring"}).ok);
+  xhr = CouchDB.request("GET", "/test_suite_db/doc1");
+  T(xhr.status == 200);
+  var etag1 = xhr.getResponseHeader("etag");
+  T(etag1 != etag);
 
   // confirm ETag changes with different POST bodies
   xhr = CouchDB.request("POST", "/test_suite_db/_design/etags/_view/basicView",

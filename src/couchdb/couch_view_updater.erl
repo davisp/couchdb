@@ -247,7 +247,12 @@ write_changes(Group, ViewKeyValuesToAdd, DocIdViewIdKeys, NewSeq, InitialBuild) 
     Views2 = lists:zipwith(fun(View, {_View, AddKeyValues}) ->
             KeysToRemove = couch_util:dict_find(View#view.id_num, KeysToRemoveByView, []),
             {ok, ViewBtree2} = couch_btree:add_remove(View#view.btree, AddKeyValues, KeysToRemove),
-            View#view{btree = ViewBtree2}
+            case ViewBtree2 =/= View#view.btree of
+                true ->
+                    View#view{btree=ViewBtree2, update_seq=NewSeq};
+                _ ->
+                    View#view{btree=ViewBtree2}
+            end
         end,    Group#group.views, ViewKeyValuesToAdd),
     Group#group{views=Views2, current_seq=NewSeq, id_btree=IdBtree2}.
 
