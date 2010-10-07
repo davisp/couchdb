@@ -461,13 +461,15 @@ set_view_sig(#group{
             lib={[]},
             def_lang=Language,
             design_options=DesignOptions}=G) ->
-    G#group{sig=couch_util:md5(term_to_binary({Views, Language, DesignOptions}))};
+    ViewInfo = [V#view{update_seq=0} || V <- Views],
+    G#group{sig=couch_util:md5(term_to_binary({ViewInfo, Language, DesignOptions}))};
 set_view_sig(#group{
             views=Views,
             lib=Lib,
             def_lang=Language,
             design_options=DesignOptions}=G) ->
-    G#group{sig=couch_util:md5(term_to_binary({Views, Language, DesignOptions, sort_lib(Lib)}))}.
+    ViewInfo = [V#view{update_seq=0} || V <- Views],
+    G#group{sig=couch_util:md5(term_to_binary({ViewInfo, Language, DesignOptions, sort_lib(Lib)}))}.
 
 sort_lib({Lib}) ->
     sort_lib(Lib, []).
