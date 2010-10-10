@@ -255,9 +255,9 @@ output_reduce_list(Req, Db, DDoc, LName, View, QueryArgs, Etag, Keys, Group) ->
 
     couch_query_servers:with_ddoc_proc(DDoc, fun(QServer) ->
         StartListRespFun = make_reduce_start_resp_fun(QServer, Db, LName),
-        SendListRowFun = make_reduce_send_row_fun(QServer, Db),
+        SendListRowFun = make_reduce_send_row_fun(QServer),
         {ok, GroupRowsFun, RespFun} = couch_httpd_view:make_reduce_fold_funs(Req,
-            GroupLevel, QueryArgs, Etag, CurrentSeq,
+            Db, GroupLevel, QueryArgs, Etag, CurrentSeq,
             #reduce_fold_helper_funs{
                 start_response = StartListRespFun,
                 send_row = SendListRowFun
@@ -311,9 +311,9 @@ make_map_send_row_fun(QueryServer) ->
         send_list_row(Resp, QueryServer, Db, Row, RowFront, IncludeDocs)
     end.
 
-make_reduce_send_row_fun(QueryServer, Db) ->
-    fun(Resp, Row, RowFront) ->
-        send_list_row(Resp, QueryServer, Db, Row, RowFront, false)
+make_reduce_send_row_fun(QueryServer) ->
+    fun(Resp, Db, Row, IncludeDocs, RowFront) ->
+        send_list_row(Resp, QueryServer, Db, Row, RowFront, IncludeDocs)
     end.
 
 send_list_row(Resp, QueryServer, Db, Row, RowFront, IncludeDoc) ->
@@ -338,8 +338,8 @@ prompt_list_row({Proc, _DDocId}, Db, {{Key, DocId}, Value}, IncludeDoc) ->
     JsonRow = couch_httpd_view:view_row_obj(Db, {{Key, DocId}, Value}, IncludeDoc),
     couch_query_servers:proc_prompt(Proc, [<<"list_row">>, JsonRow]);
 
-prompt_list_row({Proc, _DDocId}, _, {Key, Value}, _IncludeDoc) ->
-    JsonRow = {[{key, Key}, {value, Value}]},
+prompt_list_row({Proc, _DDocId}, Db, {Key, Value}, IncludeDoc) ->
+    JsonRow = couch_httpd_view:reduce_row_obj(Db, {Key, Value}, IncludeDoc),
     couch_query_servers:proc_prompt(Proc, [<<"list_row">>, JsonRow]).
 
 send_non_empty_chunk(Resp, Chunk) ->

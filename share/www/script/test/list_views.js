@@ -36,6 +36,14 @@ couchTests.list_views = function(debug) {
             return values.length;
           }
         })
+      },
+      reduceWithDoc : {
+        map : stringFun(function(doc) {
+          emit(null, {"_id": doc._id});
+        }),
+        reduce : stringFun(function(keys, values, rereduce) {
+          return {"_id": "9"};
+        })
       }
     },
     lists: {
@@ -107,6 +115,13 @@ couchTests.list_views = function(debug) {
       }),
       qsParams: stringFun(function(head, req) {
         return toJSON(req.query) + "\n";
+      }),
+      reduceWithDoc: stringFun(function(head, req) {
+        send("head");
+        while (row = getRow()) {
+          send(row.doc.integer);
+        }
+        send("tail");
       }),
       stopIter: stringFun(function(req) {
         send("head");
@@ -341,6 +356,11 @@ couchTests.list_views = function(debug) {
   // with include_docs and a reference to the doc.
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/docReference/basicView?include_docs=true");
   T(xhr.responseText.match(/head0tail/));
+
+  // with reduce include_docs and a reference to the doc.
+  var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/reduceWithDoc/reduceWithDoc?include_docs=true");
+  alert(xhr.responseText);
+  T(xhr.responseText.match(/head9tail/));
 
   // now with extra qs params
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/qsParams/basicView?foo=blam");

@@ -17,7 +17,7 @@
 
 -export([parse_view_params/3]).
 -export([make_view_fold_fun/7, finish_view_fold/4, finish_view_fold/5, view_row_obj/3]).
--export([view_etag/3, view_etag/4, make_reduce_fold_funs/6]).
+-export([view_etag/3, view_etag/4, make_reduce_fold_funs/7, reduce_row_obj/3]).
 -export([design_doc_view/5, parse_bool_param/1, doc_member/2]).
 -export([make_key_options/1, load_view/4]).
 
@@ -156,7 +156,7 @@ output_reduce_view(Req, Db, View, Group, QueryArgs, nil) ->
     } = QueryArgs,
     CurrentEtag = view_etag(Db, Group, View),
     couch_httpd:etag_respond(Req, CurrentEtag, fun() ->
-        {ok, GroupRowsFun, RespFun} = make_reduce_fold_funs(Req, GroupLevel,
+        {ok, GroupRowsFun, RespFun} = make_reduce_fold_funs(Req, Db, GroupLevel,
                 QueryArgs, CurrentEtag, Group#group.current_seq,
                 #reduce_fold_helper_funs{}),
         FoldAccInit = {Limit, Skip, undefined, []},
@@ -174,7 +174,7 @@ output_reduce_view(Req, Db, View, Group, QueryArgs, Keys) ->
     } = QueryArgs,
     CurrentEtag = view_etag(Db, Group, View, Keys),
     couch_httpd:etag_respond(Req, CurrentEtag, fun() ->
-        {ok, GroupRowsFun, RespFun} = make_reduce_fold_funs(Req, GroupLevel,
+        {ok, GroupRowsFun, RespFun} = make_reduce_fold_funs(Req, Db, GroupLevel,
                 QueryArgs, CurrentEtag, Group#group.current_seq,
                 #reduce_fold_helper_funs{}),
         {Resp, _RedAcc3} = lists:foldl(
@@ -394,18 +394,8 @@ validate_view_query(reduce, _, Args) ->
     _ ->
         Args
     end;
-validate_view_query(include_docs, true, Args) ->
-    case Args#view_query_args.view_type of
-    reduce ->
-        Msg = <<"Query parameter `include_docs` "
-                "is invalid for reduce views.">>,
-        throw({query_parse_error, Msg});
-    _ ->
-        Args#view_query_args{include_docs=true}
-    end;
-% Use the view_query_args record's default value
-validate_view_query(include_docs, _Value, Args) ->
-    Args;
+validate_view_query(include_docs, Value, Args) ->
+    Args#view_query_args{include_docs=Value};
 validate_view_query(extra, _Value, Args) ->
     Args.
 
@@ -445,11 +435,15 @@ make_view_fold_fun(Req, QueryArgs, Etag, Db, UpdateSeq, TotalViewCount, HelperFu
         end
     end.
 
-make_reduce_fold_funs(Req, GroupLevel, _QueryArgs, Etag, UpdateSeq, HelperFuns) ->
+make_reduce_fold_funs(Req, Db, GroupLevel, QueryArgs, Etag, UpdateSeq, HelperFuns) ->
     #reduce_fold_helper_funs{
         start_response = StartRespFun,
         send_row = SendRowFun
     } = apply_default_helper_funs(HelperFuns),
+
+    #view_query_args{
+        include_docs = IncludeDocs
+    } = QueryArgs,
 
     GroupRowsFun =
         fun({_Key1,_}, {_Key2,_}) when GroupLevel == 0 ->
@@ -472,35 +466,35 @@ make_reduce_fold_funs(Req, GroupLevel, _QueryArgs, Etag, UpdateSeq, HelperFuns) 
     (_Key, Red, {AccLimit, 0, undefined, RowAcc0}) when GroupLevel == 0 ->
         % we haven't started responding yet and group=false
         {ok, Resp2, RowAcc} = StartRespFun(Req, Etag, RowAcc0, UpdateSeq),
-        {Go, RowAcc2} = SendRowFun(Resp2, {null, Red}, RowAcc),
+        {Go, RowAcc2} = SendRowFun(Resp2, Db, {null, Red}, IncludeDocs, RowAcc),
         {Go, {AccLimit - 1, 0, Resp2, RowAcc2}};
     (_Key, Red, {AccLimit, 0, Resp, RowAcc}) when GroupLevel == 0 ->
         % group=false but we've already started the response
-        {Go, RowAcc2} = SendRowFun(Resp, {null, Red}, RowAcc),
+        {Go, RowAcc2} = SendRowFun(Resp, Db, {null, Red}, IncludeDocs, RowAcc),
         {Go, {AccLimit - 1, 0, Resp, RowAcc2}};
 
     (Key, Red, {AccLimit, 0, undefined, RowAcc0})
             when is_integer(GroupLevel), is_list(Key) ->
         % group_level and we haven't responded yet
         {ok, Resp2, RowAcc} = StartRespFun(Req, Etag, RowAcc0, UpdateSeq),
-        {Go, RowAcc2} = SendRowFun(Resp2,
-                {lists:sublist(Key, GroupLevel), Red}, RowAcc),
+        {Go, RowAcc2} = SendRowFun(Resp2, Db,
+                {lists:sublist(Key, GroupLevel), Red}, IncludeDocs, RowAcc),
         {Go, {AccLimit - 1, 0, Resp2, RowAcc2}};
     (Key, Red, {AccLimit, 0, Resp, RowAcc})
             when is_integer(GroupLevel), is_list(Key) ->
         % group_level and we've already started the response
-        {Go, RowAcc2} = SendRowFun(Resp,
-                {lists:sublist(Key, GroupLevel), Red}, RowAcc),
+        {Go, RowAcc2} = SendRowFun(Resp, Db,
+                {lists:sublist(Key, GroupLevel), Red}, IncludeDocs, RowAcc),
         {Go, {AccLimit - 1, 0, Resp, RowAcc2}};
 
     (Key, Red, {AccLimit, 0, undefined, RowAcc0}) ->
         % group=true and we haven't responded yet
         {ok, Resp2, RowAcc} = StartRespFun(Req, Etag, RowAcc0, UpdateSeq),
-        {Go, RowAcc2} = SendRowFun(Resp2, {Key, Red}, RowAcc),
+        {Go, RowAcc2} = SendRowFun(Resp2, Db, {Key, Red}, IncludeDocs, RowAcc),
         {Go, {AccLimit - 1, 0, Resp2, RowAcc2}};
     (Key, Red, {AccLimit, 0, Resp, RowAcc}) ->
         % group=true and we've already started the response
-        {Go, RowAcc2} = SendRowFun(Resp, {Key, Red}, RowAcc),
+        {Go, RowAcc2} = SendRowFun(Resp, Db, {Key, Red}, IncludeDocs, RowAcc),
         {Go, {AccLimit - 1, 0, Resp, RowAcc2}}
     end,
     {ok, GroupRowsFun, RespFun}.
@@ -537,7 +531,7 @@ apply_default_helper_funs(
     end,
 
     SendRow2 = case SendRow of
-    undefined -> fun send_json_reduce_row/3;
+    undefined -> fun send_json_reduce_row/5;
     _ -> SendRow
     end,
 
@@ -603,8 +597,9 @@ json_reduce_start_resp(Req, Etag, _Acc0, UpdateSeq) ->
         {ok, Resp, "{\"rows\":[\r\n"}
     end.
 
-send_json_reduce_row(Resp, {Key, Value}, RowFront) ->
-    send_chunk(Resp, RowFront ++ ?JSON_ENCODE({[{key, Key}, {value, Value}]})),
+send_json_reduce_row(Resp, Db, {Key, Value}, IncludeDocs, RowFront) ->
+    JsonObj = reduce_row_obj(Db, {Key, Value}, IncludeDocs),
+    send_chunk(Resp, RowFront ++ ?JSON_ENCODE(JsonObj)),
     {ok, ",\r\n"}.
 
 view_etag(Db, Group, View) ->
@@ -638,6 +633,21 @@ view_row_obj(_Db, {{Key, DocId}, Value}, _IncludeDocs) ->
 
 view_row_with_doc(Db, {{Key, DocId}, Value}, IdRev) ->
     {[{id, DocId}, {key, Key}, {value, Value}] ++ doc_member(Db, IdRev)}.
+
+reduce_row_obj(Db, {Key, {Props}}, true) ->
+    DocId = couch_util:get_value(<<"_id">>, Props),
+    Rev = case couch_util:get_value(<<"_rev">>, Props) of
+        undefined -> nil;
+        Rev0 -> couch_doc:parse_rev(Rev0)
+    end,
+    reduce_row_with_doc(Db, {Key, {Props}}, {DocId, Rev});
+reduce_row_obj(_Db, {Key, Value}, _IncludeDocs) ->
+    {[{key, Key}, {value, Value}]}.
+
+reduce_row_with_doc(_Db, {Key, Value}, {undefined, _}) ->
+    {[{key, Key}, {value, Value}, {doc, null}]};
+reduce_row_with_doc(Db, {Key, Value}, IdRev) ->
+    {[{key, Key}, {value, Value}] ++ doc_member(Db, IdRev)}.
 
 doc_member(Db, {DocId, Rev}) ->
     ?LOG_DEBUG("Include Doc: ~p ~p", [DocId, Rev]),

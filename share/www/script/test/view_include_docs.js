@@ -32,6 +32,31 @@ couchTests.view_include_docs = function(debug) {
       with_id: {
         map: "function(doc) {if(doc.link_id) { var value = {'_id':doc.link_id}; if (doc.link_rev) {value._rev = doc.link_rev}; emit(doc._id, value);}};"
       },
+      maxvalue: {
+        map: "function(doc) {if(doc.integer) emit(null, doc.integer);}",
+        reduce: stringFun(function(keys, values, rereduce) {
+          if(!rereduce) {
+            var rval = {_id: keys[0][1], integer: values[0]};
+            log(JSON.stringify(rval));
+            for(var i = 1; i < keys.length; i++) {
+              if(values[i] > rval.integer) {
+                rval = {_id: keys[i][1], integer: values[i]};
+              }
+            }
+            log("R: " + JSON.stringify(rval));
+            return rval;
+          } else {
+            var rval = values[0];
+            for(var i = 0; i < values.length; i++) {
+              if(values[i].integer > rval.integer) {
+                rval = values[i];
+              }
+            }
+            log("RR: " + JSON.stringify(rval));
+            return rval;
+          }
+        })
+      },
       summate: {
         map:"function (doc) {emit(doc.integer, doc.integer)};",
         reduce:"function (keys, values) { return sum(values); };"
@@ -68,24 +93,6 @@ couchTests.view_include_docs = function(debug) {
 
   resp = db.allDocs({include_docs: true, limit: 0});
   T(resp.rows.length == 0);
-
-  // No reduce support
-  try {
-      resp = db.view('test/summate', {include_docs: true});
-      alert(JSON.stringify(resp));
-      T(0==1);
-  } catch (e) {
-      T(e.error == 'query_parse_error');
-  }
-
-  // Reduce support when reduce=false
-  resp = db.view('test/summate', {reduce: false, include_docs: true});
-  T(resp.rows.length == 100);
-
-  // Not an error with include_docs=false&reduce=true
-  resp = db.view('test/summate', {reduce: true, include_docs: false});
-  T(resp.rows.length == 1);
-  T(resp.rows[0].value == 4950);
 
   T(db.save({
     "_id": "link-to-10",
@@ -135,4 +142,29 @@ couchTests.view_include_docs = function(debug) {
   T(!resp.rows[0].doc);
   T(resp.rows[0].doc == null);
   T(resp.rows[1].doc.integer == 23);
+  
+  // Checking behavior for reduce views.
+
+  // Reduce values that don't contain an _id have a null doc
+  resp = db.view("test/summate", {include_docs: true});
+  T(resp.rows[0].value == 5050);
+  T(resp.rows[0].doc == null);
+
+  // reduce rows with an _id have a doc set.
+  resp = db.view("test/maxvalue", {include_docs: true});
+  T(resp.rows[0].value._id == "0");
+  T(resp.rows[0].value.integer == 100);
+  T(resp.rows[0].doc._id == "0");
+  T(resp.rows[0].doc.integer == 100);
+
+  // Various combinations of include_docs and reduce don't cause errors.
+  
+  // Reduce support when reduce=false
+  resp = db.view('test/summate', {reduce: false, include_docs: true});
+  T(resp.rows.length == 101);
+
+  // Not an error with include_docs=false&reduce=true
+  resp = db.view('test/summate', {reduce: true, include_docs: false});
+  T(resp.rows.length == 1);
+  T(resp.rows[0].value == 5050);
 };
