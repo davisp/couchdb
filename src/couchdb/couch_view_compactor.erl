@@ -72,8 +72,7 @@ compact_group(Group, EmptyGroup) ->
         current_seq=Seq
     },
 
-    Pid = couch_view:get_group_server(DbName, GroupId),
-    gen_server:cast(Pid, {compact_done, NewGroup}).
+    exit({compact_done, NewGroup}).
 
 %% @spec compact_view(View, EmptyView, Retry) -> CompactView
 compact_view(View, EmptyView) ->
