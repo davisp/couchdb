@@ -32,6 +32,7 @@ loadTest("basics.js");
 
 // keep sorted
 loadTest("all_docs.js");
+loadTest("app_engine.js");
 loadTest("attachments.js");
 loadTest("attachments_multipart.js");
 loadTest("attachment_names.js");

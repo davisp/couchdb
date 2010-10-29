@@ -38,7 +38,7 @@ terminate(Reason, _Contexts) ->
 
 handle_call({get_ctx, Key}, _From, Contexts) ->
     case ets:lookup(Contexts, Key) of
-        [Pid] ->
+        [{Key, Pid}] ->
             {reply, {ok, Pid}, Contexts};
         [] ->
             {ok, Pid} = couch_ape_context:start_link(Key),

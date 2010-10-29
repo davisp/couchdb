@@ -35,9 +35,12 @@ var init_req = function(reqid, req) {
     ctx.requests.push(["delete_doc", [doc], options]);
   };
 
-  ctx.sandbox.query_view = function(view_id, options) {
+  ctx.sandbox.query_view = function(view_info, options) {
     var opts = options.options || {};
-    ctx.requests.push(["query_view", [view_id, opts], options]);
+    if(view_info !== null) {
+      view_info = [ddoc._id, view_info];
+    }
+    ctx.requests.push(["query_view", [view_info, opts], options]);
   };
 
   ctx.sandbox.respond = function(resp) {
