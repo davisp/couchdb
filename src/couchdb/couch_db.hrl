@@ -302,11 +302,13 @@
     db_open_options = []
 }).
 
--record(btree, {
+-record(btree,{
     fd,
     root,
-    extract_kv = fun({_Key, _Value} = KV) -> KV end,
-    assemble_kv = fun(Key, Value) -> {Key, Value} end,
+    extract_kv = fun({Key, Value}) -> {Key, Value} end,
+    assemble_kv =  fun(Key, Value) -> {Key, Value} end,
     less = fun(A, B) -> A < B end,
-    reduce = nil
+    reduce = nil,
+    chunk_size = 16#4FF
 }).
+
