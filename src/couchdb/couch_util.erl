@@ -24,7 +24,6 @@
 -export([verify/2,simple_call/2,shutdown_sync/1]).
 -export([get_value/2, get_value/3]).
 -export([md5/1, md5_init/0, md5_update/2, md5_final/1]).
--export([reorder_results/2]).
 -export([url_strip_password/1]).
 -export([encode_doc_id/1]).
 
@@ -406,12 +405,6 @@ md5_update(Ctx, D) ->
 md5_final(Ctx) ->
     try crypto:md5_final(Ctx) catch error:_ -> erlang:md5_final(Ctx) end.
 
-% linear search is faster for small lists, length() is 0.5 ms for 100k list
-reorder_results(Keys, SortedResults) when length(Keys) < 100 ->
-    [couch_util:get_value(Key, SortedResults) || Key <- Keys];
-reorder_results(Keys, SortedResults) ->
-    KeyDict = dict:from_list(SortedResults),
-    [dict:fetch(Key, KeyDict) || Key <- Keys].
 
 url_strip_password(Url) ->
     re:replace(Url,
