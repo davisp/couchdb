@@ -100,7 +100,6 @@ def main():
 
         sys.stderr.write("Loading docs...")
         load_docs(db)
-        exit(1)
         sys.stderr.write("Done\n")
 
         sys.stderr.write("Running tests...")
