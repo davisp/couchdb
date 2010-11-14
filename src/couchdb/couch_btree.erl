@@ -15,11 +15,11 @@
 
 -export([open/1, open/2, open/3, set_options/2, get_state/1]).
 -export([lookup/2, foldl/3, foldl/4, fold/4]).
--export([full_reduce/1, final_reduce/2, fold_reduce/4]).
 -export([add/2, add_remove/3, query_modify/4]).
+-export([full_reduce/1, final_reduce/2, fold_reduce/4]).
 
 
--record(btree,{
+-record(btree, {
     fd,
     root,
     extract_kv = fun({Key, Value}) -> {Key, Value} end,
@@ -29,15 +29,23 @@
     chunk_size = 16#4FF
 }).
 
+-record(stream_st, {
+    dir,
+    start_key,
+    in_range,
+    acc_fun,
+    acc
+}).
 
 %% Some helper macros
+-define(ts(T), tuple_size(T)).
 -define(l2t(L), list_to_tuple(L)).
 -define(rev(L), lists:reverse(L)).
 -define(rev2(L, T), lists:reverse(L, T)).
 -define(extract(Bt, Value), (Bt#btree.extract_kv)(Value)).
 -define(assemble(Bt, K, V), (Bt#btree.assemble_kv)(K, V)).
 -define(less(Bt, A, B), (Bt#btree.less)(A, B)).
-
+-define(in_range(S, K), (S#stream_st.in_range)(K)).
 
 %% @doc Open a new btree.
 %%
@@ -111,172 +119,289 @@ lookup(_Bt, nil, Keys) ->
 lookup(Bt, {Pointer, _Reds}, Keys) ->
     {NodeType, NodeList} = get_node(Bt, Pointer),
     case NodeType of
-        kp_node -> lookup_kpnode(Bt, ?l2t(NodeList), 1, Keys, []);
-        kv_mode -> lookup_kvnode(Bt, ?l2t(NodeList), 1, Keys, [])
+        kp_node -> lookup_kp_node(Bt, ?l2t(NodeList), 1, Keys, []);
+        kv_mode -> lookup_kv_node(Bt, ?l2t(NodeList), 1, Keys, [])
     end.
 
-lookup_kpnode(_Bt, _Nodes, _Pos, [], Output) ->
+lookup_kp_node(_Bt, _Nodes, _Pos, [], Output) ->
     {ok, lists:reverse(Output)};
-lookup_kpnode(_Bt, Nodes, Pos, Keys, Output) when tuple_size(Nodes) < Pos ->
+lookup_kp_node(_Bt, Nodes, Pos, Keys, Output) when ?ts(Nodes) < Pos ->
     {ok, lists:reverse(Output, [{Key, not_found} || Key <- Keys])};
-lookup_kpnode(Bt, Nodes, Pos, [NextKey | _] = Keys, Output) ->
-    KeyPos = find_key_pos(Bt, Nodes, Pos, tuple_size(Nodes), NextKey),
+lookup_kp_node(Bt, Nodes, Pos, [NextKey | _] = Keys, Output) ->
+    KeyPos = find_key_pos(Bt, Nodes, Pos, ?ts(Nodes), NextKey),
     {KpKey, PointerInfo} = element(KeyPos, Nodes),
     SplitFun = fun(LookupKey) -> not ?less(Bt, KpKey, LookupKey) end,
     case lists:splitwith(SplitFun, Keys) of
         {[], GreaterQueries} ->
-            lookup_kpnode(Bt, Nodes, Pos + 1, GreaterQueries, Output);
+            lookup_kp_node(Bt, Nodes, Pos + 1, GreaterQueries, Output);
         {LessEqQueries, GreaterQueries} ->
             {ok, Rows} = lookup(Bt, PointerInfo, LessEqQueries),
             Output2 = ?rev2(Rows, Output),
-            lookup_kpnode(Bt, Nodes, KeyPos + 1, GreaterQueries, Output2)
+            lookup_kp_node(Bt, Nodes, KeyPos + 1, GreaterQueries, Output2)
     end.
 
-lookup_kvnode(_Bt, _Nodes, _Pos, [], Output) ->
+lookup_kv_node(_Bt, _Nodes, _Pos, [], Output) ->
     {ok, lists:reverse(Output)};
-lookup_kvnode(_Bt, Nodes, Pos, Keys, Output) when tuple_size(Nodes) < Pos ->
+lookup_kv_node(_Bt, Nodes, Pos, Keys, Output) when ?ts(Nodes) < Pos ->
     {ok, lists:reverse(Output, [{Key, not_found} || Key <- Keys])};
-lookup_kvnode(Bt, Nodes, Pos, [NextKey | RestKeys], Output) ->
-    KeyPos = find_key_pos(Bt, Nodes, Pos, tuple_size(Nodes), NextKey),
+lookup_kv_node(Bt, Nodes, Pos, [NextKey | RestKeys], Output) ->
+    KeyPos = find_key_pos(Bt, Nodes, Pos, ?ts(Nodes), NextKey),
     {KvKey, Val} = element(KeyPos, Nodes),
-    case ?less(Bt, NextKey, KvKey) of
-        true ->
+    case cmp_keys(Bt, NextKey, KvKey) of
+        lesser ->
             Output2 = [{NextKey, not_found} | Output],
-            lookup_kvnode(Bt, Nodes, Pos, RestKeys, Output2);
-        false ->
-            case ?less(Bt, KvKey, NextKey) of
-                true ->
-                    Output2 = [{NextKey, not_found} | Output],
-                    lookup_kvnode(Bt, Nodes, Pos + 1, RestKeys, Output2);
-                false ->
-                    Result = {ok, ?assemble(Bt, KvKey, Val)},
-                    Output2 = [{KvKey, Result} | Output],
-                    lookup_kvnode(Bt, Nodes, Pos, RestKeys, Output2)
-            end
+            lookup_kv_node(Bt, Nodes, Pos, RestKeys, Output2);
+        equal ->
+            Output2 = [{KvKey, {ok, ?assemble(Bt, KvKey, Val)}} | Output],
+            lookup_kv_node(Bt, Nodes, Pos, RestKeys, Output2);
+        greater ->
+            Output2 = [{NextKey, not_found} | Output],
+            lookup_kv_node(Bt, Nodes, Pos + 1, RestKeys, Output2)
     end.
 
 
+%% @doc Fold over a btree in sorted order.
+%%
+%% @spec foldl(Bt, Fun, Acc) -> Acc2.
 foldl(Bt, Fun, Acc) ->
     fold(Bt, Fun, Acc, []).
 
-
+%% @doc Fold over a btree in sorted order.
+%%
+%% @spec foldl(Bt, Fun, Acc, Options) -> Acc2.
 foldl(Bt, Fun, Acc, Options) ->
     fold(Bt, Fun, Acc, Options).
 
-
+%% @doc Fold over a btree.
+%% This will fold over an entire btree's key/value pairs passing
+%% each pair to the provided function along with the given accumulator.
+%%
+%% Functions can return {ok, Acc2} to continue folding, or {stop, Acc2}
+%% to halt the folding early.
 fold(#btree{root=nil}, _Fun, Acc, _Options) ->
     {ok, {[], []}, Acc};
 fold(#btree{root=Root}=Bt, Fun, Acc, Options) ->
     Dir = couch_util:get_value(dir, Options, fwd),
-    InRange = make_key_in_end_range_function(Bt, Dir, Options),
-    Result =
-    case couch_util:get_value(start_key, Options) of
-    undefined ->
-        stream_node(Bt, [], Bt#btree.root, InRange, Dir,
-                convert_fun_arity(Fun), Acc);
-    StartKey ->
-        stream_node(Bt, [], Bt#btree.root, StartKey, InRange, Dir,
-                convert_fun_arity(Fun), Acc)
-    end,
-    case Result of
-    {ok, Acc2}->
-        {_P, FullReduction} = Root,
-        {ok, {[], [FullReduction]}, Acc2};
-    {stop, LastReduction, Acc2} ->
-        {ok, LastReduction, Acc2}
+    State = #stream_st{
+        dir=Dir,
+        start_key=couch_util:get_value(start_key, Options),
+        in_range=make_range_fun(Bt, Dir, Options),
+        acc_fun=convert_arity(Fun),
+        acc=Acc
+    },
+    case stream_node(Bt, [], Bt#btree.root, State) of
+        {ok, Acc2}->
+            {_P, FullReduction} = Root,
+            {ok, {[], [FullReduction]}, Acc2};
+        {stop, LastReduction, Acc2} ->
+            {ok, LastReduction, Acc2}
     end.
 
-
-stream_node(Bt, Reds, {Pointer, _Reds}, StartKey, InRange, Dir, Fun, Acc) ->
+stream_node(Bt, Reds, {Pointer, _Reds}, State) ->
     {NodeType, NodeList} = get_node(Bt, Pointer),
-    case NodeType of
-    kp_node ->
-        stream_kp_node(Bt, Reds, adjust_dir(Dir, NodeList), StartKey, InRange, Dir, Fun, Acc);
-    kv_node ->
-        stream_kv_node(Bt, Reds, adjust_dir(Dir, NodeList), StartKey, InRange, Dir, Fun, Acc)
+    AdjNodes = adjust_dir(State#stream_st.dir, NodeList),
+    StartKey = State#stream_st.start_key,
+    case {NodeType, StartKey} of
+        {kp_node, _} -> stream_kp_node(Bt, Reds, AdjNodes, State);
+        {kv_node, undefined} -> stream_kv_node(Bt, Reds, [], AdjNodes, State);
+        {kv_node, _} -> stream_kv_node(Bt, Reds, AdjNodes, State)
     end.
 
-
-stream_node(Bt, Reds, {Pointer, _Reds}, InRange, Dir, Fun, Acc) ->
-    {NodeType, NodeList} = get_node(Bt, Pointer),
-    case NodeType of
-    kp_node ->
-        stream_kp_node(Bt, Reds, adjust_dir(Dir, NodeList), InRange, Dir, Fun, Acc);
-    kv_node ->
-        stream_kv_node2(Bt, Reds, [], adjust_dir(Dir, NodeList), InRange, Dir, Fun, Acc)
-    end.
-
-
-stream_kp_node(_Bt, _Reds, [], _InRange, _Dir, _Fun, Acc) ->
-    {ok, Acc};
-stream_kp_node(Bt, Reds, [{_Key, {Pointer, Red}} | Rest], InRange, Dir, Fun, Acc) ->
-    case stream_node(Bt, Reds, {Pointer, Red}, InRange, Dir, Fun, Acc) of
-    {ok, Acc2} ->
-        stream_kp_node(Bt, [Red | Reds], Rest, InRange, Dir, Fun, Acc2);
-    {stop, LastReds, Acc2} ->
-        {stop, LastReds, Acc2}
-    end.
-
-
-stream_kp_node(Bt, Reds, KPs, StartKey, InRange, Dir, Fun, Acc) ->
-    {NewReds, NodesToStream} =
-    case Dir of
-    fwd ->
-        % drop all nodes sorting before the key
-        drop_nodes(Bt, Reds, StartKey, KPs);
-    rev ->
-        % keep all nodes sorting before the key, AND the first node to sort after
-        RevKPs = lists:reverse(KPs),
-         case lists:splitwith(fun({Key, _Pointer}) -> less(Bt, Key, StartKey) end, RevKPs) of
-        {_RevsBefore, []} ->
-            % everything sorts before it
-            {Reds, KPs};
-        {RevBefore, [FirstAfter | Drop]} ->
-            {[Red || {_K,{_P,Red}} <- Drop] ++ Reds,
-                 [FirstAfter | lists:reverse(RevBefore)]}
-        end
-    end,
-    case NodesToStream of
-    [] ->
-        {ok, Acc};
-    [{_Key, {Pointer, Red}} | Rest] ->
-        case stream_node(Bt, NewReds, {Pointer, Red}, StartKey, InRange, Dir, Fun, Acc) of
+stream_kp_node(_Bt, _Reds, [], State) ->
+    {ok, State#stream_st.acc};
+stream_kp_node(Bt, Reds, KPs, #stream_st{start_key=undefined}=State) ->
+    [{_Key, {Ptr, Red}} | Rest] = KPs,
+    case stream_node(Bt, Reds, {Ptr, Red}, State) of
         {ok, Acc2} ->
-            stream_kp_node(Bt, [Red | NewReds], Rest, InRange, Dir, Fun, Acc2);
+            stream_kp_node(Bt, [Red | Reds], Rest, State#stream_st{acc=Acc2});
         {stop, LastReds, Acc2} ->
             {stop, LastReds, Acc2}
-        end
+    end;
+stream_kp_node(Bt, Reds, KPs, State) ->
+    StartKey = State#stream_st.start_key,
+    {NewReds, NodesToStream} = case State#stream_st.dir of
+        fwd ->
+            drop_nodes(Bt, Reds, StartKey, KPs);
+        rev ->
+            RevKPs = lists:reverse(KPs),
+            Predicate = fun({Key, _Ptr}) -> ?less(Bt, Key, StartKey) end,
+            case lists:splitwith(Predicate, RevKPs) of
+                {_RevsBefore, []} ->
+                    {Reds, KPs};
+                {RevBefore, [FirstAfter | Drop]} ->
+                    Reds2 = [Red || {_K, {_P, Red}} <- Drop] ++ Reds,
+                    {Reds2, [FirstAfter | ?rev(RevBefore)]}
+            end
+    end,
+    case NodesToStream of
+        [] ->
+            {ok, State#stream_st.acc};
+        [{_Key, {Ptr, Red}} | Rest] ->
+            case stream_node(Bt, NewReds, {Ptr, Red}, State) of
+                {ok, Acc2} ->
+                    State2 = State#stream_st{start_key=undefined, acc=Acc2},
+                    stream_kp_node(Bt, [Red | NewReds], Rest, State2);
+                {stop, LastReds, Acc2} ->
+                    {stop, LastReds, Acc2}
+            end
     end.
 
-
-stream_kv_node(Bt, Reds, KVs, StartKey, InRange, Dir, Fun, Acc) ->
-    DropFun =
-    case Dir of
-    fwd ->
-        fun({Key, _}) -> less(Bt, Key, StartKey) end;
-    rev ->
-        fun({Key, _}) -> less(Bt, StartKey, Key) end
+stream_kv_node(Bt, Reds, KVs, State) ->
+    StartKey = State#stream_st.start_key,
+    DropFun = case State#stream_st.dir of
+        fwd -> fun({Key, _}) -> ?less(Bt, Key, StartKey) end;
+        rev -> fun({Key, _}) -> ?less(Bt, StartKey, Key) end
     end,
     {LTKVs, GTEKVs} = lists:splitwith(DropFun, KVs),
-    AssembleLTKVs = [assemble(Bt,K,V) || {K,V} <- LTKVs],
-    stream_kv_node2(Bt, Reds, AssembleLTKVs, GTEKVs, InRange, Dir, Fun, Acc).
+    AssembleLTKVs = [?assemble(Bt, K, V) || {K, V} <- LTKVs],
+    stream_kv_node(Bt, Reds, AssembleLTKVs, GTEKVs, State).
 
-
-stream_kv_node2(_Bt, _Reds, _PrevKVs, [], _InRange, _Dir, _Fun, Acc) ->
-    {ok, Acc};
-stream_kv_node2(Bt, Reds, PrevKVs, [{K,V} | RestKVs], InRange, Dir, Fun, Acc) ->
-    case InRange(K) of
-    false ->
-        {stop, {PrevKVs, Reds}, Acc};
-    true ->
-        AssembledKV = assemble(Bt, K, V),
-        case Fun(AssembledKV, {PrevKVs, Reds}, Acc) of
-        {ok, Acc2} ->
-            stream_kv_node2(Bt, Reds, [AssembledKV | PrevKVs], RestKVs, InRange, Dir, Fun, Acc2);
-        {stop, Acc2} ->
-            {stop, {PrevKVs, Reds}, Acc2}
-        end
+stream_kv_node(_Bt, _Reds, _PrevKVs, [], State) ->
+    {ok, State#stream_st.acc};
+stream_kv_node(Bt, Reds, PrevKVs, [{K, V} | RestKVs], State) ->
+    AccFun = State#stream_st.acc_fun,
+    case ?in_range(State, K) of
+        false ->
+            {stop, {PrevKVs, Reds}, State#stream_st.acc};
+        true ->
+            AssembledKV = ?assemble(Bt, K, V),
+            case AccFun(AssembledKV, {PrevKVs, Reds}, State#stream_st.acc) of
+                {ok, Acc2} ->
+                    PrevKVs2 = [AssembledKV | PrevKVs],
+                    State2 = State#stream_st{acc=Acc2},
+                    stream_kv_node(Bt, Reds, PrevKVs2, RestKVs, State2);
+                {stop, Acc2} ->
+                    {stop, {PrevKVs, Reds}, Acc2}
+            end
     end.
+
+
+%% @doc Add key/value pairs to the btree.
+%%
+%% @spec add(Bt, Insertions) -> {ok, Bt2}.
+add(Bt, Insertions) ->
+    add_remove(Bt, Insertions, []).
+
+%% @doc Add and remove key/value pairs to the btree.
+%%
+%% @spec add_remove(Bt, Insertions, Deletions) -> {ok, Bt2}.
+add_remove(Bt, Insertions, Deletions) ->
+    {ok, [], Bt2} = query_modify(Bt, [], Insertions, Deletions),
+    {ok, Bt2}.
+
+%% @doc Add and remove key/value pairs and return query results from the btree.
+%%
+%% @spec query_modify(Bt, Queries, Insertions, Deletions) -> {ok, Results, Bt2}.
+query_modify(Bt, Queries, Insertions, Deletions) ->
+    #btree{root=Root} = Bt,
+    InsActions = lists:map(
+        fun(KeyValue) ->
+            {Key, Value} = ?extract(Bt, KeyValue),
+            {insert, Key, Value}
+        end, Insertions),
+    DelActions = [{delete, Key, nil} || Key <- Deletions],
+    QryActions = [{lookup, Key, nil} || Key <- Queries],
+    Actions = lists:append([InsActions, DelActions, QryActions]),
+    SortFun = fun({OpA, A, _}, {OpB, B, _}) ->
+        case A == B of
+            true -> op_order(OpA) < op_order(OpB);
+            false -> less(Bt, A, B)
+        end
+    end,
+    Actions = lists:sort(SortFun, InsActions ++ DelActions ++ QryActions),
+    {ok, KeyPointers, QueryResults, Bt2} = modify_node(Bt, Root, Actions, []),
+    {ok, NewRoot, Bt3} = complete_root(Bt2, KeyPointers),
+    {ok, QueryResults, Bt3#btree{root=NewRoot}}.
+
+modify_node(Bt, PtrInfo, Actions, Output) ->
+    {NodeType, NodeList} = case PtrInfo of
+        nil -> {kv_node, []};
+        {Ptr, _} -> get_node(Bt, Ptr)
+    end,
+    NodeTuple = ?l2t(NodeList),
+
+    {ok, NewNodes, Output2, Bt2} = case NodeType of
+        kp_node -> modify_kp_node(Bt, NodeTuple, 1, Actions, [], Output);
+        kv_node -> modify_kv_node(Bt, NodeTuple, 1, Actions, [], Output)
+    end,
+
+    case NewNodes of
+        [] ->
+            {ok, [], Output2, Bt2};
+        NodeList ->
+            {LastKey, _LastValue} = element(?ts(NodeTuple), NodeTuple),
+            {ok, [{LastKey, PtrInfo}], Output2, Bt2};
+        _Else2 ->
+            {ok, Root, Bt3} = write_node(Bt2, NodeType, NewNodes),
+            {ok, Root, Output2, Bt3}
+    end.
+
+modify_kp_node(Bt, {}, _Pos, Actions, [], Output) ->
+    modify_node(Bt, nil, Actions, Output);
+modify_kp_node(Bt, Nodes, Pos, [], NewNode, Output) ->
+    {ok, ?rev2(NewNode, rest_nodes(Nodes, Pos, ?ts(Nodes), [])), Output, Bt};
+modify_kp_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
+    [{_, ActKey, _} | _]= Actions,
+    NumNodes = tuple_size(Nodes),
+    KpPos = find_key_pos(Bt, Nodes, Pos, NumNodes, ActKey),
+    case KpPos == NumNodes of
+        true  ->
+            {_, PtrInfo} = element(NumNodes, Nodes),
+            {ok, KPs, Output2, Bt2} = modify_node(Bt, PtrInfo, Actions, Output),
+            NewNode2 = ?rev2(NewNode, rest_nodes(Nodes, Pos, NumNodes-1, KPs)),
+            {ok, NewNode2, Output2, Bt2};
+        false ->
+            {NodeKey, PtrInfo} = element(KpPos, Nodes),
+            SplitFun = fun({_AType, AKey, _AValue}) ->
+                not less(Bt, NodeKey, AKey)
+            end,
+            {LTEActs, GTActs} = lists:splitwith(SplitFun, Actions),
+            {ok, KPs, Output2, Bt2} = modify_node(Bt, PtrInfo, LTEActs, GTActs),
+            NewNode2 = ?rev2(KPs, rest_nodes(Nodes, Pos, KpPos - 1, NewNode)),
+            modify_kp_node(Bt2, Nodes, KpPos + 1, GTActs, NewNode2, Output2)
+    end.
+
+modify_kv_node(Bt, Nodes, Pos, [], NewNode, Output) ->
+    {ok, ?rev2(NewNode, rest_nodes(Nodes, Pos, ?ts(Nodes), [])), Output, Bt};
+modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) when Pos > ?ts(Nodes) ->
+    [{ActType, ActKey, ActValue} | RestActs] = Actions,
+    case ActType of
+        insert ->
+            NewNode2 = [{ActKey, ActValue} | NewNode],
+            modify_kv_node(Bt, Nodes, Pos, RestActs, NewNode2, Output);
+        remove ->
+            modify_kv_node(Bt, Nodes, Pos, RestActs, NewNode, Output);
+        fetch ->
+            Output2 = [{not_found, {ActKey, nil}} | Output],
+            modify_kv_node(Bt, Nodes, Pos, RestActs, NewNode, Output2)
+    end;
+modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
+    [{ActType, ActKey, ActValue} | RestActs] = Actions,
+    KvPos = find_key_pos(Bt, Nodes, Pos, ?ts(Nodes), ActKey),
+    {Key, Value} = element(KvPos, Nodes),
+    NewNode2 =  rest_rev_nodes(Nodes, Pos, KvPos - 1, NewNode),
+    case {cmp_keys(Bt, ActKey, Key), ActType} of
+        {lesser, insert} ->
+            NewNode3 = [{ActKey, ActValue} | NewNode2],
+            modify_kv_node(Bt, Nodes, KvPos, RestActs, NewNode3, Output);
+        {lesser, delete} ->
+            modify_kv_node(Bt, Nodes, KvPos, RestActs, NewNode2, Output);
+        {lesser, lookup} ->
+            Output2 = [{not_found, {ActKey, nil}} | Output],
+            modify_kv_node(Bt, Nodes, KvPos, RestActs, NewNode2, Output2);
+        {equal, insert} ->
+            NewNode3 = [{ActKey, ActValue} | NewNode2],
+            modify_kv_node(Bt, Nodes, KvPos + 1, RestActs, NewNode3, Output);
+        {equal, delete} ->
+            modify_kv_node(Bt, Nodes, KvPos + 1, RestActs, NewNode2, Output);
+        {equal, lookup} ->
+            Output2 = [{ok, ?assemble(Bt, Key, Value)} | Output],
+            modify_kv_node(Bt, Nodes, KvPos, RestActs, NewNode2, Output2);
+        {greater, _} ->
+            NewNode3 = [{Key, Value} | NewNode2],
+            modify_kv_node(Bt, Nodes, KvPos + 1, Actions, NewNode3, Output)
+    end.
+
 
 
 full_reduce(#btree{root=nil,reduce=Reduce}) ->
@@ -452,143 +577,6 @@ reduce_stream_kv_node2(Bt, [{Key, Value}| RestKVs], GroupedKey, GroupedKVsAcc,
     end.
 
 
-add(Bt, InsertKeyValues) ->
-    add_remove(Bt, InsertKeyValues, []).
-
-add_remove(Bt, InsertKeyValues, RemoveKeys) ->
-    {ok, [], Bt2} = query_modify(Bt, [], InsertKeyValues, RemoveKeys),
-    {ok, Bt2}.
-
-query_modify(Bt, LookupKeys, InsertValues, RemoveKeys) ->
-    #btree{root=Root} = Bt,
-    InsertActions = lists:map(
-        fun(KeyValue) ->
-            {Key, Value} = extract(Bt, KeyValue),
-            {insert, Key, Value}
-        end, InsertValues),
-    RemoveActions = [{remove, Key, nil} || Key <- RemoveKeys],
-    FetchActions = [{fetch, Key, nil} || Key <- LookupKeys],
-    SortFun =
-        fun({OpA, A, _}, {OpB, B, _}) ->
-            case A == B of
-            % A and B are equal, sort by op.
-            true -> op_order(OpA) < op_order(OpB);
-            false ->
-                less(Bt, A, B)
-            end
-        end,
-    Actions = lists:sort(SortFun, lists:append([InsertActions, RemoveActions, FetchActions])),
-    {ok, KeyPointers, QueryResults, Bt2} = modify_node(Bt, Root, Actions, []),
-    {ok, NewRoot, Bt3} = complete_root(Bt2, KeyPointers),
-    {ok, QueryResults, Bt3#btree{root=NewRoot}}.
-
-
-modify_node(Bt, RootPointerInfo, Actions, QueryOutput) ->
-    case RootPointerInfo of
-    nil ->
-        NodeType = kv_node,
-        NodeList = [];
-    {Pointer, _Reds} ->
-        {NodeType, NodeList} = get_node(Bt, Pointer)
-    end,
-    NodeTuple = list_to_tuple(NodeList),
-
-    {ok, NewNodeList, QueryOutput2, Bt2} =
-    case NodeType of
-    kp_node -> modify_kpnode(Bt, NodeTuple, 1, Actions, [], QueryOutput);
-    kv_node -> modify_kvnode(Bt, NodeTuple, 1, Actions, [], QueryOutput)
-    end,
-    case NewNodeList of
-    [] ->  % no nodes remain
-        {ok, [], QueryOutput2, Bt2};
-    NodeList ->  % nothing changed
-        {LastKey, _LastValue} = element(tuple_size(NodeTuple), NodeTuple),
-        {ok, [{LastKey, RootPointerInfo}], QueryOutput2, Bt2};
-    _Else2 ->
-        {ok, ResultList, Bt3} = write_node(Bt2, NodeType, NewNodeList),
-        {ok, ResultList, QueryOutput2, Bt3}
-    end.
-
-
-modify_kpnode(Bt, {}, _LowerBound, Actions, [], QueryOutput) ->
-    modify_node(Bt, nil, Actions, QueryOutput);
-modify_kpnode(Bt, NodeTuple, LowerBound, [], ResultNode, QueryOutput) ->
-    {ok, lists:reverse(ResultNode, bounded_tuple_to_list(NodeTuple, LowerBound,
-            tuple_size(NodeTuple), [])), QueryOutput, Bt};
-modify_kpnode(Bt, NodeTuple, LowerBound,
-        [{_, FirstActionKey, _}|_]=Actions, ResultNode, QueryOutput) ->
-    Sz = tuple_size(NodeTuple),
-    N = find_key_pos(Bt, NodeTuple, LowerBound, Sz, FirstActionKey),
-    case N =:= Sz of
-    true  ->
-        % perform remaining actions on last node
-        {_, PointerInfo} = element(Sz, NodeTuple),
-        {ok, ChildKPs, QueryOutput2, Bt2} =
-            modify_node(Bt, PointerInfo, Actions, QueryOutput),
-        NodeList = lists:reverse(ResultNode, bounded_tuple_to_list(NodeTuple, LowerBound,
-            Sz - 1, ChildKPs)),
-        {ok, NodeList, QueryOutput2, Bt2};
-    false ->
-        {NodeKey, PointerInfo} = element(N, NodeTuple),
-        SplitFun = fun({_ActionType, ActionKey, _ActionValue}) ->
-                not less(Bt, NodeKey, ActionKey)
-            end,
-        {LessEqQueries, GreaterQueries} = lists:splitwith(SplitFun, Actions),
-        {ok, ChildKPs, QueryOutput2, Bt2} =
-                modify_node(Bt, PointerInfo, LessEqQueries, QueryOutput),
-        ResultNode2 = lists:reverse(ChildKPs, bounded_tuple_to_revlist(NodeTuple,
-                LowerBound, N - 1, ResultNode)),
-        modify_kpnode(Bt2, NodeTuple, N+1, GreaterQueries, ResultNode2, QueryOutput2)
-    end.
-
-modify_kvnode(Bt, NodeTuple, LowerBound, [], ResultNode, QueryOutput) ->
-    {ok, lists:reverse(ResultNode, bounded_tuple_to_list(NodeTuple, LowerBound, tuple_size(NodeTuple), [])), QueryOutput, Bt};
-modify_kvnode(Bt, NodeTuple, LowerBound, [{ActionType, ActionKey, ActionValue} | RestActions], ResultNode, QueryOutput) when LowerBound > tuple_size(NodeTuple) ->
-    case ActionType of
-    insert ->
-        modify_kvnode(Bt, NodeTuple, LowerBound, RestActions, [{ActionKey, ActionValue} | ResultNode], QueryOutput);
-    remove ->
-        % just drop the action
-        modify_kvnode(Bt, NodeTuple, LowerBound, RestActions, ResultNode, QueryOutput);
-    fetch ->
-        % the key/value must not exist in the tree
-        modify_kvnode(Bt, NodeTuple, LowerBound, RestActions, ResultNode, [{not_found, {ActionKey, nil}} | QueryOutput])
-    end;
-modify_kvnode(Bt, NodeTuple, LowerBound, [{ActionType, ActionKey, ActionValue} | RestActions], AccNode, QueryOutput) ->
-    N = find_key_pos(Bt, NodeTuple, LowerBound, tuple_size(NodeTuple), ActionKey),
-    {Key, Value} = element(N, NodeTuple),
-    ResultNode =  bounded_tuple_to_revlist(NodeTuple, LowerBound, N - 1, AccNode),
-    case less(Bt, ActionKey, Key) of
-    true ->
-        case ActionType of
-        insert ->
-            % ActionKey is less than the Key, so insert
-            modify_kvnode(Bt, NodeTuple, N, RestActions, [{ActionKey, ActionValue} | ResultNode], QueryOutput);
-        remove ->
-            % ActionKey is less than the Key, just drop the action
-            modify_kvnode(Bt, NodeTuple, N, RestActions, ResultNode, QueryOutput);
-        fetch ->
-            % ActionKey is less than the Key, the key/value must not exist in the tree
-            modify_kvnode(Bt, NodeTuple, N, RestActions, ResultNode, [{not_found, {ActionKey, nil}} | QueryOutput])
-        end;
-    false ->
-        % ActionKey and Key are maybe equal.
-        case less(Bt, Key, ActionKey) of
-        false ->
-            case ActionType of
-            insert ->
-                modify_kvnode(Bt, NodeTuple, N+1, RestActions, [{ActionKey, ActionValue} | ResultNode], QueryOutput);
-            remove ->
-                modify_kvnode(Bt, NodeTuple, N+1, RestActions, ResultNode, QueryOutput);
-            fetch ->
-                % ActionKey is equal to the Key, insert into the QueryOuput, but re-process the node
-                % since an identical action key can follow it.
-                modify_kvnode(Bt, NodeTuple, N, RestActions, ResultNode, [{ok, assemble(Bt, Key, Value)} | QueryOutput])
-            end;
-        true ->
-            modify_kvnode(Bt, NodeTuple, N + 1, [{ActionType, ActionKey, ActionValue} | RestActions], [{Key, Value} | ResultNode], QueryOutput)
-        end
-    end.
 
 
 % Read/Write btree nodes.
@@ -616,29 +604,15 @@ write_node(Bt, NodeType, NodeList) ->
 
 % Utility Functions
 
-extract(#btree{extract_kv=Extract}, Value) ->
-    Extract(Value).
 assemble(#btree{assemble_kv=Assemble}, Key, Value) ->
     Assemble(Key, Value).
 less(#btree{less=Less}, A, B) ->
     Less(A, B).
 
-find_key_pos(_Bt, _Nodes, Start, End, _Key) when Start == End ->
-    End;
-find_key_pos(Bt, Tuple, Start, End, Key) ->
-    Mid = Start + ((End - Start) div 2),
-    {TupleKey, _} = element(Mid, Tuple),
-    case less(Bt, TupleKey, Key) of
-        true -> find_key_pos(Bt, Tuple, Mid+1, End, Key);
-        false -> find_key_pos(Bt, Tuple, Start, Mid, Key)
-    end.
 
-
-
-
-
-
-% linear search is faster for small lists, length() is 0.5 ms for 100k list
+%% @doc
+%%
+%% @spec
 reorder_results(Keys, SortedResults) when length(Keys) < 100 ->
     [couch_util:get_value(Key, SortedResults) || Key <- Keys];
 reorder_results(Keys, SortedResults) ->
@@ -646,51 +620,110 @@ reorder_results(Keys, SortedResults) ->
     [dict:fetch(Key, KeyDict) || Key <- Keys].
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-% wraps a 2 arity function with the proper 3 arity function
-convert_fun_arity(Fun) when is_function(Fun, 2) ->
-    fun(KV, _Reds, AccIn) -> Fun(KV, AccIn) end;
-convert_fun_arity(Fun) when is_function(Fun, 3) ->
-    Fun.    % Already arity 3
-
-make_key_in_end_range_function(#btree{less=Less}, fwd, Options) ->
-    case couch_util:get_value(end_key_gt, Options) of
-    undefined ->
-        case couch_util:get_value(end_key, Options) of
-        undefined ->
-            fun(_Key) -> true end;
-        LastKey ->
-            fun(Key) -> not Less(LastKey, Key) end
-        end;
-    EndKey ->
-        fun(Key) -> Less(Key, EndKey) end
-    end;
-make_key_in_end_range_function(#btree{less=Less}, rev, Options) ->
-    case couch_util:get_value(end_key_gt, Options) of
-    undefined ->
-        case couch_util:get_value(end_key, Options) of
-        undefined ->
-            fun(_Key) -> true end;
-        LastKey ->
-            fun(Key) -> not Less(Key, LastKey) end
-        end;
-    EndKey ->
-        fun(Key) -> Less(EndKey, Key) end
+%% @doc Find the node for a given key.
+%%
+%% This does a binary search over the Nodes tuple to find
+%% the node where a given would be located.
+%%
+%% @spec find_key_pos(Bt, Nodes, Start, End, Key) -> Position.
+find_key_pos(_Bt, _Nodes, Start, End, _Key) when Start == End ->
+    End;
+find_key_pos(Bt, Nodes, Start, End, Key) ->
+    Mid = Start + ((End - Start) div 2),
+    {NodeKey, _} = element(Mid, Nodes),
+    case ?less(Bt, NodeKey, Key) of
+        true -> find_key_pos(Bt, Nodes, Mid+1, End, Key);
+        false -> find_key_pos(Bt, Nodes, Start, Mid, Key)
     end.
+
+
+%% @doc Wrap 2-arity functions so they can ignore reductions.
+%%
+%% @spec convert_arity(Fun1) -> Fun2.
+convert_arity(Fun) when is_function(Fun, 2) ->
+    fun(KV, _Reds, AccIn) -> Fun(KV, AccIn) end;
+convert_arity(Fun) when is_function(Fun, 3) ->
+    Fun.
+
+
+%% @doc
+%%
+%% @spec
+make_range_fun(#btree{less=Less}, Dir, Options) ->
+    case couch_util:get_value(end_key_gt, Options) of
+        undefined ->
+            case couch_util:get_value(end_key, Options) of
+                undefined ->
+                    fun(_Key) -> true end;
+                LastKey ->
+                    case Dir of
+                        fwd -> fun(Key) -> not Less(LastKey, Key) end;
+                        rev -> fun(Key) -> not Less(Key, LastKey) end
+                    end
+                end;
+        EndKey ->
+            case Dir of
+                fwd -> fun(Key) -> Less(Key, EndKey) end;
+                rev -> fun(Key) -> Less(EndKey, Key) end
+            end
+    end.
+
+
+%% @doc
+%%
+%% @spec
+cmp_keys(Bt, A, B) ->
+    case ?less(Bt, A, B) of
+        true ->
+            lesser;
+        false ->
+            case ?less(Bt, A, B) of
+                true ->
+                    greater;
+                false ->
+                    equal
+            end
+    end.
+
+
+%% @doc
+%%
+%% @spec
+rest_nodes(Nodes, Start, End, Tail) ->
+    rest_nodes(Nodes, Start, End, [], Tail).
+
+rest_nodes(_Nodes, Start, End, Acc, Tail) when Start > End ->
+    ?rev2(Acc, Tail);
+rest_nodes(Nodes, Start, End, Acc, Tail) ->
+    rest_nodes(Nodes, Start + 1, End, [element(Start, Nodes) | Acc], Tail).
+
+
+%% @doc
+%%
+%% @spec
+rest_rev_nodes(_Nodes, Start, End, Tail) when Start > End ->
+    Tail;
+rest_rev_nodes(Nodes, Start, End, Tail) ->
+    rest_rev_nodes(Nodes, Start + 1, End, [element(Start, Nodes) | Tail]).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -753,18 +786,6 @@ reduce_node(#btree{reduce=R}=Bt, kv_node, NodeList) ->
 
 
 
-bounded_tuple_to_revlist(_Tuple, Start, End, Tail) when Start > End ->
-    Tail;
-bounded_tuple_to_revlist(Tuple, Start, End, Tail) ->
-    bounded_tuple_to_revlist(Tuple, Start+1, End, [element(Start, Tuple)|Tail]).
-
-bounded_tuple_to_list(Tuple, Start, End, Tail) ->
-    bounded_tuple_to_list2(Tuple, Start, End, [], Tail).
-
-bounded_tuple_to_list2(_Tuple, Start, End, Acc, Tail) when Start > End ->
-    lists:reverse(Acc, Tail);
-bounded_tuple_to_list2(Tuple, Start, End, Acc, Tail) ->
-    bounded_tuple_to_list2(Tuple, Start + 1, End, [element(Start, Tuple) | Acc], Tail).
 
 
 
