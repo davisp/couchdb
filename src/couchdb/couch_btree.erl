@@ -37,6 +37,19 @@
     acc
 }).
 
+-record(rstream_st, {
+    dir,
+    start_key,
+    in_range,
+    grouped_key,
+    grouped_kvs,
+    grouped_reds,
+    group_fun,
+    acc_fun,
+    acc
+}).
+
+
 %% Some helper macros
 -define(ts(T), tuple_size(T)).
 -define(l2t(L), list_to_tuple(L)).
@@ -46,6 +59,7 @@
 -define(assemble(Bt, K, V), (Bt#btree.assemble_kv)(K, V)).
 -define(less(Bt, A, B), (Bt#btree.less)(A, B)).
 -define(in_range(S, K), (S#stream_st.in_range)(K)).
+
 
 %% @doc Open a new btree.
 %%
@@ -423,8 +437,30 @@ final_reduce(Reduce, {KVs, Reductions}) ->
     final_reduce(Reduce, {[], [Red | Reductions]}).
 
 
+% -record(rstream_st, {
+%     dir,
+%     start_key,
+%     in_range,
+%     grouped_key,
+%     grouped_kvs,
+%     grouped_reds,
+%     group_fun,
+%     acc_fun,
+%     acc
+% }).
+
+
 fold_reduce(#btree{root=Root}=Bt, Fun, Acc, Options) ->
     Dir = couch_util:get_value(dir, Options, fwd),
+    DefGroupFun = fun(_, _) -> true end,
+    State0 = #rstream_st{
+        dir=Dir,
+        start_key=couch_util:get_value(start_key, Options),
+        in_range=make_range_fun(Bt, Dir, Options),
+        group_fun=couch_util:get_value(key_group_fun, Options, DefGroupFun),
+        acc_fun=convert_arity(Fun),
+        acc=Acc
+    },
     StartKey = couch_util:get_value(start_key, Options),
     EndKey = couch_util:get_value(end_key, Options),
     KeyGroupFun = couch_util:get_value(key_group_fun, Options, fun(_,_) -> true end),
