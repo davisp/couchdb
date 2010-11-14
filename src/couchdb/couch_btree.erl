@@ -15,8 +15,8 @@
 
 -export([open/1, open/2, open/3, set_options/2, get_state/1]).
 -export([lookup/2, foldl/3, foldl/4, fold/4]).
--export([add/2, add_remove/3, query_modify/4]).
 -export([full_reduce/1, final_reduce/2, fold_reduce/4]).
+-export([add/2, add_remove/3, query_modify/4]).
 
 
 -record(btree, {
@@ -40,6 +40,7 @@
 -record(rstream_st, {
     dir,
     start_key,
+    end_key,
     in_range,
     grouped_key,
     grouped_kvs,
@@ -59,6 +60,8 @@
 -define(assemble(Bt, K, V), (Bt#btree.assemble_kv)(K, V)).
 -define(less(Bt, A, B), (Bt#btree.less)(A, B)).
 -define(in_range(S, K), (S#stream_st.in_range)(K)).
+-define(in_red_range(S, K), (S#rstream_st.in_range)(K)).
+-define(grouped(S, K), (S#rstream_st.group_fun)(S#rstream_st.grouped_key, K)).
 
 
 %% @doc Open a new btree.
@@ -290,6 +293,184 @@ stream_kv_node(Bt, Reds, PrevKVs, [{K, V} | RestKVs], State) ->
     end.
 
 
+%% @doc Get the reduction of the entire btree.
+%%
+%% @spec full_reduce(Bt) -> {ok, Reduction}.
+full_reduce(#btree{root=nil,reduce=Reduce}) ->
+    {ok, Reduce(reduce, [])};
+full_reduce(#btree{root={_P, Red}}) ->
+    {ok, Red}.
+
+%% @doc Complete a partial reduction.
+%%
+%% @spec final_reduce(Bt, Values) -> Reduction.
+final_reduce(#btree{reduce=Reduce}, Val) ->
+    final_reduce(Reduce, Val);
+final_reduce(Reduce, {[], []}) ->
+    Reduce(reduce, []);
+final_reduce(_Bt, {[], [Red]}) ->
+    Red;
+final_reduce(Reduce, {[], Reductions}) ->
+    Reduce(rereduce, Reductions);
+final_reduce(Reduce, {KVs, Reductions}) ->
+    Red = Reduce(reduce, KVs),
+    final_reduce(Reduce, {[], [Red | Reductions]}).
+
+%% @doc Stream reductions from the btree.
+%%
+%% @spec fold_reduce(Bt, Fun, Acc, Options) -> {ok, Acc2}.
+fold_reduce(#btree{root=Root}=Bt, Fun, Acc, Options) ->
+    Dir = couch_util:get_value(dir, Options, fwd),
+    StartKey0 = couch_util:get_value(start_key, Options),
+    EndKey0 = couch_util:get_value(end_key, Options),
+    {StartKey, EndKey} = case Dir of
+        fwd -> {StartKey0, EndKey0};
+        rev -> {EndKey0, StartKey0}
+    end,
+    DefGroupFun = fun(_, _) -> true end,
+    State0 = #rstream_st{
+        dir=Dir,
+        start_key=StartKey,
+        end_key=EndKey,
+        in_range=make_range_fun(Bt, Dir, Options),
+        grouped_key=undefined,
+        grouped_kvs=[],
+        grouped_reds=[],
+        group_fun=couch_util:get_value(key_group_fun, Options, DefGroupFun),
+        acc_fun=convert_arity(Fun),
+        acc=Acc
+    },
+    try
+        {ok, State} = red_stream_node(Bt, Root, State0),
+        case State#rstream_st.grouped_key of
+            undefined ->
+                {ok, State#rstream_st.acc};
+            GrpKey ->
+                #rstream_st{grouped_kvs=GKVs, grouped_reds=GReds} = State,
+                case Fun(GrpKey, {GKVs, GReds}, State#rstream_st.acc) of
+                    {ok, Acc3} -> {ok, Acc3};
+                    {stop, Acc3} -> {ok, Acc3}
+                end
+        end
+    catch
+        throw:{stop, AccDone} -> {ok, AccDone}
+    end.
+
+red_stream_node(_Bt, nil, State) ->
+    {ok, State#rstream_st.acc, State};
+red_stream_node(Bt, {Ptr, _Red}, State) ->
+    {NodeType, Nodes} = get_node(Bt, Ptr),
+    case NodeType of
+        kp_node -> red_stream_kp_node(Bt, Nodes, State);
+        kv_node -> red_stream_kv_node(Bt, Nodes, State)
+    end.
+
+red_stream_kp_node(Bt, Nodes, State) ->
+    Nodes0 = case State#rstream_st.start_key of
+        undefined ->
+            Nodes;
+        StartKey ->
+            DPred = fun({Key, _}) -> ?less(Bt, Key, StartKey) end,
+            lists:dropwhile(DPred, Nodes)
+    end,
+    Nodes1 = case State#rstream_st.end_key of
+        undefined ->
+            Nodes0;
+        EndKey ->
+            SPred = fun({Key, _}) -> ?less(Bt, Key, EndKey) end,
+            {InRange, MaybeInRange} = lists:splitwith(SPred, Nodes0),
+            case MaybeInRange of
+                [] -> InRange;
+                [First | _] -> InRange ++ [First]
+            end
+    end,
+    NodesInRange = adjust_dir(State#rstream_st.dir, Nodes1),
+    red_stream_kp_node2(Bt, NodesInRange, State).
+
+red_stream_kp_node2(Bt, [{_Key, PtrInfo} | RestNodes], State) when
+                                State#rstream_st.grouped_key == undefined,
+                                State#rstream_st.grouped_kvs == [],
+                                State#rstream_st.grouped_reds == [] ->
+    {ok, State2} = red_stream_node(Bt, PtrInfo, State),
+    red_stream_kp_node2(Bt, RestNodes, State2);
+red_stream_kp_node2(Bt, Nodes, State) ->
+    Pred = fun({Key, _}) -> ?grouped(State, Key) end,
+    {Grouped0, Ungrouped0} = lists:splitwith(Pred, Nodes),
+    {GroupedNodes, UngroupedNodes} =
+    case Grouped0 of
+        [] ->
+            {Grouped0, Ungrouped0};
+        _ ->
+            [FirstGrouped | RestGrouped] = lists:reverse(Grouped0),
+            {RestGrouped, [FirstGrouped | Ungrouped0]}
+    end,
+    GroupedReds = [R || {_, {_,R}} <- GroupedNodes],
+    State2 = State#rstream_st{
+        grouped_reds=GroupedReds ++ State#rstream_st.grouped_reds
+    },
+    case UngroupedNodes of
+        [{_Key, PtrInfo} | RestNodes] ->
+            {ok, State3} = red_stream_node(Bt, PtrInfo, State2),
+            red_stream_kp_node2(Bt, RestNodes, State3);
+        [] ->
+            {ok, State2}
+    end.
+
+red_stream_kv_node(Bt, KVs, State) ->
+    KVs1 = case State#rstream_st.start_key of
+        undefined ->
+            KVs;
+        StartKey ->
+            DPred = fun({Key, _}) -> ?less(Bt, Key, StartKey) end,
+            lists:dropwhile(DPred, KVs)
+    end,
+    KVs2 = case State#rstream_st.end_key of
+        undefined ->
+            KVs1;
+        EndKey ->
+            TPred = fun({Key, _}) -> not ?less(Bt, EndKey, Key) end,
+            lists:takewhile(TPred, KVs1)
+    end,
+    KVsInRange = adjust_dir(State#rstream_st.dir, KVs2),
+    red_stream_kv_node2(Bt, KVsInRange, State).
+
+red_stream_kv_node2(_Bt, [], State) ->
+    {ok, State};
+red_stream_kv_node2(Bt, [{Key, Value}| RestKVs], State) ->
+    case State#rstream_st.grouped_key of
+        undefined ->
+            State2 = State#rstream_st{
+                grouped_key=Key,
+                grouped_kvs=[?assemble(Bt, Key, Value)]
+            },
+            red_stream_kv_node2(Bt, RestKVs, State2);
+        GroupedKey ->
+            GroupedKVs = State#rstream_st.grouped_kvs,
+            GroupedReds = State#rstream_st.grouped_reds,
+            case ?grouped(State, Key) of
+                true ->
+                    State2 = State#rstream_st{
+                        grouped_kvs=[?assemble(Bt, Key, Value) | GroupedKVs]
+                    },
+                    red_stream_kv_node2(Bt, RestKVs, State2);
+                false ->
+                    #stream_st{acc_fun=AccFun, acc=Acc} = State,
+                    case AccFun(GroupedKey, {GroupedKVs, GroupedReds}, Acc) of
+                        {ok, Acc2} ->
+                            State2 = State#rstream_st{
+                                grouped_key=Key,
+                                grouped_kvs=[?assemble(Bt, Key, Value)],
+                                grouped_reds=[],
+                                acc=Acc2
+                            },
+                            red_stream_kv_node2(Bt, RestKVs, State2);
+                        {stop, Acc2} ->
+                            throw({stop, Acc2})
+                    end
+            end
+    end.
+
+
 %% @doc Add key/value pairs to the btree.
 %%
 %% @spec add(Bt, Insertions) -> {ok, Bt2}.
@@ -319,7 +500,7 @@ query_modify(Bt, Queries, Insertions, Deletions) ->
     SortFun = fun({OpA, A, _}, {OpB, B, _}) ->
         case A == B of
             true -> op_order(OpA) < op_order(OpB);
-            false -> less(Bt, A, B)
+            false -> ?less(Bt, A, B)
         end
     end,
     Actions = lists:sort(SortFun, InsActions ++ DelActions ++ QryActions),
@@ -367,7 +548,7 @@ modify_kp_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
         false ->
             {NodeKey, PtrInfo} = element(KpPos, Nodes),
             SplitFun = fun({_AType, AKey, _AValue}) ->
-                not less(Bt, NodeKey, AKey)
+                not ?less(Bt, NodeKey, AKey)
             end,
             {LTEActs, GTActs} = lists:splitwith(SplitFun, Actions),
             {ok, KPs, Output2, Bt2} = modify_node(Bt, PtrInfo, LTEActs, GTActs),
@@ -377,7 +558,8 @@ modify_kp_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
 
 modify_kv_node(Bt, Nodes, Pos, [], NewNode, Output) ->
     {ok, ?rev2(NewNode, rest_nodes(Nodes, Pos, ?ts(Nodes), [])), Output, Bt};
-modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) when Pos > ?ts(Nodes) ->
+modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output)
+                                                    when Pos > ?ts(Nodes) ->
     [{ActType, ActKey, ActValue} | RestActs] = Actions,
     case ActType of
         insert ->
@@ -417,233 +599,110 @@ modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
     end.
 
 
-
-full_reduce(#btree{root=nil,reduce=Reduce}) ->
-    {ok, Reduce(reduce, [])};
-full_reduce(#btree{root={_P, Red}}) ->
-    {ok, Red}.
-
-
-final_reduce(#btree{reduce=Reduce}, Val) ->
-    final_reduce(Reduce, Val);
-final_reduce(Reduce, {[], []}) ->
-    Reduce(reduce, []);
-final_reduce(_Bt, {[], [Red]}) ->
-    Red;
-final_reduce(Reduce, {[], Reductions}) ->
-    Reduce(rereduce, Reductions);
-final_reduce(Reduce, {KVs, Reductions}) ->
-    Red = Reduce(reduce, KVs),
-    final_reduce(Reduce, {[], [Red | Reductions]}).
-
-
-% -record(rstream_st, {
-%     dir,
-%     start_key,
-%     in_range,
-%     grouped_key,
-%     grouped_kvs,
-%     grouped_reds,
-%     group_fun,
-%     acc_fun,
-%     acc
-% }).
-
-
-fold_reduce(#btree{root=Root}=Bt, Fun, Acc, Options) ->
-    Dir = couch_util:get_value(dir, Options, fwd),
-    DefGroupFun = fun(_, _) -> true end,
-    State0 = #rstream_st{
-        dir=Dir,
-        start_key=couch_util:get_value(start_key, Options),
-        in_range=make_range_fun(Bt, Dir, Options),
-        group_fun=couch_util:get_value(key_group_fun, Options, DefGroupFun),
-        acc_fun=convert_arity(Fun),
-        acc=Acc
-    },
-    StartKey = couch_util:get_value(start_key, Options),
-    EndKey = couch_util:get_value(end_key, Options),
-    KeyGroupFun = couch_util:get_value(key_group_fun, Options, fun(_,_) -> true end),
-    {StartKey2, EndKey2} =
-    case Dir of
-        rev -> {EndKey, StartKey};
-        fwd -> {StartKey, EndKey}
-    end,
-    try
-        {ok, Acc2, GroupedRedsAcc2, GroupedKVsAcc2, GroupedKey2} =
-            reduce_stream_node(Bt, Dir, Root, StartKey2, EndKey2, undefined, [], [],
-            KeyGroupFun, Fun, Acc),
-        if GroupedKey2 == undefined ->
-            {ok, Acc2};
-        true ->
-            case Fun(GroupedKey2, {GroupedKVsAcc2, GroupedRedsAcc2}, Acc2) of
-            {ok, Acc3} -> {ok, Acc3};
-            {stop, Acc3} -> {ok, Acc3}
-            end
-        end
-    catch
-        throw:{stop, AccDone} -> {ok, AccDone}
-    end.
-
-reduce_stream_node(_Bt, _Dir, nil, _KeyStart, _KeyEnd, GroupedKey, GroupedKVsAcc,
-        GroupedRedsAcc, _KeyGroupFun, _Fun, Acc) ->
-    {ok, Acc, GroupedRedsAcc, GroupedKVsAcc, GroupedKey};
-reduce_stream_node(Bt, Dir, {P, _R}, KeyStart, KeyEnd, GroupedKey, GroupedKVsAcc,
-        GroupedRedsAcc, KeyGroupFun, Fun, Acc) ->
-    case get_node(Bt, P) of
-    {kp_node, NodeList} ->
-        reduce_stream_kp_node(Bt, Dir, NodeList, KeyStart, KeyEnd, GroupedKey,
-                GroupedKVsAcc, GroupedRedsAcc, KeyGroupFun, Fun, Acc);
-    {kv_node, KVs} ->
-        reduce_stream_kv_node(Bt, Dir, KVs, KeyStart, KeyEnd, GroupedKey,
-                GroupedKVsAcc, GroupedRedsAcc, KeyGroupFun, Fun, Acc)
-    end.
-
-
-reduce_stream_kp_node(Bt, Dir, NodeList, KeyStart, KeyEnd,
-                        GroupedKey, GroupedKVsAcc, GroupedRedsAcc,
-                        KeyGroupFun, Fun, Acc) ->
-    Nodes =
-    case KeyStart of
-    undefined ->
-        NodeList;
-    _ ->
-        lists:dropwhile(
-            fun({Key,_}) ->
-                less(Bt, Key, KeyStart)
-            end, NodeList)
-    end,
-    NodesInRange =
-    case KeyEnd of
-    undefined ->
-        Nodes;
-    _ ->
-        {InRange, MaybeInRange} = lists:splitwith(
-            fun({Key,_}) ->
-                less(Bt, Key, KeyEnd)
-            end, Nodes),
-        InRange ++ case MaybeInRange of [] -> []; [FirstMaybe|_] -> [FirstMaybe] end
-    end,
-    reduce_stream_kp_node2(Bt, Dir, adjust_dir(Dir, NodesInRange), KeyStart, KeyEnd,
-        GroupedKey, GroupedKVsAcc, GroupedRedsAcc, KeyGroupFun, Fun, Acc).
-
-
-reduce_stream_kp_node2(Bt, Dir, [{_Key, NodeInfo} | RestNodeList], KeyStart, KeyEnd,
-                        undefined, [], [], KeyGroupFun, Fun, Acc) ->
-    {ok, Acc2, GroupedRedsAcc2, GroupedKVsAcc2, GroupedKey2} =
-            reduce_stream_node(Bt, Dir, NodeInfo, KeyStart, KeyEnd, undefined,
-                [], [], KeyGroupFun, Fun, Acc),
-    reduce_stream_kp_node2(Bt, Dir, RestNodeList, KeyStart, KeyEnd, GroupedKey2,
-            GroupedKVsAcc2, GroupedRedsAcc2, KeyGroupFun, Fun, Acc2);
-reduce_stream_kp_node2(Bt, Dir, NodeList, KeyStart, KeyEnd,
-        GroupedKey, GroupedKVsAcc, GroupedRedsAcc, KeyGroupFun, Fun, Acc) ->
-    {Grouped0, Ungrouped0} = lists:splitwith(fun({Key,_}) ->
-        KeyGroupFun(GroupedKey, Key) end, NodeList),
-    {GroupedNodes, UngroupedNodes} =
-    case Grouped0 of
-    [] ->
-        {Grouped0, Ungrouped0};
-    _ ->
-        [FirstGrouped | RestGrouped] = lists:reverse(Grouped0),
-        {RestGrouped, [FirstGrouped | Ungrouped0]}
-    end,
-    GroupedReds = [R || {_, {_,R}} <- GroupedNodes],
-    case UngroupedNodes of
-    [{_Key, NodeInfo}|RestNodes] ->
-        {ok, Acc2, GroupedRedsAcc2, GroupedKVsAcc2, GroupedKey2} =
-            reduce_stream_node(Bt, Dir, NodeInfo, KeyStart, KeyEnd, GroupedKey,
-                GroupedKVsAcc, GroupedReds ++ GroupedRedsAcc, KeyGroupFun, Fun, Acc),
-        reduce_stream_kp_node2(Bt, Dir, RestNodes, KeyStart, KeyEnd, GroupedKey2,
-                GroupedKVsAcc2, GroupedRedsAcc2, KeyGroupFun, Fun, Acc2);
-    [] ->
-        {ok, Acc, GroupedReds ++ GroupedRedsAcc, GroupedKVsAcc, GroupedKey}
-    end.
-
-
-reduce_stream_kv_node(Bt, Dir, KVs, KeyStart, KeyEnd,
-                        GroupedKey, GroupedKVsAcc, GroupedRedsAcc,
-                        KeyGroupFun, Fun, Acc) ->
-
-    GTEKeyStartKVs =
-    case KeyStart of
-    undefined ->
-        KVs;
-    _ ->
-        lists:dropwhile(fun({Key,_}) -> less(Bt, Key, KeyStart) end, KVs)
-    end,
-    KVs2 =
-    case KeyEnd of
-    undefined ->
-        GTEKeyStartKVs;
-    _ ->
-        lists:takewhile(
-            fun({Key,_}) ->
-                not less(Bt, KeyEnd, Key)
-            end, GTEKeyStartKVs)
-    end,
-    reduce_stream_kv_node2(Bt, adjust_dir(Dir, KVs2), GroupedKey, GroupedKVsAcc, GroupedRedsAcc,
-                        KeyGroupFun, Fun, Acc).
-
-
-reduce_stream_kv_node2(_Bt, [], GroupedKey, GroupedKVsAcc, GroupedRedsAcc,
-        _KeyGroupFun, _Fun, Acc) ->
-    {ok, Acc, GroupedRedsAcc, GroupedKVsAcc, GroupedKey};
-reduce_stream_kv_node2(Bt, [{Key, Value}| RestKVs], GroupedKey, GroupedKVsAcc,
-        GroupedRedsAcc, KeyGroupFun, Fun, Acc) ->
-    case GroupedKey of
-    undefined ->
-        reduce_stream_kv_node2(Bt, RestKVs, Key,
-                [assemble(Bt,Key,Value)], [], KeyGroupFun, Fun, Acc);
-    _ ->
-
-        case KeyGroupFun(GroupedKey, Key) of
-        true ->
-            reduce_stream_kv_node2(Bt, RestKVs, GroupedKey,
-                [assemble(Bt,Key,Value)|GroupedKVsAcc], GroupedRedsAcc, KeyGroupFun,
-                Fun, Acc);
-        false ->
-            case Fun(GroupedKey, {GroupedKVsAcc, GroupedRedsAcc}, Acc) of
-            {ok, Acc2} ->
-                reduce_stream_kv_node2(Bt, RestKVs, Key, [assemble(Bt,Key,Value)],
-                    [], KeyGroupFun, Fun, Acc2);
-            {stop, Acc2} ->
-                throw({stop, Acc2})
-            end
-        end
-    end.
-
-
-
-
 % Read/Write btree nodes.
 
 
+%% @doc Read a node from disk.
+%%
+%% @spec get_node(Bt, Position) -> {NodeType, NodeList}.
 get_node(#btree{fd = Fd}, NodePos) ->
     {ok, {NodeType, NodeList}} = couch_file:pread_term(Fd, NodePos),
     {NodeType, NodeList}.
 
+
+%% @doc Write a btree node to disk.
+%%
+%% @spec write_node(Bt, NodeType, NodeList) -> {ok, KPs, Bt}.
 write_node(Bt, NodeType, NodeList) ->
-    % split up nodes into smaller sizes
     NodeListList = chunkify(NodeList, Bt#btree.chunk_size),
-    % now write out each chunk and return the KeyPointer pairs for those nodes
-    ResultList = [
-        begin
-            {ok, Pointer} = couch_file:append_term(Bt#btree.fd, {NodeType, ANodeList}),
-            {LastKey, _} = lists:last(ANodeList),
-            {LastKey, {Pointer, reduce_node(Bt, NodeType, ANodeList)}}
-        end
-    ||
-        ANodeList <- NodeListList
-    ],
-    {ok, ResultList, Bt}.
+    KPs = write_node(Bt, NodeType, NodeListList, []),
+    {ok, KPs, Bt}.
+
+write_node(_Bt, _NodeType, [], Acc) ->
+    lists:reverse(Acc);
+write_node(Bt, NodeType, [Node | Rest], Acc) ->
+    {ok, Pointer} = couch_file:append_term(Bt#btree.fd, {NodeType, Node}),
+    {LastKey, _} = lists:last(Node),
+    KP = {LastKey, {Pointer, reduce_node(Bt, NodeType, Node)}},
+    write_node(Bt, NodeType, Rest, [KP | Acc]).
+
+
+%% @doc Break a node into pieces that are written to disk.
+%%
+%% This chunkify function sucks!
+%%
+%% It is inaccurate as it does not account for compression when blocks are
+%% written. Plus with the "case byte_size(term_to_binary(InList)) of" code
+%% it's probably really inefficient.
+%%
+%% @spec chunkify(InList, Threshold) -> [Node].
+chunkify(InList, Threshold) ->
+    case byte_size(term_to_binary(InList)) of
+        Size when Size > Threshold ->
+            NumberOfChunksLikely = ((Size div Threshold) + 1),
+            ChunkThreshold = Size div NumberOfChunksLikely,
+            chunkify(InList, ChunkThreshold, [], 0, []);
+        _Else ->
+            [InList]
+    end.
+
+chunkify([], _Threshold, [], 0, Acc) ->
+    ?rev(Acc);
+chunkify([], _Threshold, Buf, _BufSize, Acc) ->
+    ?rev([?rev(Buf)] ++ Acc);
+chunkify([Pair | Rest], Threshold, Buf, BufSize, Acc) ->
+    case byte_size(term_to_binary(Pair)) of
+        Size when (Size + BufSize) > Threshold andalso Buf /= [] ->
+            chunkify(Rest, Threshold, [], 0, [?rev([Pair | Buf]) | Acc]);
+        Size ->
+            chunkify(Rest, Threshold, [Pair | Buf], BufSize + Size, Acc)
+    end.
+
+
+%% @doc Complete the top of a btree.
+%%
+%% @spec complete_root(Bt, NodeList) -> {ok, PointerInfo, Bt}.
+complete_root(Bt, []) ->
+    {ok, nil, Bt};
+complete_root(Bt, [{_Key, PointerInfo}])->
+    {ok, PointerInfo, Bt};
+complete_root(Bt, KPs) ->
+    {ok, ResultKeyPointers, Bt2} = write_node(Bt, kp_node, KPs),
+    complete_root(Bt2, ResultKeyPointers).
 
 
 % Utility Functions
 
-assemble(#btree{assemble_kv=Assemble}, Key, Value) ->
-    Assemble(Key, Value).
-less(#btree{less=Less}, A, B) ->
-    Less(A, B).
+
+%% @doc Adjust a list based on direction.
+%%
+%% @spec adjust_dir(Dir, List1) -> List2
+adjust_dir(fwd, List) -> List;
+adjust_dir(rev, List) -> ?rev(List).
+
+
+%% @doc Prioritize modification actions
+%%
+%% This is used to sort operations on a given key when using the
+%% query_modify function. This ordering allows us to do things
+%% like, "get current value and delete from tree".
+%%
+%% @spec op_order(Op) -> Priority.
+op_order(fetch) -> 1;
+op_order(remove) -> 2;
+op_order(insert) -> 3.
+
+
+%% @doc Drop nodes while keeping reductions.
+%%
+%% @spec drop_nodes(Bt, Reds, StartKey, Nodes) -> {Reds, Rest}.
+drop_nodes(_Bt, Reds, _StartKey, []) ->
+    {Reds, []};
+drop_nodes(Bt, Reds, StartKey, [{NodeKey, {Pointer, Red}} | RestKPs]) ->
+    case ?less(Bt, NodeKey, StartKey) of
+        true -> drop_nodes(Bt, [Red | Reds], StartKey, RestKPs);
+        false -> {Reds, [{NodeKey, {Pointer, Red}} | RestKPs]}
+    end.
 
 
 %% @doc
@@ -743,112 +802,13 @@ rest_rev_nodes(Nodes, Start, End, Tail) ->
     rest_rev_nodes(Nodes, Start + 1, End, [element(Start, Nodes) | Tail]).
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-% for ordering different operations with the same key.
-% fetch < remove < insert
-op_order(fetch) -> 1;
-op_order(remove) -> 2;
-op_order(insert) -> 3.
-
-
-
-complete_root(Bt, []) ->
-    {ok, nil, Bt};
-complete_root(Bt, [{_Key, PointerInfo}])->
-    {ok, PointerInfo, Bt};
-complete_root(Bt, KPs) ->
-    {ok, ResultKeyPointers, Bt2} = write_node(Bt, kp_node, KPs),
-    complete_root(Bt2, ResultKeyPointers).
-
-%%%%%%%%%%%%% The chunkify function sucks! %%%%%%%%%%%%%
-% It is inaccurate as it does not account for compression when blocks are
-% written. Plus with the "case byte_size(term_to_binary(InList)) of" code
-% it's probably really inefficient.
-
-chunkify(InList, Threshold) ->
-    case byte_size(term_to_binary(InList)) of
-    Size when Size > Threshold ->
-        NumberOfChunksLikely = ((Size div Threshold) + 1),
-        ChunkThreshold = Size div NumberOfChunksLikely,
-        chunkify(InList, ChunkThreshold, [], 0, []);
-    _Else ->
-        [InList]
-    end.
-
-chunkify([], _ChunkThreshold, [], 0, OutputChunks) ->
-    lists:reverse(OutputChunks);
-chunkify([], _ChunkThreshold, OutList, _OutListSize, OutputChunks) ->
-    lists:reverse([lists:reverse(OutList) | OutputChunks]);
-chunkify([InElement | RestInList], ChunkThreshold, OutList, OutListSize, OutputChunks) ->
-    case byte_size(term_to_binary(InElement)) of
-    Size when (Size + OutListSize) > ChunkThreshold andalso OutList /= [] ->
-        chunkify(RestInList, ChunkThreshold, [], 0, [lists:reverse([InElement | OutList]) | OutputChunks]);
-    Size ->
-        chunkify(RestInList, ChunkThreshold, [InElement | OutList], OutListSize + Size, OutputChunks)
-    end.
-
-
-
+%% @doc
+%%
+%% @spec reduce_node(Bt, NodeType, NodeList) -> Red.
 reduce_node(#btree{reduce=nil}, _NodeType, _NodeList) ->
     [];
 reduce_node(#btree{reduce=R}, kp_node, NodeList) ->
     R(rereduce, [Red || {_K, {_P, Red}} <- NodeList]);
 reduce_node(#btree{reduce=R}=Bt, kv_node, NodeList) ->
-    R(reduce, [assemble(Bt, K, V) || {K, V} <- NodeList]).
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-adjust_dir(fwd, List) ->
-    List;
-adjust_dir(rev, List) ->
-    lists:reverse(List).
-
-
-drop_nodes(_Bt, Reds, _StartKey, []) ->
-    {Reds, []};
-drop_nodes(Bt, Reds, StartKey, [{NodeKey, {Pointer, Red}} | RestKPs]) ->
-    case less(Bt, NodeKey, StartKey) of
-    true -> drop_nodes(Bt, [Red | Reds], StartKey, RestKPs);
-    false -> {Reds, [{NodeKey, {Pointer, Red}} | RestKPs]}
-    end.
-
-
-
+    R(reduce, [?assemble(Bt, K, V) || {K, V} <- NodeList]).
 
