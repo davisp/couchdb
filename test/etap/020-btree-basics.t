@@ -17,7 +17,7 @@
 filename() -> test_util:build_file("test/etap/temp.020").
 rows() -> 250.
 
--record(btree, {fd, root, extract_kv, assemble_kv, less, reduce}).
+-record(btree, {fd, root, extract_kv, assemble_kv, less, reduce, chunk_size}).
 
 main(_) ->
     test_util:init_code_path(),
@@ -26,7 +26,7 @@ main(_) ->
         ok ->
             etap:end_tests();
         Other ->
-            etap:diag(io_lib:format("Test died abnormally: ~p", [Other])),
+            etap:diag("Test died abnormally: ~p", [Other]),
             etap:bail()
     end,
     ok.
@@ -144,15 +144,15 @@ test_add_remove(Btree, OutKeyValues, RemainingKeyValues) ->
 
 test_key_access(Btree, List) ->
     FoldFun = fun(Element, {[HAcc|TAcc], Count}) ->
-        case Element == HAcc of
-            true -> {ok, {TAcc, Count + 1}};
-            _ -> {ok, {TAcc, Count + 1}}
-        end
+        Element == HAcc,
+        {ok, {TAcc, Count + 1}}
     end,
     Length = length(List),
     Sorted = lists:sort(List),
     {ok, _, {[], Length}} = couch_btree:foldl(Btree, FoldFun, {Sorted, 0}),
-    {ok, _, {[], Length}} = couch_btree:fold(Btree, FoldFun, {Sorted, 0}, [{dir, rev}]),
+    Rev = lists:reverse(Sorted),
+    Opts = [{dir, rev}],
+    {ok, _, {[], Length}} = couch_btree:fold(Btree, FoldFun, {Rev, 0}, Opts),
     ok.
 
 test_lookup_access(Btree, KeyValues) ->

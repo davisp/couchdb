@@ -130,7 +130,7 @@ lookup(Bt, {Pointer, _Reds}, Keys) ->
     {NodeType, NodeList} = get_node(Bt, Pointer),
     case NodeType of
         kp_node -> lookup_kp_node(Bt, ?l2t(NodeList), 1, Keys, []);
-        kv_mode -> lookup_kv_node(Bt, ?l2t(NodeList), 1, Keys, [])
+        kv_node -> lookup_kv_node(Bt, ?l2t(NodeList), 1, Keys, [])
     end.
 
 lookup_kp_node(_Bt, _Nodes, _Pos, [], Output) ->
@@ -334,6 +334,7 @@ fold_reduce(#btree{root=Root}=Bt, Fun, Acc, Options) ->
         acc=Acc
     },
     try
+        Resp = red_stream_node(Bt, Root, State0),
         {ok, State} = red_stream_node(Bt, Root, State0),
         case State#rstream_st.grouped_key of
             undefined ->
@@ -350,7 +351,7 @@ fold_reduce(#btree{root=Root}=Bt, Fun, Acc, Options) ->
     end.
 
 red_stream_node(_Bt, nil, State) ->
-    {ok, State#rstream_st.acc, State};
+    {ok, State};
 red_stream_node(Bt, {Ptr, _Red}, State) ->
     {NodeType, Nodes} = get_node(Bt, Ptr),
     case NodeType of
@@ -447,7 +448,7 @@ red_stream_kv_node2(Bt, [{Key, Value}| RestKVs], State) ->
                     },
                     red_stream_kv_node2(Bt, RestKVs, State2);
                 false ->
-                    #stream_st{acc_fun=AccFun, acc=Acc} = State,
+                    #rstream_st{acc_fun=AccFun, acc=Acc} = State,
                     case AccFun(GroupedKey, {GroupedKVs, GroupedReds}, Acc) of
                         {ok, Acc2} ->
                             State2 = State#rstream_st{
@@ -489,7 +490,6 @@ query_modify(Bt, Queries, Insertions, Deletions) ->
         end, Insertions),
     DelActions = [{delete, Key, nil} || Key <- Deletions],
     QryActions = [{lookup, Key, nil} || Key <- Queries],
-    Actions = lists:append([InsActions, DelActions, QryActions]),
     SortFun = fun({OpA, A, _}, {OpB, B, _}) ->
         case A == B of
             true -> op_order(OpA) < op_order(OpB);
@@ -520,8 +520,8 @@ modify_node(Bt, PtrInfo, Actions, Output) ->
             {LastKey, _LastValue} = element(?ts(NodeTuple), NodeTuple),
             {ok, [{LastKey, PtrInfo}], Output2, Bt2};
         _Else2 ->
-            {ok, Root, Bt3} = write_node(Bt2, NodeType, NewNodes),
-            {ok, Root, Output2, Bt3}
+            {ok, KPs, Bt3} = write_node(Bt2, NodeType, NewNodes),
+            {ok, KPs, Output2, Bt3}
     end.
 
 modify_kp_node(Bt, {}, _Pos, Actions, [], Output) ->
@@ -530,7 +530,7 @@ modify_kp_node(Bt, Nodes, Pos, [], NewNode, Output) ->
     {ok, ?rev2(NewNode, rest_nodes(Nodes, Pos, ?ts(Nodes), [])), Output, Bt};
 modify_kp_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
     [{_, ActKey, _} | _]= Actions,
-    NumNodes = tuple_size(Nodes),
+    NumNodes = ?ts(Nodes),
     KpPos = find_key_pos(Bt, Nodes, Pos, NumNodes, ActKey),
     case KpPos == NumNodes of
         true  ->
@@ -544,15 +544,14 @@ modify_kp_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
                 not ?less(Bt, NodeKey, AKey)
             end,
             {LTEActs, GTActs} = lists:splitwith(SplitFun, Actions),
-            {ok, KPs, Output2, Bt2} = modify_node(Bt, PtrInfo, LTEActs, GTActs),
-            NewNode2 = ?rev2(KPs, rest_nodes(Nodes, Pos, KpPos - 1, NewNode)),
+            {ok, KPs, Output2, Bt2} = modify_node(Bt, PtrInfo, LTEActs, Output),
+            NewNode2 = ?rev2(KPs, rest_rev_nodes(Nodes, Pos, KpPos-1, NewNode)),
             modify_kp_node(Bt2, Nodes, KpPos + 1, GTActs, NewNode2, Output2)
     end.
 
 modify_kv_node(Bt, Nodes, Pos, [], NewNode, Output) ->
     {ok, ?rev2(NewNode, rest_nodes(Nodes, Pos, ?ts(Nodes), [])), Output, Bt};
-modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output)
-                                                    when Pos > ?ts(Nodes) ->
+modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) when Pos > ?ts(Nodes)->
     [{ActType, ActKey, ActValue} | RestActs] = Actions,
     case ActType of
         insert ->
@@ -560,7 +559,7 @@ modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output)
             modify_kv_node(Bt, Nodes, Pos, RestActs, NewNode2, Output);
         remove ->
             modify_kv_node(Bt, Nodes, Pos, RestActs, NewNode, Output);
-        fetch ->
+        lookup ->
             Output2 = [{not_found, {ActKey, nil}} | Output],
             modify_kv_node(Bt, Nodes, Pos, RestActs, NewNode, Output2)
     end;
@@ -765,7 +764,7 @@ cmp_keys(Bt, A, B) ->
         true ->
             lesser;
         false ->
-            case ?less(Bt, A, B) of
+            case ?less(Bt, B, A) of
                 true ->
                     greater;
                 false ->
