@@ -598,20 +598,56 @@ modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
     end.
 
 
+flush(#btree{root={{NodeType, NodePtr}, nil}}=Bt) ->
+    {_Key, Root} = case NodeType of 
+        kp_node -> flush_kp_node(Bt, erlptr:unwrap(NodePtr), []);
+        kv_node -> flush_kv_node(Bt, erlptr:unwrap(NodePtr))
+    end,
+    Bt#btree{root=Root};
+flush(Bt) ->
+    Bt.
+
+flush_kp_node(Bt, [], Acc) ->
+    KPs = lists:reverse(Acc),
+    {ok, Pointer} = couch_file:append_term(Bt#btree.fd, {kp_node, KPs}),
+    {LastKey, _} = lists:last(KVs),
+    {LastKey, {Pointer, reduce_node(Bt, kp_node, KPs}};
+flush_kp_node(Bt, [{Key, NodeInfo} | Rest], Acc) ->
+    NodeInfo2 = case NodeInfo of
+        {kp_node, NodePtr}, nil} ->
+            flush_kp_node(Bt, erlptr:unwrap(NodePtr), []);
+        {{kv_node, NodePtr}, nil} ->
+            flush_kv_node(Bt, erlptr:unwrap(NodePtr));
+        {Pointer, _} when is_integer(Pointer) ->
+            NodeInfo
+    end,
+    {Key, NodeInfo2}.
+
+flush_kv_node(Bt, KVs) ->
+    {ok, Pointer} = couch_file:append_term(Bt#btree.fd, {kv_node, KVs}),
+    {LastKey, _} = lists:last(KVs),
+    {LastKey, {Pointer, reduce_node(Bt, kv_node, KVs)}}.
+
+
 % Read/Write btree nodes.
 
 
 %% @doc Read a node from disk.
 %%
 %% @spec get_node(Bt, Position) -> {NodeType, NodeList}.
+get_node(#btree{}, {NodeType, NodePtr}) ->
+    {NodeType, erlptr:unwrap(NodePtr)};
 get_node(#btree{fd = Fd}, NodePos) ->
     {ok, {NodeType, NodeList}} = couch_file:pread_term(Fd, NodePos),
     {NodeType, NodeList}.
 
-
 %% @doc Write a btree node to disk.
 %%
 %% @spec write_node(Bt, NodeType, NodeList) -> {ok, KPs, Bt}.
+write_node(#btree{buf_size=Size}, NodeType, NodeList) when is_integer(Size) ->
+    NodeListList = chunkify(NodeList, Bt#btree.chunk_size),
+    KPs = cache_node(Bt, NodeType, NodeListList, []),
+    {ok, KPs, Bt};
 write_node(Bt, NodeType, NodeList) ->
     NodeListList = chunkify(NodeList, Bt#btree.chunk_size),
     KPs = write_node(Bt, NodeType, NodeListList, []),
@@ -624,6 +660,14 @@ write_node(Bt, NodeType, [Node | Rest], Acc) ->
     {LastKey, _} = lists:last(Node),
     KP = {LastKey, {Pointer, reduce_node(Bt, NodeType, Node)}},
     write_node(Bt, NodeType, Rest, [KP | Acc]).
+
+cache_node(_NodeType, [], Acc) ->
+    lists:reverse(Acc);
+cache_node(NodeType, [Node | Rest], Acc) ->
+    Ptr = erlptr:wrap(Node),
+    {LastKey, _} = lists:last(Node),
+    KP = {LastKey, {{NodeType, Ptr}, nil}},
+    cache_node(NodeType, Rest, [KP | Acc]).
 
 
 %% @doc Break a node into pieces that are written to disk.
