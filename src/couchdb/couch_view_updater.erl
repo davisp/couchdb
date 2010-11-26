@@ -28,7 +28,7 @@ update(Owner, Group) ->
     couch_task_status:add_task(<<"View Group Indexer">>, <<DbName/binary," ",GroupName/binary>>, <<"Starting index update">>),
 
     DbPurgeSeq = couch_db:get_purge_seq(Db),
-    Group2 =
+    Group1 =
     if DbPurgeSeq == PurgeSeq ->
         Group;
     DbPurgeSeq == PurgeSeq + 1 ->
@@ -38,6 +38,7 @@ update(Owner, Group) ->
         couch_task_status:update(<<"Resetting view index due to lost purge entries.">>),
         exit(reset)
     end,
+    Group2 = set_buffering(Group1),
     {ok, MapQueue} = couch_work_queue:new(
         [{max_size, 100000}, {max_items, 500}]),
     {ok, WriteQueue} = couch_work_queue:new(
@@ -150,7 +151,7 @@ do_maps(Group, MapQueue, WriteQueue, ViewEmptyKVs) ->
 do_writes(Parent, Owner, Group, WriteQueue, InitialBuild) ->
     case couch_work_queue:dequeue(WriteQueue) of
     closed ->
-        Parent ! {new_group, Group};
+        Parent ! {new_group, flush_btrees(Group)};
     {ok, Queue} ->
         {NewSeq, ViewKeyValues, DocIdViewIdKeys} = lists:foldl(
             fun({Seq, ViewKVs, DocIdViewIdKeys}, nil) ->
@@ -164,12 +165,8 @@ do_writes(Parent, Owner, Group, WriteQueue, InitialBuild) ->
                 {lists:max([Seq, Seq2]),
                         AccViewKVs2, DocIdViewIdKeys ++ AccDocIdViewIdKeys}
             end, nil, Queue),
-        Group2 = write_changes(Group, ViewKeyValues, DocIdViewIdKeys, NewSeq,
+        Group2 = write_changes(Parent, Owner, Group, ViewKeyValues, DocIdViewIdKeys, NewSeq,
                 InitialBuild),
-        case Owner of
-        nil -> ok;
-        _ -> ok = gen_server:cast(Owner, {partial_update, Parent, Group2})
-        end,
         do_writes(Parent, Owner, Group2, WriteQueue, InitialBuild)
     end.
 
@@ -223,7 +220,7 @@ view_compute(#group{def_lang=DefLang, lib=Lib, query_server=QueryServerIn}=Group
 
 
 
-write_changes(Group, ViewKeyValuesToAdd, DocIdViewIdKeys, NewSeq, InitialBuild) ->
+write_changes(Parent, Owner, Group, ViewKeyValuesToAdd, DocIdViewIdKeys, NewSeq, InitialBuild) ->
     #group{id_btree=IdBtree} = Group,
 
     AddDocIdViewIdKeys = [{DocId, ViewIdKeys} || {DocId, ViewIdKeys} <- DocIdViewIdKeys, ViewIdKeys /= []],
@@ -236,6 +233,7 @@ write_changes(Group, ViewKeyValuesToAdd, DocIdViewIdKeys, NewSeq, InitialBuild) 
     end,
     {ok, LookupResults, IdBtree2}
         = couch_btree:query_modify(IdBtree, LookupDocIds, AddDocIdViewIdKeys, RemoveDocIds),
+            
     KeysToRemoveByView = lists:foldl(
         fun(LookupResult, KeysToRemoveByViewAcc) ->
             case LookupResult of
@@ -259,7 +257,41 @@ write_changes(Group, ViewKeyValuesToAdd, DocIdViewIdKeys, NewSeq, InitialBuild) 
                 _ ->
                     View#view{btree=ViewBtree2}
             end
-        end,    Group#group.views, ViewKeyValuesToAdd),
-    Group#group{views=Views2, current_seq=NewSeq, id_btree=IdBtree2}.
+        end, Group#group.views, ViewKeyValuesToAdd),
+    
+    Group2 = Group#group{views=Views2, current_seq=NewSeq, id_btree=IdBtree2},
+    
+    %garbage_collect(),
+    {memory, ProcMem} = process_info(self(), memory),
+    BinMem = lists:foldl(fun({_Id, Size, _NRefs}, Acc) -> Size+Acc end,
+        0, element(2, process_info(self(), binary))),
+    ?LOG_INFO("MemSize: ~p ~p ~p", [ProcMem, BinMem, ProcMem + BinMem]),
+    case ProcMem + BinMem > 16#3200000 of
+        true ->
+            ?LOG_INFO("Flushing btrees.", []),
+            Group3 = flush_btrees(Group2),
+            gen_server:cast(Owner, {partial_update, Parent, Group3}),
+            Group3;
+        _ ->
+            Group2
+    end.
 
+
+set_buffering(Group) ->
+    #group{id_btree=IdBtree, views=Views} = Group,
+    IdBtree2 = couch_btree:set_options(IdBtree, [buffer]),
+    Views2 = lists:map(fun(#view{btree=ViewBtree}=View) ->
+        ViewBtree2 = couch_btree:set_options(ViewBtree, [buffer]),
+        View#view{btree=ViewBtree2}
+    end, Views),
+    Group#group{id_btree=IdBtree2, views=Views2}.
+
+flush_btrees(Group) ->
+    #group{id_btree=IdBtree, views=Views} = Group,
+    {ok, IdBtree2} = couch_btree:flush(IdBtree),
+    Views2 = lists:map(fun(#view{btree=ViewBtree}=View) ->
+        {ok, ViewBtree2} = couch_btree:flush(ViewBtree),
+        View#view{btree=ViewBtree2}
+    end, Views),
+    Group#group{id_btree=IdBtree2, views=Views2}.
 

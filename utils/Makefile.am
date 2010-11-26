@@ -26,6 +26,7 @@ run: ../bin/couchdb.tpl
 	    -e "s|%localerlanglibdir%|foo \
 			-pa $(abs_top_builddir)\/src\/couchdb \
 			-pa $(abs_top_builddir)\/src\/erlang-oauth \
+            -pa $(abs_top_builddir)\/src\/erlptr \
 			-pa $(abs_top_builddir)\/src\/ibrowse \
 			-pa $(abs_top_builddir)\/src\/mochiweb|g" \
 	    -e "s|%localconfdir%|$(abs_top_builddir)/etc/couchdb|g" \

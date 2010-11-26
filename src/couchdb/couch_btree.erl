@@ -17,7 +17,7 @@
 -export([lookup/2, foldl/3, foldl/4, fold/4]).
 -export([full_reduce/1, final_reduce/2, fold_reduce/4]).
 -export([add/2, add_remove/3, query_modify/4]).
-
+-export([flush/1]).
 
 -record(btree, {
     fd,
@@ -26,7 +26,8 @@
     assemble_kv =  fun(Key, Value) -> {Key, Value} end,
     less = fun(A, B) -> A < B end,
     reduce = nil,
-    chunk_size = 16#4FF
+    chunk_size = 16#4FF,
+    buffer=false
 }).
 
 -record(stream_st, {
@@ -102,6 +103,7 @@ set_options(Bt, Options) ->
             {less, Less} -> Bt2#btree{less=Less};
             {reduce, Reduce} -> Bt2#btree{reduce=Reduce};
             {chunk_size, Size} -> Bt2#btree{chunk_size=Size};
+            buffer -> Bt2#btree{buffer=true};
             _ -> Bt2
         end
     end, Bt, Options).
@@ -341,7 +343,6 @@ fold_reduce(#btree{root=Root}=Bt, Fun, Acc, Options) ->
         acc=Acc
     },
     try
-        Resp = red_stream_node(Bt, Root, State0),
         {ok, State} = red_stream_node(Bt, Root, State0),
         case State#rstream_st.grouped_key of
             undefined ->
@@ -597,36 +598,33 @@ modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
             modify_kv_node(Bt, Nodes, KvPos + 1, Actions, NewNode3, Output)
     end.
 
+flush(#btree{root=Root}=Bt) ->
+    {ok, Bt#btree{root=flush(Bt, Root)}}.
 
-flush(#btree{root={{NodeType, NodePtr}, nil}}=Bt) ->
-    {_Key, Root} = case NodeType of 
-        kp_node -> flush_kp_node(Bt, erlptr:unwrap(NodePtr), []);
-        kv_node -> flush_kv_node(Bt, erlptr:unwrap(NodePtr))
-    end,
-    Bt#btree{root=Root};
-flush(Bt) ->
-    Bt.
+flush(_Bt, nil) ->
+    {ok, nil};
+flush(Bt, {Pointer, _Reds}) ->
+    {NodeType, NodeList} = get_node(Bt, Pointer),
+    case NodeType of
+        kp_node -> flush_kp_node(Bt, NodeList, []);
+        kv_node -> flush_kv_node(Bt, NodeList)
+    end.
 
 flush_kp_node(Bt, [], Acc) ->
     KPs = lists:reverse(Acc),
-    {ok, Pointer} = couch_file:append_term(Bt#btree.fd, {kp_node, KPs}),
-    {LastKey, _} = lists:last(KVs),
-    {LastKey, {Pointer, reduce_node(Bt, kp_node, KPs}};
+    {ok, NodePos} = couch_file:append_term(Bt#btree.fd, {kp_node, KPs}),
+    {NodePos, reduce_node(Bt, kp_node, KPs)};
 flush_kp_node(Bt, [{Key, NodeInfo} | Rest], Acc) ->
-    NodeInfo2 = case NodeInfo of
-        {kp_node, NodePtr}, nil} ->
-            flush_kp_node(Bt, erlptr:unwrap(NodePtr), []);
-        {{kv_node, NodePtr}, nil} ->
-            flush_kv_node(Bt, erlptr:unwrap(NodePtr));
-        {Pointer, _} when is_integer(Pointer) ->
-            NodeInfo
-    end,
-    {Key, NodeInfo2}.
+    case NodeInfo of
+        {NodePos, _Reds} when is_integer(NodePos) ->
+            flush_kp_node(Bt, Rest, [{Key, NodeInfo} | Acc]);
+        {_NodePtr, nil} ->
+            flush_kp_node(Bt, Rest, [{Key, flush(Bt, NodeInfo)} | Acc])
+    end.
 
 flush_kv_node(Bt, KVs) ->
-    {ok, Pointer} = couch_file:append_term(Bt#btree.fd, {kv_node, KVs}),
-    {LastKey, _} = lists:last(KVs),
-    {LastKey, {Pointer, reduce_node(Bt, kv_node, KVs)}}.
+    {ok, NodePos} = couch_file:append_term(Bt#btree.fd, {kv_node, KVs}),
+    {NodePos, reduce_node(Bt, kv_node, KVs)}.
 
 
 % Read/Write btree nodes.
@@ -635,18 +633,18 @@ flush_kv_node(Bt, KVs) ->
 %% @doc Read a node from disk.
 %%
 %% @spec get_node(Bt, Position) -> {NodeType, NodeList}.
-get_node(#btree{}, {NodeType, NodePtr}) ->
-    {NodeType, erlptr:unwrap(NodePtr)};
-get_node(#btree{fd = Fd}, NodePos) ->
+get_node(#btree{fd = Fd}, NodePos) when is_integer(NodePos) ->
     {ok, {NodeType, NodeList}} = couch_file:pread_term(Fd, NodePos),
-    {NodeType, NodeList}.
+    {NodeType, NodeList};
+get_node(#btree{}, NodePtr) ->
+    erlptr:unwrap(NodePtr).
 
 %% @doc Write a btree node to disk.
 %%
 %% @spec write_node(Bt, NodeType, NodeList) -> {ok, KPs, Bt}.
-write_node(#btree{buf_size=Size}, NodeType, NodeList) when is_integer(Size) ->
+write_node(#btree{buffer=true}=Bt, NodeType, NodeList) ->
     NodeListList = chunkify(NodeList, Bt#btree.chunk_size),
-    KPs = cache_node(Bt, NodeType, NodeListList, []),
+    KPs = cache_node(NodeType, NodeListList, []),
     {ok, KPs, Bt};
 write_node(Bt, NodeType, NodeList) ->
     NodeListList = chunkify(NodeList, Bt#btree.chunk_size),
@@ -664,9 +662,9 @@ write_node(Bt, NodeType, [Node | Rest], Acc) ->
 cache_node(_NodeType, [], Acc) ->
     lists:reverse(Acc);
 cache_node(NodeType, [Node | Rest], Acc) ->
-    Ptr = erlptr:wrap(Node),
+    Ptr = erlptr:wrap({NodeType, Node}),
     {LastKey, _} = lists:last(Node),
-    KP = {LastKey, {{NodeType, Ptr}, nil}},
+    KP = {LastKey, {Ptr, nil}},
     cache_node(NodeType, Rest, [KP | Acc]).
 
 
