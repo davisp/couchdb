@@ -33,9 +33,11 @@ share/Makefile
 src/couchdb/.deps/*
 src/couchdb/Makefile
 src/couchdb/priv/Makefile
-src/erlptr/.deps/*
-src/erlptr/.libs/*
-src/erlptr/priv/*
+src/erlptr/Makefile
+src/erlptr/priv/Makefile
+src/erlptr/priv/.libs/*
+src/erlptr/priv/.deps/*
+src/erlptr/priv/*.so
 src/mochiweb/Makefile
 stamp-h1
 test/.deps/

@@ -10,21 +10,19 @@
 ## License for the specific language governing permissions and limitations under
 ## the License.
 
-SUBDIRS = priv
+erlptrlibdir = $(localerlanglibdir)/couch-$(version)
+erlptrprivdir = $(couchlibdir)/priv
 
-erlptrlibdir = $(localerlanglibdir)/erlptr-$(version)
-erlptrebindir = $(erlptrlibdir)/ebin
-erlptrprivdir = $(erlptrlibdir)/priv
+erlptrpriv_LTLIBRARIES = erlptr.la
+erlptr_la_SOURCES = $(c_files)
+erlptr_la_LDFLAGS = -module -avoid-version
 
-erl_files = erlptr.erl
-beam_files = erlptr.beam
-app_files = erlptr.app
+erlptr.so: erlptr.la
+	@rm -f $@
+	$(LN_S) $(abs_top_builddir)/src/erlptr/priv/.libs/erlptr.so $@
 
-erlptrebin_DATA = $(beam_files) $(app_files)
-CLEANFILES = $(beam_files)
-EXTRA_DIST = $(erl_files) $(app_files)
+all: erlptr.so
 
-%.beam: %.erl
-	$(ERLC) $(ERLC_FLAGS) $<
-
+c_files = \
+	erlptr.c
 

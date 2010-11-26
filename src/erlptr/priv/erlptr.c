@@ -76,7 +76,7 @@ unwrap(ErlNifEnv* env, int argc, CENTERM argv[])
     state_t* state = (state_t*) enif_priv_data(env);
     ptr_t* ptr = NULL;
 
-    if(!enif_get_resource(env, argv[0], state->res_type, &ptr))
+    if(!enif_get_resource(env, argv[0], state->res_type, (void**)  &ptr))
     {
         return enif_make_badarg(env);
     }
