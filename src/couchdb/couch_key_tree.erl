@@ -12,16 +12,17 @@
 
 -module(couch_key_tree).
 
--export([merge/2, find_missing/2, get_key_leafs/2, get_full_key_paths/2, get/2]).
+-export([merge/3, find_missing/2, get_key_leafs/2, get_full_key_paths/2, get/2]).
 -export([map/2, get_all_leafs/1, count_leafs/1, remove_leafs/2,
     get_all_leafs_full/1,stem/2,map_leafs/2]).
 
-% Tree::term() is really a tree(), but we don't want to require R13B04 yet
--type branch() :: {Key::term(), Value::term(), Tree::term()}.
--type path() :: {Start::pos_integer(), branch()}.
--type tree() :: [branch()]. % sorted by key
+-include("couch_db.hrl").
 
-% partial trees arranged by how much they are cut off.
+-spec merge([path()], path(), pos_integer()) -> {[path()],
+    conflicts | no_conflicts}.
+merge(Paths, Path, Depth) ->
+    {Merged, Conflicts} = merge(Paths, Path),
+    {stem(Merged, Depth), Conflicts}.
 
 -spec merge([path()], path()) -> {[path()], conflicts | no_conflicts}.
 merge(Paths, Path) ->
@@ -35,22 +36,22 @@ merge(Paths, Path) ->
     end,
     {lists:sort(Merged), Conflicts}.
 
--spec merge_one(Original::[path()], Inserted::path(), [path()], bool()) ->
-    {ok, Merged::[path()], NewConflicts::bool()}.
+-spec merge_one(Original::[path()], Inserted::path(), [path()], boolean()) ->
+    {ok, Merged::[path()], NewConflicts::boolean()}.
 merge_one([], Insert, OutAcc, ConflictsAcc) ->
     {ok, [Insert | OutAcc], ConflictsAcc};
 merge_one([{Start, Tree}|Rest], {StartInsert, TreeInsert}, Acc, HasConflicts) ->
     case merge_at([Tree], StartInsert - Start, [TreeInsert]) of
     {ok, [Merged], Conflicts} ->
         MergedStart = lists:min([Start, StartInsert]),
-        merge_one(Rest, {MergedStart, Merged}, Acc, Conflicts or HasConflicts);
+        {ok, Rest ++ [{MergedStart, Merged} | Acc], Conflicts or HasConflicts};
     no ->
         AccOut = [{Start, Tree} | Acc],
         merge_one(Rest, {StartInsert, TreeInsert}, AccOut, HasConflicts)
     end.
 
 -spec merge_at(tree(), Place::integer(), tree()) ->
-    {ok, Merged::tree(), HasConflicts::bool()} | no.
+    {ok, Merged::tree(), HasConflicts::boolean()} | no.
 merge_at(_Ours, _Place, []) ->
     no;
 merge_at([], _Place, _Insert) ->
@@ -92,7 +93,7 @@ merge_at([Tree | Sibs], 0, InsertTree) ->
 
 % key tree functions
 
--spec merge_simple(tree(), tree()) -> {Merged::tree(), NewConflicts::bool()}.
+-spec merge_simple(tree(), tree()) -> {Merged::tree(), NewConflicts::boolean()}.
 merge_simple([], B) ->
     {B, false};
 merge_simple(A, []) ->
