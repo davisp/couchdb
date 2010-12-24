@@ -31,6 +31,7 @@ source_files = \
     couch_app.erl \
     couch_auth_cache.erl \
     couch_btree.erl \
+    couch_btree2.erl \
     couch_changes.erl \
     couch_config.erl \
     couch_config_writer.erl \
@@ -93,6 +94,7 @@ compiled_files = \
     couch_app.beam \
     couch_auth_cache.beam \
     couch_btree.beam \
+    couch_btree2.beam \
     couch_changes.beam \
     couch_config.beam \
     couch_config_writer.beam \
