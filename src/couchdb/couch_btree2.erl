@@ -15,6 +15,8 @@
 
 -export([open/1, open/2, open/3, set_options/2, get_state/1]).
 -export([add/2, add_remove/3, query_modify/4]).
+-export([foldl/3, foldl/4, fold/4]).
+-export([reduce/2]).
 -export([well_formed/1]).
 
 -include("couch_db.hrl").
@@ -22,10 +24,18 @@
 
 -record(info, {type, key, pos, num, red}).
 
+-record(stream_st, {
+    dir,
+    start_key,
+    in_range,
+    acc_fun,
+    acc
+}).
+
 
 %% Some helper macros
--define(MIN_SZ, 510).
--define(MAX_SZ, 1020).
+-define(MIN_SZ, 8).
+-define(MAX_SZ, 17).
 
 
 -define(ts(T), tuple_size(T)).
@@ -147,23 +157,31 @@ modify_node(Bt, Info, Actions, Output) ->
 modify_kp_node(Bt, {}, _Pos, Actions, [], Output) ->
     modify_node(Bt, nil, Actions, Output);
 modify_kp_node(Bt, Nodes, Pos, [], NewNode, Output) ->
-    {ok, ?rev2(NewNode, rest_nodes(Nodes, Pos, ?ts(Nodes), [])), Output, Bt};
+    {?rev2(NewNode, rest_nodes(Nodes, Pos, ?ts(Nodes), [])), Output};
 modify_kp_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
     [{_, ActKey, _} | _]= Actions,
     NumNodes = ?ts(Nodes),
     {KpPos, KpInfo} = find_kp_pos(Bt, Nodes, Pos, NumNodes, ActKey),
     case KpPos == NumNodes of
         true  ->
-            {KP, Output2} = modify_node(Bt, KpInfo, Actions, Output),
-            NewNode2 = ?rev2(NewNode, rest_nodes(Nodes, Pos, NumNodes-1, [KP])),
+            {KP0, Output2} = modify_node(Bt, KpInfo, Actions, Output),
+            KPs = case KP0 of
+                nil -> [];
+                _ -> [KP0]
+            end, 
+            NewNode2 = ?rev2(NewNode, rest_nodes(Nodes, Pos, NumNodes-1, KPs)),
             {NewNode2, Output2};
         false ->
             SplitFun = fun({_AType, AKey, _AValue}) ->
                 not ?less(Bt, KpInfo#info.key, AKey)
             end,
             {LTEActs, GTActs} = lists:splitwith(SplitFun, Actions),
-            {KP, Output2} = modify_node(Bt, KpInfo, LTEActs, Output),
-            NewNode2 = ?rev2([KP], rest_rev_nodes(Nodes, Pos, KpPos-1, NewNode)),
+            {KP0, Output2} = modify_node(Bt, KpInfo, LTEActs, Output),
+            KPs = case KP0 of
+                nil -> [];
+                _ -> [KP0]
+            end,
+            NewNode2 = ?rev2(KPs, rest_rev_nodes(Nodes, Pos, KpPos-1, NewNode)),
             modify_kp_node(Bt, Nodes, KpPos + 1, GTActs, NewNode2, Output2)
     end.
 
@@ -237,8 +255,8 @@ rebalance_nodes(Bt, [LInfo0 | RestL], [RInfo0 | RestR]) ->
         true ->
             LInfo = get_info(Bt, LInfo0),
             RInfo = get_info(Bt, RInfo0),
-            {ok, {T, L}} = couch_file:pread_term(Bt#btree.fd, LInfo#info.pos),
-            {ok, {T, R}} = couch_file:pread_term(Bt#btree.fd, RInfo#info.pos),
+            {T, L} = get_node(Bt, LInfo#info.pos),
+            {T, R} = get_node(Bt, RInfo#info.pos),
             Num = LInfo#info.num + RInfo#info.num,
             % Notice that its R ++ L to account for the nodes
             % in R being < nodes in L
@@ -265,6 +283,14 @@ needs_balance(_Bt, Info) ->
     Info#info.num =< ?MIN_SZ orelse Info#info.num >= ?MAX_SZ.
 
 
+get_kv(Bt, Pos) ->
+    {ok, {K, V}} = couch_file:pread_term(Bt#btree.fd, Pos),
+    {K, V}.
+
+write_kv(Bt, {K, V}) ->
+    {ok, Pos} = couch_file:append_term(Bt#btree.fd, {K, V}),
+    Pos.
+
 get_info(_Bt, nil) ->
     nil;
 get_info(_Bt, #info{}=Info) ->
@@ -286,9 +312,9 @@ write_info(Bt, #info{type=Type, key=Key, pos=Pos, num=Num, red=undefined}) ->
 reduce_kp_node(#btree{reduce=nil}, _Nodes, _Reds) ->
     [];
 reduce_kp_node(Bt, [], Reds) ->
-    final_reduce(Bt, {[], Reds});
+    reduce(Bt, {[], Reds});
 reduce_kp_node(Bt, NodeList, Reds) when length(Reds) >= 64 ->
-    Red = final_reduce(Bt, {[], Reds}),
+    Red = reduce(Bt, {[], Reds}),
     reduce_kp_node(Bt, NodeList, [Red]);
 reduce_kp_node(Bt, [Info | Rest], Reds) ->
     Info1 = get_info(Bt, Info),
@@ -298,14 +324,14 @@ reduce_kp_node(Bt, [Info | Rest], Reds) ->
 reduce_kv_node(#btree{reduce=nil}, _Nodes, _KVs, _Reds) ->
     [];
 reduce_kv_node(Bt, [], KVs, Reds) ->
-    final_reduce(Bt, {KVs, Reds});
+    reduce(Bt, {KVs, Reds});
 reduce_kv_node(Bt, NodeList, KVs, Reds) when length(KVs) >= 64 ->
-    Red = final_reduce(Bt, {KVs, []}),
+    Red = reduce(Bt, {KVs, []}),
     reduce_kv_node(Bt, NodeList, [], [Red | Reds]);
 reduce_kv_node(Bt, [{K, V} | Rest], KVs, Reds) ->
     reduce_kv_node(Bt, Rest, [?assemble(Bt, K, V) | KVs], Reds);
 reduce_kv_node(Bt, [Pos | Rest], KVs, Reds) ->
-    {ok, {K, V}} = couch_file:pread_term(Bt#btree.fd, Pos),
+    {K, V} = get_kv(Bt, Pos),
     reduce_kv_node(Bt, Rest, [?assemble(Bt, K, V) | KVs], Reds).
 
 
@@ -340,11 +366,10 @@ flush_kp_node(Bt, [Pos | Rest], _Last, Num, Acc) when is_integer(Pos) ->
 flush_kv_node(_Bt, [], {K, _}, Num, Acc) ->
     {K, Num, ?rev(Acc)};
 flush_kv_node(Bt, [], Pos, Num, Acc) when is_integer(Pos) ->
-    {ok, {K, _}} = couch_file:pread_term(Bt#btree.fd, Pos),
+    {K, _} = get_kv(Bt, Pos),
     {K, Num, ?rev(Acc)};
 flush_kv_node(Bt, [{K, V} | Rest], _Last, Num, Acc) ->
-    {ok, Pos} = couch_file:append_term(Bt#btree.fd, {K, V}),
-    flush_kv_node(Bt, Rest, {K, V}, Num + 1, [Pos | Acc]);
+    flush_kv_node(Bt, Rest, {K, V}, Num + 1, [write_kv(Bt, {K, V}) | Acc]);
 flush_kv_node(Bt, [Pos | Rest], _Last, Num, Acc) when is_integer(Pos) ->
     flush_kv_node(Bt, Rest, Pos, Num + 1, [Pos | Acc]).
 
@@ -399,11 +424,11 @@ find_kp_pos(Bt, Nodes, Start, End, Key) ->
 
 find_kv_pos(Bt, Nodes, Start, End, Key) ->
     Load = fun(Pos) ->
-        {ok, {K, _}} = couch_file:pread_term(Bt#btree.fd, Pos),
+        {K, _} = get_kv(Bt, Pos),
         K
     end,
     Pos = find_key_pos(Bt, Load, Nodes, Start, End, Key),
-    {ok, {K, V}} = couch_file:pread_term(Bt#btree.fd, element(Pos, Nodes)),
+    {K, V} = get_kv(Bt, element(Pos, Nodes)),
     {Pos, {K, V}}.
 
 
@@ -438,6 +463,225 @@ rest_rev_nodes(_Nodes, Start, End, Tail) when Start > End ->
     Tail;
 rest_rev_nodes(Nodes, Start, End, Tail) ->
     rest_rev_nodes(Nodes, Start + 1, End, [element(Start, Nodes) | Tail]).
+
+
+%%%%%%%%%%%%%%%%%%%
+%% Range Queries %%
+%%%%%%%%%%%%%%%%%%%
+
+
+%% @doc Fold over a btree in sorted order.
+foldl(Bt, Fun, Acc) ->
+    fold(Bt, Fun, Acc, []).
+
+%% @doc Fold over a btree in sorted order.
+foldl(Bt, Fun, Acc, Options) ->
+    fold(Bt, Fun, Acc, Options).
+
+%% @doc Fold over a btree.
+%% This will fold over an entire btree's key/value pairs passing
+%% each pair to the provided function along with the given accumulator.
+%%
+%% Functions can return {ok, Acc2} to continue folding, or {stop, Acc2}
+%% to halt the folding early.
+fold(#btree{root=nil}, _Fun, Acc, _Options) ->
+    {ok, {[], []}, Acc};
+fold(Bt, Fun, Acc, Options) ->
+    Dir = couch_util:get_value(dir, Options, fwd),
+    State = #stream_st{
+        dir=Dir,
+        start_key=couch_util:get_value(start_key, Options),
+        in_range=make_range_fun(Bt, Dir, Options),
+        acc_fun=convert_arity(Fun),
+        acc=Acc
+    },
+    RootInfo = get_info(Bt, Bt#btree.root),
+    case stream_node(Bt, [], RootInfo, State) of
+        {ok, Acc2}->
+            {ok, {[], [RootInfo#info.red]}, Acc2};
+        {stop, LastReduction, Acc2} ->
+            {ok, LastReduction, Acc2}
+    end.
+
+stream_node(Bt, Reds, Info, State) ->
+    {NodeType, NodeList} = get_node(Bt, Info#info.pos),
+    AdjNodes = adjust_dir(State#stream_st.dir, NodeList),
+    case {NodeType, State#stream_st.start_key} of
+        {p, _} -> stream_kp_node(Bt, Reds, AdjNodes, State);
+        {v, undefined} -> stream_kv_node(Bt, Reds, [], AdjNodes, State);
+        {v, _} -> stream_kv_node(Bt, Reds, AdjNodes, State)
+    end.
+
+stream_kp_node(_Bt, _Reds, [], State) ->
+    {ok, State#stream_st.acc};
+stream_kp_node(Bt, Reds, [Pos | Rest], #stream_st{start_key=undefined}=State) ->
+    Info = get_info(Bt, Pos),
+    case stream_node(Bt, Reds, Info, State) of
+        {ok, Acc2} ->
+            %% XXX: Check length and do a reduction to
+            %% save ram.
+            NewReds = [Info#info.red | Reds],
+            stream_kp_node(Bt, NewReds, Rest, State#stream_st{acc=Acc2});
+        {stop, LastReds, Acc2} ->
+            {stop, LastReds, Acc2}
+    end;
+stream_kp_node(Bt, Reds, InfoPtrs, State) ->
+    StartKey = State#stream_st.start_key,
+    {NewReds, NextInfo, RestPtrs} = case State#stream_st.dir of
+        fwd -> seek_kp_fwd(Bt, Reds, StartKey, InfoPtrs);
+        rev -> seek_kp_rev(Bt, Reds, StartKey, ?rev(InfoPtrs), [])
+    end,
+    case NextInfo of
+        nil ->
+            {ok, State#stream_st.acc};
+        _ when is_record(NextInfo, info) ->
+            case stream_node(Bt, NewReds, NextInfo, State) of
+                {ok, Acc2} ->
+                    State2 = State#stream_st{start_key=undefined, acc=Acc2},
+                    NewReds2 = [NextInfo#info.red | NewReds],
+                    stream_kp_node(Bt, NewReds2, RestPtrs, State2);
+                {stop, LastReds, Acc2} ->
+                    {stop, LastReds, Acc2}
+            end
+    end.
+
+stream_kv_node(Bt, Reds, KVs, State) ->
+    StartKey = State#stream_st.start_key,
+    DropFun = case State#stream_st.dir of
+        fwd -> fun(Key) -> ?less(Bt, Key, StartKey) end;
+        rev -> fun(Key) -> ?less(Bt, StartKey, Key) end
+    end,
+    {Assembled, ToStream} = seek_kv(Bt, DropFun, KVs, []),
+    stream_kv_node(Bt, Reds, Assembled, ToStream, State).
+
+stream_kv_node(_Bt, _Reds, _PrevKVs, [], State) ->
+    {ok, State#stream_st.acc};
+stream_kv_node(Bt, Reds, PrevKVs, [Next | RestKVs], State) ->
+    {K, V} = case Next of
+        _ when is_integer(Next) -> get_kv(Bt, Next);
+        _ -> Next
+    end,
+    AccFun = State#stream_st.acc_fun,
+    case ?in_range(State, K) of
+        false ->
+            {stop, {PrevKVs, Reds}, State#stream_st.acc};
+        true ->
+            AssembledKV = ?assemble(Bt, K, V),
+            case AccFun(AssembledKV, {PrevKVs, Reds}, State#stream_st.acc) of
+                {ok, Acc2} ->
+                    %% XXX: Check length and do a reduction to
+                    %% save ram.
+                    PrevKVs2 = [AssembledKV | PrevKVs],
+                    State2 = State#stream_st{acc=Acc2},
+                    stream_kv_node(Bt, Reds, PrevKVs2, RestKVs, State2);
+                {stop, Acc2} ->
+                    {stop, {PrevKVs, Reds}, Acc2}
+            end
+    end.
+
+
+%% @doc Adjust a list based on direction.
+%%
+%% @spec adjust_dir(Dir, List1) -> List2
+adjust_dir(fwd, List) -> List;
+adjust_dir(rev, List) -> ?rev(List).
+
+
+%% @doc Drop nodes while keeping reductions.
+%%
+%% @spec drop_nodes(Bt, Reds, StartKey, Nodes) -> {Reds, Rest}.
+seek_kp_fwd(_Bt, Reds, _StartKey, []) ->
+    {Reds, nil, []};
+seek_kp_fwd(Bt, Reds, StartKey, [Pos | Rest]) ->
+    Info = get_info(Bt, Pos),
+    case ?less(Bt, Info#info.key, StartKey) of
+        true ->
+            seek_kp_fwd(Bt, [Info#info.red | Reds], StartKey, Rest);
+        false ->
+            {Reds, Info, Rest}
+    end.
+
+
+seek_kp_rev(_Bt, Reds, _StartKey, [], [Info | Acc]) ->
+    {Reds, Info, Acc};
+seek_kp_rev(Bt, Reds, StartKey, [Pos | Rest], Acc) ->
+    Info = get_info(Bt, Pos),
+    case ?less(Bt, Info#info.key, StartKey) of
+        true ->
+            seek_kp_rev(Bt, Reds, StartKey, Rest, [Info | Acc]);
+        false ->
+            seek_kp_rev(Bt, Reds, Rest, Acc)
+    end.
+
+seek_kp_rev(_Bt, Reds, [], [Info | Acc]) ->
+    {Reds, Info, Acc};
+seek_kp_rev(Bt, Reds, [Pos | Rest], Acc) ->
+    Info = get_info(Bt, Pos),
+    Pred = fun(P) -> I = get_info(Bt, P), I#info.red end,
+    {Reds ++ lists:map(Pred, Rest), Info, Acc}.
+
+
+seek_kv(_Bt, _Drop, [], Skipped) ->
+    {Skipped, []};
+seek_kv(Bt, Drop, [Pos | Rest], Skipped) ->
+    {K, V} = get_kv(Bt, Pos),
+    case Drop(K) of
+        true ->
+            seek_kv(Bt, Drop, Rest, [?assemble(Bt, K, V) | Skipped]);
+        false ->
+            {Skipped, [{K, V} | Rest]}
+    end.
+
+
+%% @doc Wrap 2-arity functions so they can ignore reductions.
+%%
+%% @spec convert_arity(Fun1) -> Fun2.
+convert_arity(Fun) when is_function(Fun, 2) ->
+    fun(KV, _Reds, AccIn) -> Fun(KV, AccIn) end;
+convert_arity(Fun) when is_function(Fun, 3) ->
+    Fun.
+
+
+%% @doc
+%%
+%% @spec
+make_range_fun(#btree{less=Less}, Dir, Options) ->
+    case couch_util:get_value(end_key_gt, Options) of
+        undefined ->
+            case couch_util:get_value(end_key, Options) of
+                undefined ->
+                    fun(_Key) -> true end;
+                LastKey ->
+                    case Dir of
+                        fwd -> fun(Key) -> not Less(LastKey, Key) end;
+                        rev -> fun(Key) -> not Less(Key, LastKey) end
+                    end
+                end;
+        EndKey ->
+            case Dir of
+                fwd -> fun(Key) -> Less(Key, EndKey) end;
+                rev -> fun(Key) -> Less(EndKey, Key) end
+            end
+    end.
+
+
+%%%%%%%%%%%%%%%%
+%% Reductions %%
+%%%%%%%%%%%%%%%%
+
+
+%% @doc Complete a partial reduction.
+reduce(#btree{reduce=Reduce}, Val) ->
+    reduce(Reduce, Val);
+reduce(Reduce, {[], []}) ->
+    Reduce(reduce, []);
+reduce(_Bt, {[], [Red]}) ->
+    Red;
+reduce(Reduce, {[], Reductions}) ->
+    Reduce(rereduce, Reductions);
+reduce(Reduce, {KVs, Reductions}) ->
+    Red = Reduce(reduce, KVs),
+    reduce(Reduce, {[], [Red | Reductions]}).
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -491,7 +735,7 @@ well_formed_node(Info, Type, Nodes) ->
         _ -> erlang:error({invalid_num, Info, length(Nodes)})
     end.
 
-well_formed_children(Bt, _, [], _) ->
+well_formed_children(_Bt, _, [], _) ->
     ok;
 well_formed_children(Bt, #info{type=p}=Info, [Pos | Rest], Prev) ->
     case Pos of
@@ -534,7 +778,7 @@ well_formed_children(Bt, Info, [Pos | Rest], Prev) ->
         true -> ok;
         _ -> erlang:error({invalid_kv_pos2, Info, Pos})
     end,
-    {ok, {Key, _}} = couch_file:pread_term(Bt#btree.fd, Pos),
+    {Key, _} = get_kv(Bt, Pos),
     case Key =< Info#info.key of
         true -> ok;
         _ -> erlang:error({invalid_kv_key, Info, Key})

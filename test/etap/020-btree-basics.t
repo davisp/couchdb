@@ -15,7 +15,7 @@
 % the License.
 
 filename() -> test_util:build_file("test/etap/temp.020").
-rows() -> 250.
+rows() -> 1024.
 
 -record(btree, {fd, root, extract_kv, assemble_kv, less, reduce, chunk_size}).
 
