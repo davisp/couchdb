@@ -296,22 +296,15 @@ terminate(_Reason, #file{fd = Fd}) ->
 
 
 handle_call({pread_iolist, Pos}, _From, File) ->
-    {RawData, NextPos} = try
-        % up to 8Kbs of read ahead
-        read_raw_iolist_int(File, Pos, 2 * ?SIZE_BLOCK - (Pos rem ?SIZE_BLOCK))
-    catch
-    _:_ ->
-        read_raw_iolist_int(File, Pos, 4)
-    end,
-    <<Prefix:1/integer, Len:31/integer, RestRawData/binary>> =
-        iolist_to_binary(RawData),
+    {DataLength, NextPos} = read_raw_iolist_int(File, Pos, 4),
+    <<Prefix:1/integer, Len:31/integer>> = iolist_to_binary(DataLength),
     case Prefix of
     1 ->
-        {Md5, IoList} = extract_md5(
-            maybe_read_more_iolist(RestRawData, 16 + Len, NextPos, File)),
+        {Data, _Next} = read_raw_iolist_int(File, NextPos, Len+16),
+        {Md5, IoList} = extract_md5(Data),
         {reply, {ok, IoList, Md5}, File};
     0 ->
-        IoList = maybe_read_more_iolist(RestRawData, Len, NextPos, File),
+        {IoList, _Next} = read_raw_iolist_int(File, NextPos, Len),
         {reply, {ok, IoList, <<>>}, File}
     end;
 
