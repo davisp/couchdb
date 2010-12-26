@@ -15,12 +15,12 @@
 
 -export([open/1, open/2, open/3, set_options/2, get_state/1]).
 -export([add/2, add_remove/3, query_modify/4]).
-
+-export([well_formed/1]).
 
 -include("couch_db.hrl").
 
 
--record(info, {key, pos, num, red}).
+-record(info, {type, key, pos, num, red}).
 
 
 %% Some helper macros
@@ -85,6 +85,11 @@ get_state(#btree{root=Root}) ->
     Root.
 
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Update/Delete functions %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
 %% @doc Add key/value pairs to the btree.
 add(Bt, Insertions) ->
     add_remove(Bt, Insertions, []).
@@ -113,30 +118,30 @@ query_modify(Bt, Queries, Insertions, Deletions) ->
             end
     end,
     Actions = lists:usort(SortFun, InsActions ++ DelActions ++ QryActions),
-    {NewInfos, QueryResults} = modify_node(Bt, Root, Actions, []),
-    {ok, NewRoot} = case NewInfos of
-        [] -> {ok, nil};
-        [Info] -> write_info(Info);
-        Infos -> write_info(write_node(p, Bt, Infos))
+    RootInfo = get_info(Bt, Root),
+    {NewInfo, QueryResults} = modify_node(Bt, RootInfo, Actions, []),
+    {ok, NewRoot} = case NewInfo of
+        nil -> {ok, nil};
+        _ -> complete_root(Bt, NewInfo)
     end,
     {ok, QueryResults, Bt#btree{root=NewRoot}}.
 
 modify_node(Bt, Info, Actions, Output) ->
-    {NodeType, NodeList} = case PtrInfo of
+    {NodeType, NodeList} = case Info of
         nil -> {v, []};
-        Pos -> get_node(Bt, Info#info.pos)
+        _ -> get_node(Bt, Info#info.pos)
     end,
     NodeTuple = ?l2t(NodeList),
 
-    {NewNodeList0, Output2} = case NodeType of
+    {NewNodeList, Output2} = case NodeType of
         p -> modify_kp_node(Bt, NodeTuple, 1, Actions, [], Output);
         v -> modify_kv_node(Bt, NodeTuple, 1, Actions, [], Output)
     end,
 
     case NewNodeList of
-        [] -> {[], Output2};
+        [] -> {nil, Output2};
         NodeList -> {Info, Output2};
-        _ -> {write_node(NodeType, Bt2, NewNodeList), Output2}
+        _ -> {write_node(NodeType, Bt, NewNodeList), Output2}
     end.
 
 modify_kp_node(Bt, {}, _Pos, Actions, [], Output) ->
@@ -146,29 +151,29 @@ modify_kp_node(Bt, Nodes, Pos, [], NewNode, Output) ->
 modify_kp_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
     [{_, ActKey, _} | _]= Actions,
     NumNodes = ?ts(Nodes),
-    {KpPos, {KpKey, PtrInfo}} = find_key_pos(Bt, Nodes, Pos, NumNodes, ActKey),
+    {KpPos, KpInfo} = find_kp_pos(Bt, Nodes, Pos, NumNodes, ActKey),
     case KpPos == NumNodes of
         true  ->
-            {KPs, Output2} = modify_node(Bt, PtrInfo, Actions, Output),
-            NewNode2 = ?rev2(NewNode, rest_nodes(Nodes, Pos, NumNodes-1, KPs)),
-            {?l2t(NewNode2), Output2};
+            {KP, Output2} = modify_node(Bt, KpInfo, Actions, Output),
+            NewNode2 = ?rev2(NewNode, rest_nodes(Nodes, Pos, NumNodes-1, [KP])),
+            {NewNode2, Output2};
         false ->
             SplitFun = fun({_AType, AKey, _AValue}) ->
-                not ?less(Bt, KpKey, AKey)
+                not ?less(Bt, KpInfo#info.key, AKey)
             end,
             {LTEActs, GTActs} = lists:splitwith(SplitFun, Actions),
-            {KPs, Output2} = modify_node(Bt, PtrInfo, LTEActs, Output),
-            NewNode2 = ?rev2(KPs, rest_rev_nodes(Nodes, Pos, KpPos-1, NewNode)),
+            {KP, Output2} = modify_node(Bt, KpInfo, LTEActs, Output),
+            NewNode2 = ?rev2([KP], rest_rev_nodes(Nodes, Pos, KpPos-1, NewNode)),
             modify_kp_node(Bt, Nodes, KpPos + 1, GTActs, NewNode2, Output2)
     end.
 
-modify_kv_node(Bt, Nodes, Pos, [], NewNode, Output) ->
+modify_kv_node(_Bt, Nodes, Pos, [], NewNode, Output) ->
     {?rev2(NewNode, rest_nodes(Nodes, Pos, ?ts(Nodes), [])), Output};
 modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) when Pos > ?ts(Nodes)->
     [{ActType, ActKey, ActValue} | RestActs] = Actions,
     case ActType of
         insert ->
-            NewNode2 = [{insert, {ActKey, ActValue}} | NewNode],
+            NewNode2 = [{ActKey, ActValue} | NewNode],
             modify_kv_node(Bt, Nodes, Pos, RestActs, NewNode2, Output);
         remove ->
             modify_kv_node(Bt, Nodes, Pos, RestActs, NewNode, Output);
@@ -178,11 +183,11 @@ modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) when Pos > ?ts(Nodes)->
     end;
 modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
     [{ActType, ActKey, ActValue} | RestActs] = Actions,
-    {KvPos, {Key, Value}} = find_key_pos(Bt, Nodes, Pos, ?ts(Nodes), ActKey),
+    {KvPos, {Key, Value}} = find_kv_pos(Bt, Nodes, Pos, ?ts(Nodes), ActKey),
     NewNode2 =  rest_rev_nodes(Nodes, Pos, KvPos - 1, NewNode),
     case {cmp_keys(Bt, ActKey, Key), ActType} of
         {lesser, insert} ->
-            NewNode3 = [{insert, {ActKey, ActValue}} | NewNode2],
+            NewNode3 = [{ActKey, ActValue} | NewNode2],
             modify_kv_node(Bt, Nodes, KvPos, RestActs, NewNode3, Output);
         {lesser, delete} ->
             modify_kv_node(Bt, Nodes, KvPos, RestActs, NewNode2, Output);
@@ -190,7 +195,7 @@ modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
             Output2 = [{not_found, {ActKey, nil}} | Output],
             modify_kv_node(Bt, Nodes, KvPos, RestActs, NewNode2, Output2);
         {equal, insert} ->
-            NewNode3 = [{insert, {ActKey, ActValue}} | NewNode2],
+            NewNode3 = [{ActKey, ActValue} | NewNode2],
             modify_kv_node(Bt, Nodes, KvPos + 1, RestActs, NewNode3, Output);
         {equal, delete} ->
             modify_kv_node(Bt, Nodes, KvPos + 1, RestActs, NewNode2, Output);
@@ -203,46 +208,7 @@ modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
     end.
 
 
-% Read/Write btree nodes.
-
-
-%% @doc Read a node from disk.
-%%
-%% @spec get_node(Bt, Position) -> {NodeType, NodeList}.
-get_node(#btree{fd = Fd}, NodePos) ->
-    {ok, {NodeType, NodeList}} = couch_file:pread_term(Fd, NodePos),
-    {NodeType, NodeList}.
-
-
-%% @doc Write a btree node to disk.
-write_node(p, Bt, NodeList0) ->
-    NodeList = rebalance_nodes(Bt, NodeList0, []),
-    {LastKey, Num, Infos} = flush_kp_node(Bt, NodeList, nil, 0, []),
-    {ok, Pos} = couch_file:append_term(Bt#btree.fd, {p, Infos}),
-    #info{key=LastKey, pos=Pos, num=Num};
-write_node(v, Bt, NodeList) ->
-    {LastKey, Num, Infos} = flush_kv_node(Bt, NodeList, nil, 0, []),
-    {ok, Pos} = couch_file:append_term(Bt#btree.fd, {v, KVPtrs}),
-    #info{key=LastKey, pos=Pos, num=Num}.
-
-
-get_info(_Bt, #info{}=Info) ->
-    Info;
-get_info(Bt, Ptr) ->
-    {ok, {Key, Ptr, Num, Red}} = couch_file:pread_term(Bt#btree.fd, Ptr),
-    #info{key=Key, ptr=Ptr, num=Num, red=Red}.
-
-
-write_info(Bt, #info{key=Key, pos=Pos, num=Num, red=undefined}) ->
-    {ok, {Type, Nodes}} = couch_file:pread_term(Bt#btree.fd, Info#info.pos),
-    Red = case Type of
-        p -> reduce_kp_node(Bt, Nodes, []);
-        v -> reduce_kv_node(Bt, Nodes, [])
-    end,
-    couch_file:append_term(Bt#btree.fd, {Key, Pos, Num, Red}).
-
-
-rebalance_nodes(Bt, [], Acc) ->
+rebalance_nodes(_Bt, [], Acc) ->
     ?rev(Acc);
 rebalance_nodes(Bt, [#info{}=Info], []) ->
     case Info#info.num >= ?MAX_SZ of
@@ -254,57 +220,73 @@ rebalance_nodes(Bt, [#info{}=Info], []) ->
     end;
 rebalance_nodes(Bt, [Info | Rest], []) ->
     rebalance_nodes(Bt, Rest, [Info]);
-rebalance_nodes(Bt, [LInfo | RestL], [RInfo | RestR]) ->
-    LInfo = get_info(Left),
-    RInfo = get_info(Right),
-    NewInfos = case needs_balance(Bt, LInfo) or needs_balance(Bt, RInfo) of
+rebalance_nodes(Bt, [LInfo0 | RestL], [RInfo0 | RestR]) ->
+    % Delay loading infos as long as possible.
+    LNeeds = case LInfo0 of
+        _ when is_integer(LInfo0) -> false;
+        _ -> needs_balance(Bt, LInfo0)
+    end,
+    RNeeds = case RInfo0 of
+        _ when is_integer(RInfo0) -> false;
+        _ -> needs_balance(Bt, RInfo0)
+    end,
+    NewInfos = case LNeeds or RNeeds of
         false ->
-            [LInfo, RInfo];
-        true -> 
-            {ok, {Type, Left}} = couch_file:pread_term(Bt#btree.fd, LPtr),
-            {ok, {Type, Right}} = couch_file:pread_term(Bt#btree.fd, RPtr),
-            split_nodes(Bt, Type, LCnt + RCnt, Left ++ Right)
-    end.
-    rebalance_nodes(Bt, RestN, NewInfos ++ RestA).
+            % Account for ?rev below.
+            [RInfo0, LInfo0];
+        true ->
+            LInfo = get_info(Bt, LInfo0),
+            RInfo = get_info(Bt, RInfo0),
+            {ok, {T, L}} = couch_file:pread_term(Bt#btree.fd, LInfo#info.pos),
+            {ok, {T, R}} = couch_file:pread_term(Bt#btree.fd, RInfo#info.pos),
+            Num = LInfo#info.num + RInfo#info.num,
+            % Notice that its R ++ L to account for the nodes
+            % in R being < nodes in L
+            split_nodes(Bt, T, Num, R ++ L)
+    end,
+    rebalance_nodes(Bt, RestL, ?rev2(NewInfos, RestR)).
 
 
 split_nodes(Bt, Type, Num, Nodes) when Num =< ?MAX_SZ ->
     {ok, Pos} = couch_file:append_term(Bt#btree.fd, {Type, Nodes}),
-    Info = get_info(lists:last(Nodes)),
-    [Info#{pos=Pos, num=Num, red=undefined}];
+    Key = case couch_file:pread_term(Bt#btree.fd, lists:last(Nodes)) of
+        {ok, {K, _}} -> K;
+        {ok, {_, K, _, _, _}} -> K
+    end,
+    [#info{type=Type, key=Key, pos=Pos, num=Num, red=undefined}];
 split_nodes(Bt, Type, Num, Nodes) ->
-    Left, Right = lists:split(Num / 2, Nodes),
-    LInfo = split_nodes(Bt, Type, lists:length(Left), Left),
-    RInfo = split_nodes(Bt, Type, lists:length(Right), Right),
-    [LInfo, RInfo].
+    {Left, Right} = lists:split(Num div 2, Nodes),
+    LInfos = split_nodes(Bt, Type, length(Left), Left),
+    RInfos = split_nodes(Bt, Type, length(Right), Right),
+    LInfos ++ RInfos.
     
 
 needs_balance(_Bt, Info) ->
-    Info#info.num =< ?MIN_SZ or Info#info.num >= ?MAX_SZ.
+    Info#info.num =< ?MIN_SZ orelse Info#info.num >= ?MAX_SZ.
 
 
-flush_kp_node(_Bt, [], Info, Num, Acc) ->
-    Info1 = get_info(Bt, Info),
-    {Info1#info.key, Num, ?rev(Acc)};
-flush_kp_node(_Bt, [#info{}=Info | Rest], Last, Num, Acc) ->
-    {ok, Pos} = write_info(NewInfo),
-    flush_kp_node(Bt, Rest, NewInfo, Num + 1, [Pos | Acc]);
-flush_kp_node(_Bt, [Pos | Rest], Last, Num, Acc) when is_integer(Pos) ->
-    flush_kp_node(Bt, Rest, Pos, Num + 1, [Pos | Acc]).
+get_info(_Bt, nil) ->
+    nil;
+get_info(_Bt, #info{}=Info) ->
+    Info;
+get_info(Bt, Pos) when is_integer(Pos) ->
+    {ok, {Type, Key, Pos2, Num, Red}} = couch_file:pread_term(Bt#btree.fd, Pos),
+    #info{type=Type, key=Key, pos=Pos2, num=Num, red=Red}.
 
 
-flush_kv_node(_Bt, [], Info, Num, Acc) ->
-    Info1 = get_info(Bt, Info),
-    {Info1#info.key, Num, ?rev(Acc)};
-flush_kv_node(Bt, [{K, V} | Rest], Num, Acc) ->
-    {ok, Pos} = couch_file:append_term(Bt#btree.fd, {K, V}),
-    flush_kv_node(Bt, Rest, Info, Num + 1, [Pos | Acc]);
-flush_kv_node(Bt, [Pos | Rest], Num, Acc) when is_integer(Pos) ->
-    flush_kv_node(Bt, Rest, Pos, Num + 1, [Pos | Acc]).
+write_info(Bt, #info{type=Type, key=Key, pos=Pos, num=Num, red=undefined}) ->
+    {ok, {Type, Nodes}} = couch_file:pread_term(Bt#btree.fd, Pos),
+    Red = case Type of
+        p -> reduce_kp_node(Bt, Nodes, []);
+        v -> reduce_kv_node(Bt, Nodes, [], [])
+    end,
+    couch_file:append_term(Bt#btree.fd, {Type, Key, Pos, Num, Red}).
 
 
+reduce_kp_node(#btree{reduce=nil}, _Nodes, _Reds) ->
+    [];
 reduce_kp_node(Bt, [], Reds) ->
-    final_reudce(Bt, {[], Reds});
+    final_reduce(Bt, {[], Reds});
 reduce_kp_node(Bt, NodeList, Reds) when length(Reds) >= 64 ->
     Red = final_reduce(Bt, {[], Reds}),
     reduce_kp_node(Bt, NodeList, [Red]);
@@ -313,33 +295,68 @@ reduce_kp_node(Bt, [Info | Rest], Reds) ->
     reduce_kp_node(Bt, Rest, [Info1#info.red | Reds]).
 
 
+reduce_kv_node(#btree{reduce=nil}, _Nodes, _KVs, _Reds) ->
+    [];
 reduce_kv_node(Bt, [], KVs, Reds) ->
     final_reduce(Bt, {KVs, Reds});
 reduce_kv_node(Bt, NodeList, KVs, Reds) when length(KVs) >= 64 ->
     Red = final_reduce(Bt, {KVs, []}),
     reduce_kv_node(Bt, NodeList, [], [Red | Reds]);
 reduce_kv_node(Bt, [{K, V} | Rest], KVs, Reds) ->
-    reduce_kv_node(Bt, Rest, [{K, V} | KVs], Reds);
+    reduce_kv_node(Bt, Rest, [?assemble(Bt, K, V) | KVs], Reds);
 reduce_kv_node(Bt, [Pos | Rest], KVs, Reds) ->
     {ok, {K, V}} = couch_file:pread_term(Bt#btree.fd, Pos),
-    reduce_kv_node(Bt, Rest, [{K, V} | KVs], Reds).
+    reduce_kv_node(Bt, Rest, [?assemble(Bt, K, V) | KVs], Reds).
 
 
-%% @doc Complete a partial reduction.
-final_reduce(#btree{reduce=Reduce}, Val) ->
-    final_reduce(Reduce, Val);
-final_reduce(Reduce, {[], []}) ->
-    Reduce(reduce, []);
-final_reduce(_Bt, {[], [Red]}) ->
-    Red;
-final_reduce(Reduce, {[], Reductions}) ->
-    Reduce(rereduce, Reductions);
-final_reduce(Reduce, {KVs, Reductions}) ->
-    Red = Reduce(reduce, KVs),
-    final_reduce(Reduce, {[], [Red | Reductions]}).
+%% @doc Read a node from disk.
+get_node(#btree{fd = Fd}, NodePos) ->
+    {ok, {NodeType, NodeList}} = couch_file:pread_term(Fd, NodePos),
+    {NodeType, NodeList}.
 
 
-% Utility Functions
+%% @doc Write a btree node to disk.
+write_node(p, Bt, NodeList0) ->
+    NodeList = rebalance_nodes(Bt, NodeList0, []),
+    {LastKey, Num, Infos} = flush_kp_node(Bt, NodeList, nil, 0, []),
+    {ok, Pos} = couch_file:append_term(Bt#btree.fd, {p, Infos}),
+    #info{type=p, key=LastKey, pos=Pos, num=Num};
+write_node(v, Bt, NodeList) ->
+    {LastKey, Num, Infos} = flush_kv_node(Bt, NodeList, nil, 0, []),
+    {ok, Pos} = couch_file:append_term(Bt#btree.fd, {v, Infos}),
+    #info{type=v, key=LastKey, pos=Pos, num=Num}.
+
+
+flush_kp_node(Bt, [], Info, Num, Acc) ->
+    Info1 = get_info(Bt, Info),
+    {Info1#info.key, Num, ?rev(Acc)};
+flush_kp_node(Bt, [#info{}=Info | Rest], _Last, Num, Acc) ->
+    {ok, Pos} = write_info(Bt, Info),
+    flush_kp_node(Bt, Rest, Info, Num + 1, [Pos | Acc]);
+flush_kp_node(Bt, [Pos | Rest], _Last, Num, Acc) when is_integer(Pos) ->
+    flush_kp_node(Bt, Rest, Pos, Num + 1, [Pos | Acc]).
+
+
+flush_kv_node(_Bt, [], {K, _}, Num, Acc) ->
+    {K, Num, ?rev(Acc)};
+flush_kv_node(Bt, [], Pos, Num, Acc) when is_integer(Pos) ->
+    {ok, {K, _}} = couch_file:pread_term(Bt#btree.fd, Pos),
+    {K, Num, ?rev(Acc)};
+flush_kv_node(Bt, [{K, V} | Rest], _Last, Num, Acc) ->
+    {ok, Pos} = couch_file:append_term(Bt#btree.fd, {K, V}),
+    flush_kv_node(Bt, Rest, {K, V}, Num + 1, [Pos | Acc]);
+flush_kv_node(Bt, [Pos | Rest], _Last, Num, Acc) when is_integer(Pos) ->
+    flush_kv_node(Bt, Rest, Pos, Num + 1, [Pos | Acc]).
+
+
+complete_root(Bt, #info{type=p}=Info) ->
+    write_info(Bt, Info);
+complete_root(Bt, #info{num=Num}=Info) when Num =< ?MAX_SZ ->
+    write_info(Bt, Info);
+complete_root(Bt, #info{type=Type, pos=Pos, num=Num}) ->
+    {v, Nodes} = get_node(Bt, Pos),
+    Infos = split_nodes(Bt, Type, Num, Nodes),
+    write_info(Bt, write_node(p, Bt, Infos)).
 
 
 %% @doc Prioritize modification actions
@@ -352,32 +369,7 @@ op_order(remove) -> 2;
 op_order(insert) -> 3.
 
 
-%% @doc Find the node for a given key.
-%%
-%% This does a binary search over the Nodes tuple to find
-%% the node where a given would be located.
-find_key_pos(Bt, Nodes, Start, End, Key) ->
-    {ok, StartInfo} = couch_file:pread_term(Bt#btree.fd, Start),
-    {ok, EndInfo} = couch_file:pread_term(Bt#btree.fd, End),
-    find_key_pos(Bt, Nodes, Start, StartInfo, End, EndInfo, Key).
-
-find_key_pos(_Bt, _Nodes, Start, _, End, EndInfo, _Key) when Start == End ->
-    {End, EndInfo};
-find_key_pos(Bt, Nodes, Start, End, Key) ->
-    Mid = Start + ((End - Start) div 2),
-    {ok, MidInfo} = couch_file:pread_term(Bt#btree.fd, element(Mid, Nodes)),
-    NodeKey = element(1, MidInfo),
-    case ?less(Bt, NodeKey, Key) of
-        true ->
-            Mid2Pos = element(Mid+1, Nodes),
-            {ok, MidInfo2} = couch_file:pread_term(Bt#btree.fd, Mid2Pos),
-            find_key_pos(Bt, Nodes, Mid+1, MidInfo2, End, EndInfo, Key);
-        false ->
-            find_key_pos(Bt, Nodes, Start, StartInfo, Mid, MidInfo, Key)
-    end.
-
-
-%% @doc Returns lesser, equal, or greater
+%% @doc Compare two keys for ordering
 cmp_keys(Bt, A, B) ->
     case ?less(Bt, A, B) of
         true ->
@@ -392,28 +384,164 @@ cmp_keys(Bt, A, B) ->
     end.
 
 
-%% @doc
+%% @doc Find the node for a given key.
+%%
+%% This does a binary search over the Nodes tuple to find
+%% the node where a given would be located.
+find_kp_pos(Bt, Nodes, Start, End, Key) ->
+    Load = fun(Pos) ->
+        Info = get_info(Bt, Pos),
+        Info#info.key
+    end,
+    Pos = find_key_pos(Bt, Load, Nodes, Start, End, Key),
+    {Pos, get_info(Bt, element(Pos, Nodes))}.
+
+
+find_kv_pos(Bt, Nodes, Start, End, Key) ->
+    Load = fun(Pos) ->
+        {ok, {K, _}} = couch_file:pread_term(Bt#btree.fd, Pos),
+        K
+    end,
+    Pos = find_key_pos(Bt, Load, Nodes, Start, End, Key),
+    {ok, {K, V}} = couch_file:pread_term(Bt#btree.fd, element(Pos, Nodes)),
+    {Pos, {K, V}}.
+
+
+find_key_pos(_Bt, _Load, _Nodes, Start, End, _Key) when Start == End ->
+    End;
+find_key_pos(Bt, Load, Nodes, Start, End, Key) ->
+    Mid = Start + ((End - Start) div 2),
+    MKey = Load(element(Mid, Nodes)),
+    case ?less(Bt, MKey, Key) of
+        true -> find_key_pos(Bt, Load, Nodes, Mid+1, End, Key);
+        false -> find_key_pos(Bt, Load, Nodes, Start, Mid, Key)
+    end.
+
+
+%% @doc Return the rest of the nodes in a tuple given
+%% the start and end positions. Tail is appended to
+%% the result.
 rest_nodes(Nodes, Start, End, Tail) ->
     rest_nodes(Nodes, Start, End, [], Tail).
 
+%% @private
 rest_nodes(_Nodes, Start, End, Acc, Tail) when Start > End ->
     ?rev2(Acc, Tail);
 rest_nodes(Nodes, Start, End, Acc, Tail) ->
     rest_nodes(Nodes, Start + 1, End, [element(Start, Nodes) | Acc], Tail).
 
 
-%% @doc
+%% @doc Return the rest of the nodes in a tuple given
+%% the start and end positions. Returns the results
+%% in reversed order from how they appear in the Nodes tuple.
 rest_rev_nodes(_Nodes, Start, End, Tail) when Start > End ->
     Tail;
 rest_rev_nodes(Nodes, Start, End, Tail) ->
     rest_rev_nodes(Nodes, Start + 1, End, [element(Start, Nodes) | Tail]).
 
 
-%% @doc
-reduce_node(#btree{reduce=nil}, _NodeType, _NodeList) ->
-    [];
-reduce_node(#btree{reduce=R}, kp_node, NodeList) ->
-    R(rereduce, [Red || {_K, {_P, Red}} <- NodeList]);
-reduce_node(#btree{reduce=R}=Bt, kv_node, NodeList) ->
-    R(reduce, [?assemble(Bt, K, V) || {K, V} <- NodeList]).
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Assertions for a valid b+tree %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+
+%% @doc Check that a btree is well formed.
+well_formed(#btree{root=nil}) ->
+    true;
+well_formed(#btree{root=Root}=Bt) ->
+    RootInfo = get_info(Bt, Root),
+    well_formed_info(RootInfo, true),
+    {Type, Nodes} = get_node(Bt, RootInfo#info.pos),
+    well_formed_node(RootInfo, Type, Nodes),
+    well_formed_children(Bt, RootInfo, Nodes, nil),
+    true.
+
+well_formed_info(Info, IsRoot) ->
+    case Info#info.type of
+        p -> ok;
+        v -> ok;
+        _ -> erlang:error({invalid_type, Info})
+    end,
+    case Info#info.pos of
+        Pos when is_integer(Pos) andalso Pos >= 0 -> ok;
+        Pos -> erlang:error({invalid_position, Info, Pos})
+    end,
+    case Info#info.num < ?MIN_SZ of
+        true when IsRoot -> ok;
+        true -> erlang:error({too_few_children, Info});
+        _ -> ok
+    end,
+    case Info#info.num > ?MAX_SZ of
+        true -> erlang:error({too_many_children, Info});
+        _ -> ok
+    end,
+    case Info#info.red of
+        undefined -> erlang:error({invalid_reductions, Info});
+        _ -> ok
+    end.
+
+well_formed_node(Info, Type, Nodes) ->
+    case Info#info.type of
+        Type -> ok;
+        _ -> erlang:error({type_mismatch, Info, Type})
+    end,
+    Num = length(Nodes),
+    case Info#info.num of
+        Num -> ok;
+        _ -> erlang:error({invalid_num, Info, length(Nodes)})
+    end.
+
+well_formed_children(Bt, _, [], _) ->
+    ok;
+well_formed_children(Bt, #info{type=p}=Info, [Pos | Rest], Prev) ->
+    case Pos of
+        _ when is_integer(Pos) -> ok;
+        _ -> erlang:error({invalid_child_pos, Info, Pos})
+    end,
+    case Pos < Info#info.pos of
+        true -> ok;
+        _ -> erlang:error({invalid_child_after_info, Info, Pos})
+    end,
+    CInfo = get_info(Bt, Pos),
+    case is_record(CInfo, info) of
+        true -> ok;
+        _ -> erlang:error({invalid_info, Info, Pos})
+    end,
+    case CInfo#info.key =< Info#info.key of
+        true -> ok;
+        _ -> erlang:error({invalid_child_key, Info, CInfo})
+    end,
+    case CInfo#info.pos < Info#info.pos of
+        true -> ok;
+        _ -> erlang:error({invalid_child_pos, Info, CInfo})
+    end,
+    well_formed_info(CInfo, false),
+    {Type, Nodes} = get_node(Bt, CInfo#info.pos),
+    well_formed_node(CInfo, Type, Nodes),
+    well_formed_children(Bt, CInfo, Nodes, nil),
+    case Prev of
+        nil -> ok;
+        _ when CInfo#info.key > Prev#info.key -> ok;
+        _ -> erlang:error({invalid_key_order, CInfo, Prev})
+    end,
+    well_formed_children(Bt, Info, Rest, CInfo);
+well_formed_children(Bt, Info, [Pos | Rest], Prev) ->
+    case Pos of
+        _ when is_integer(Pos) andalso Pos >= 0 -> ok;
+        _ -> erlang:error({invalid_kv_pos, Info, Pos})
+    end,
+    case Pos < Info#info.pos of
+        true -> ok;
+        _ -> erlang:error({invalid_kv_pos2, Info, Pos})
+    end,
+    {ok, {Key, _}} = couch_file:pread_term(Bt#btree.fd, Pos),
+    case Key =< Info#info.key of
+        true -> ok;
+        _ -> erlang:error({invalid_kv_key, Info, Key})
+    end,
+    case Prev of
+        nil -> ok;
+        _ when Key > Prev -> ok;
+        _ -> erlang:error({invalid_kv_order, Info, Key, Prev})
+    end,
+    well_formed_children(Bt, Info, Rest, Key).

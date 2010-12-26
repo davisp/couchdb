@@ -105,7 +105,7 @@ append_binary_md5(Fd, Bin) ->
 %%----------------------------------------------------------------------
 
 
-pread_term(Fd, Pos) ->
+pread_term(Fd, Pos) when is_integer(Pos) ->
     {ok, Bin} = pread_binary(Fd, Pos),
     {ok, binary_to_term(Bin)}.
 
