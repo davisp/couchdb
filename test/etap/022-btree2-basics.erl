@@ -21,8 +21,8 @@ main(_) ->
     %main_run(),
     fprof:start(),
     fprof:apply(fun() -> main_run() end, []),
-    fprof:analyze([]),
-    timer:sleep(3000),
+    %fprof:analyse([]),
+    %timer:sleep(3000),
     fprof:stop(),
     ok.
 

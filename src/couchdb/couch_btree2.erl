@@ -374,12 +374,10 @@ flush_kv_node(Bt, [Pos | Rest], _Last, Num, Acc) when is_integer(Pos) ->
     flush_kv_node(Bt, Rest, Pos, Num + 1, [Pos | Acc]).
 
 
-complete_root(Bt, #info{type=p}=Info) ->
-    write_info(Bt, Info);
 complete_root(Bt, #info{num=Num}=Info) when Num =< ?MAX_SZ ->
     write_info(Bt, Info);
 complete_root(Bt, #info{type=Type, pos=Pos, num=Num}) ->
-    {v, Nodes} = get_node(Bt, Pos),
+    {Type, Nodes} = get_node(Bt, Pos),
     Infos = split_nodes(Bt, Type, Num, Nodes),
     write_info(Bt, write_node(p, Bt, Infos)).
 
