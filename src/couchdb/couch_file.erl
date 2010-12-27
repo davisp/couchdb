@@ -11,6 +11,7 @@
 % the License.
 
 -module(couch_file).
+-compile(native).
 -behaviour(gen_server).
 
 -include("couch_db.hrl").

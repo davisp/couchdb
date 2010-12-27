@@ -19,11 +19,12 @@ rows() -> 1024.
 main(_) ->
     test_util:init_code_path(),
     %main_run(),
-    fprof:start(),
-    fprof:apply(fun() -> main_run() end, []),
+    %fprof:start(),
+    %fprof:apply(fun() -> main_run() end, []),
+    main_run(),
     %fprof:analyse([]),
     %timer:sleep(3000),
-    fprof:stop(),
+    %fprof:stop(),
     ok.
 
 main_run() ->

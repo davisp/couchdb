@@ -11,7 +11,7 @@
 % the License.
 
 -module(couch_btree2).
-
+-compile(native).
 
 -export([open/1, open/2, open/3, set_options/2, get_state/1]).
 -export([add/2, add_remove/3, query_modify/4]).
@@ -156,7 +156,7 @@ modify_node(Bt, Info, Actions, Output) ->
 
 modify_kp_node(Bt, {}, _Pos, Actions, [], Output) ->
     modify_node(Bt, nil, Actions, Output);
-modify_kp_node(Bt, Nodes, Pos, [], NewNode, Output) ->
+modify_kp_node(_Bt, Nodes, Pos, [], NewNode, Output) ->
     {?rev2(NewNode, rest_nodes(Nodes, Pos, ?ts(Nodes), [])), Output};
 modify_kp_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
     [{_, ActKey, _} | _]= Actions,
@@ -262,7 +262,10 @@ rebalance_nodes(Bt, [LInfo0 | RestL], [RInfo0 | RestR]) ->
             % in R being < nodes in L
             split_nodes(Bt, T, Num, R ++ L)
     end,
-    rebalance_nodes(Bt, RestL, ?rev2(NewInfos, RestR)).
+    case NewInfos of
+        [Single] -> rebalance_nodes(Bt, [Single | RestL], RestR);
+        [_|_] -> rebalance_nodes(Bt, RestL, ?rev2(NewInfos, RestR))
+    end.
 
 
 split_nodes(Bt, Type, Num, Nodes) when Num =< ?MAX_SZ ->
