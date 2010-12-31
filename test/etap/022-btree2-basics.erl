@@ -12,23 +12,22 @@
 % the License.
 
 filename() -> test_util:build_file("test/etap/temp.022").
-rows() -> 1024.
+rows() -> 4096.
 
 -record(btree, {fd, root, extract_kv, assemble_kv, less, reduce, chunk_size}).
 
 main(_) ->
     test_util:init_code_path(),
     %main_run(),
-    %fprof:start(),
-    %fprof:apply(fun() -> main_run() end, []),
-    main_run(),
-    %fprof:analyse([]),
-    %timer:sleep(3000),
-    %fprof:stop(),
+    fprof:start(),
+    fprof:apply(fun() -> main_run() end, []),
+    fprof:analyse([]),
+    timer:sleep(3000),
+    fprof:stop(),
     ok.
 
 main_run() ->
-    etap:plan(48),
+    etap:plan(unknown),
     case (catch test()) of
         ok ->
             etap:end_tests();

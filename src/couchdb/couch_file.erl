@@ -9,9 +9,7 @@
 % WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 % License for the specific language governing permissions and limitations under
 % the License.
-
 -module(couch_file).
--compile(native).
 -behaviour(gen_server).
 
 -include("couch_db.hrl").
@@ -108,8 +106,11 @@ append_binary_md5(Fd, Bin) ->
 
 pread_term(Fd, Pos) when is_integer(Pos) ->
     {ok, Bin} = pread_binary(Fd, Pos),
-    {ok, binary_to_term(Bin)}.
+    {ok, binary_to_term(Bin)};
 
+pread_term(Fd, PosInfo) when is_list(PosInfo) ->
+    {ok, Bins} = pread_binary(Fd, PosInfo),
+    {ok, lists:map(fun erlang:binary_to_term/1, Bins)}.
 
 %%----------------------------------------------------------------------
 %% Purpose: Reads a binrary from a file that was written with append_binary
@@ -118,25 +119,36 @@ pread_term(Fd, Pos) when is_integer(Pos) ->
 %%  or {error, Reason}.
 %%----------------------------------------------------------------------
 
-pread_binary(Fd, Pos) ->
+pread_binary(Fd, Pos) when is_integer(Pos) ->
     {ok, L} = pread_iolist(Fd, Pos),
-    {ok, iolist_to_binary(L)}.
+    {ok, iolist_to_binary(L)};
+
+pread_binary(Fd, PosInfo) when is_list(PosInfo) ->
+    {ok, IoLists} = pread_iolist(Fd, PosInfo),
+    {ok, lists:map(fun erlang:iolist_to_binary/1, IoLists)}.
 
 
-pread_iolist(Fd, Pos) ->
+pread_iolist(Fd, Pos) when is_integer(Pos) ->
     case gen_server:call(Fd, {pread_iolist, Pos}, infinity) of
-    {ok, IoList, <<>>} ->
-        {ok, IoList};
-    {ok, IoList, Md5} ->
-        case couch_util:md5(IoList) of
-        Md5 ->
-            {ok, IoList};
-        _ ->
-            exit({file_corruption, <<"file corruption">>})
-        end;
-    Error ->
-        Error
+        {ok, IoMd5} -> {ok, check_md5(IoMd5)};
+        Error -> Error
+    end;
+
+pread_iolist(Fd, PosInfo) when is_list(PosInfo) ->
+    case gen_server:call(Fd, {pread_iolist, PosInfo}, infinity) of
+        {ok, IoMd5s} -> {ok, lists:map(fun check_md5/1, IoMd5s)};
+        Error -> Error
     end.
+        
+
+check_md5({IoList, <<>>}) ->
+    IoList;
+check_md5({IoList, Md5}) ->
+    case couch_util:md5(IoList) of
+        Md5 -> IoList;
+        _ -> exit({file_corruption, <<"md5 mismatch">>})
+    end.
+
 
 %%----------------------------------------------------------------------
 %% Purpose: The length of a file, in bytes.
@@ -296,18 +308,37 @@ terminate(_Reason, #file{fd = Fd}) ->
     ok = file:close(Fd).
 
 
-handle_call({pread_iolist, Pos}, _From, File) ->
+handle_call({pread_iolist, Pos}, _From, File) when is_integer(Pos) ->
     {DataLength, NextPos} = read_raw_iolist_int(File, Pos, 4),
     <<Prefix:1/integer, Len:31/integer>> = iolist_to_binary(DataLength),
     case Prefix of
     1 ->
         {Data, _Next} = read_raw_iolist_int(File, NextPos, Len+16),
-        {Md5, IoList} = extract_md5(Data),
-        {reply, {ok, IoList, Md5}, File};
+        {reply, {ok, extract_md5(Data)}, File};
     0 ->
         {IoList, _Next} = read_raw_iolist_int(File, NextPos, Len),
-        {reply, {ok, IoList, <<>>}, File}
+        {reply, {ok, {IoList, <<>>}}, File}
     end;
+
+handle_call({pread_iolist, PosInfo}, _From, File) when is_list(PosInfo) ->
+    LenIoListLocs = [{Pos, 4} || Pos <- PosInfo],
+    LenIoLists = read_raw_iolists_int(File, LenIoListLocs),
+    Md5Adj = fun({ListLen, NextPos}, {Locs, Types}) ->
+        case iolist_to_binary(ListLen) of
+            <<1:1/integer, Len:31/integer>> -> % an MD5-prefixed term
+                {[{NextPos, Len + 16} | Locs], [md5 | Types]};
+            <<0:1/integer, Len:31/integer>> ->
+                {[{NextPos, Len} | Locs], [raw | Types]}
+        end
+    end,
+    {IoListLocs, IoListTypes} = lists:foldr(Md5Adj, {[], []}, LenIoLists),
+    IoLists = read_raw_iolists_int(File, IoListLocs),
+    ExtractMd5s = fun
+        ({{Md5AndIoList, _}, md5}) -> extract_md5(Md5AndIoList);
+        ({{IoList, _}, raw}) -> {IoList, <<>>}
+    end,
+    IoLists2 = lists:map(ExtractMd5s, lists:zip(IoLists, IoListTypes)),
+    {reply, {ok, IoLists2}, File};
 
 handle_call(bytes, _From, #file{fd = Fd} = File) ->
     {reply, file:position(Fd, eof), File};
@@ -385,14 +416,6 @@ load_header(Fd, Block) ->
     Md5Sig = couch_util:md5(HeaderBin),
     {ok, HeaderBin}.
 
-maybe_read_more_iolist(Buffer, DataSize, _, _)
-    when DataSize =< byte_size(Buffer) ->
-    <<Data:DataSize/binary, _/binary>> = Buffer,
-    [Data];
-maybe_read_more_iolist(Buffer, DataSize, NextPos, File) ->
-    {Missing, _} =
-        read_raw_iolist_int(File, NextPos, DataSize - byte_size(Buffer)),
-    [Buffer, Missing].
 
 -spec read_raw_iolist_int(#file{}, Pos::non_neg_integer(), Len::non_neg_integer()) ->
     {Data::iolist(), CurPos::non_neg_integer()}.
@@ -404,10 +427,27 @@ read_raw_iolist_int(#file{fd = Fd}, Pos, Len) ->
     {ok, <<RawBin:TotalBytes/binary>>} = file:pread(Fd, Pos, TotalBytes),
     {remove_block_prefixes(BlockOffset, RawBin), Pos + TotalBytes}.
 
+read_raw_iolists_int(#file{fd=Fd}, PosLens) ->
+    MkLocs = fun({Pos0, Len}, {Locs, Offs}) ->
+        Pos = case Pos0 of
+            {Pos1, _Size} -> Pos1;
+            _ -> Pos0
+        end,
+        BlockOffset = Pos rem ?SIZE_BLOCK,
+        Loc = {Pos, calculate_total_read_len(BlockOffset, Len)},
+        {[Loc | Locs], [BlockOffset | Offs]}
+    end,
+    {Locations, Offsets} = lists:foldr(MkLocs, {[], []}, PosLens),
+    {ok, DataL} = file:pread(Fd, Locations),
+    FixBins = fun({Bin, {Pos, Len}, BlockOffset}) ->
+        {remove_block_prefixes(BlockOffset, Bin), Pos + Len}
+    end,
+    lists:map(FixBins, lists:zip3(DataL, Locations, Offsets)).
+
 -spec extract_md5(iolist()) -> {binary(), iolist()}.
 extract_md5(FullIoList) ->
     {Md5List, IoList} = split_iolist(FullIoList, 16, []),
-    {iolist_to_binary(Md5List), IoList}.
+    {IoList, iolist_to_binary(Md5List)}.
 
 calculate_total_read_len(0, FinalLen) ->
     calculate_total_read_len(1, FinalLen) + 1;

@@ -9,9 +9,7 @@
 % WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 % License for the specific language governing permissions and limitations under
 % the License.
-
 -module(couch_btree2).
--compile(native).
 
 -export([open/1, open/2, open/3, set_options/2, get_state/1]).
 -export([add/2, add_remove/3, query_modify/4]).
@@ -34,8 +32,8 @@
 
 
 %% Some helper macros
--define(MIN_SZ, 8).
--define(MAX_SZ, 17).
+-define(MIN_SZ, 64).
+-define(MAX_SZ, 127).
 
 
 -define(ts(T), tuple_size(T)).
@@ -306,38 +304,57 @@ get_info(Bt, Pos) when is_integer(Pos) ->
 write_info(Bt, #info{type=Type, key=Key, pos=Pos, num=Num, red=undefined}) ->
     {ok, {Type, Nodes}} = couch_file:pread_term(Bt#btree.fd, Pos),
     Red = case Type of
-        p -> reduce_kp_node(Bt, Nodes, []);
-        v -> reduce_kv_node(Bt, Nodes, [], [])
+        p -> reduce_kp_node(Bt, Nodes, [], [], 0);
+        v -> reduce_kv_node(Bt, Nodes, [], [], [], 0)
     end,
     couch_file:append_term(Bt#btree.fd, {Type, Key, Pos, Num, Red}).
 
 
-reduce_kp_node(#btree{reduce=nil}, _Nodes, _Reds) ->
+reduce_kp_node(#btree{reduce=nil}, _Nodes, _PosList, _Reds, _Count) ->
     [];
-reduce_kp_node(Bt, [], Reds) ->
-    reduce(Bt, {[], Reds});
-reduce_kp_node(Bt, NodeList, Reds) when length(Reds) >= 64 ->
-    Red = reduce(Bt, {[], Reds}),
-    reduce_kp_node(Bt, NodeList, [Red]);
-reduce_kp_node(Bt, [Info | Rest], Reds) ->
-    Info1 = get_info(Bt, Info),
-    reduce_kp_node(Bt, Rest, [Info1#info.red | Reds]).
+reduce_kp_node(Bt, [], PosList, Reds, _Count) ->
+    InfoReds = reds_from_pos_list(Bt, PosList),
+    reduce(Bt, {[], InfoReds ++ Reds});
+reduce_kp_node(Bt, NodeList, PosList, Reds, Count) when Count >= 64 ->
+    InfoReds = reds_from_pos_list(Bt, PosList),
+    Red = reduce(Bt, {[], InfoReds ++ Reds}),
+    reduce_kp_node(Bt, NodeList, [], [Red], 1);
+reduce_kp_node(Bt, [#info{red=Red} | Rest], PosList, Reds, Count) ->
+    reduce_kp_node(Bt, Rest, PosList, [Red | Reds], Count + 1);
+reduce_kp_node(Bt, [Pos | Rest], PosList, Reds, Count) ->
+    reduce_kp_node(Bt, Rest, [Pos | PosList], Reds, Count + 1).
 
 
-reduce_kv_node(#btree{reduce=nil}, _Nodes, _KVs, _Reds) ->
+reduce_kv_node(#btree{reduce=nil}, _Nodes, _PosList, _KVs, _Reds, _Count) ->
     [];
-reduce_kv_node(Bt, [], KVs, Reds) ->
-    reduce(Bt, {KVs, Reds});
-reduce_kv_node(Bt, NodeList, KVs, Reds) when length(KVs) >= 64 ->
-    Red = reduce(Bt, {KVs, []}),
-    reduce_kv_node(Bt, NodeList, [], [Red | Reds]);
-reduce_kv_node(Bt, [{K, V} | Rest], KVs, Reds) ->
-    reduce_kv_node(Bt, Rest, [?assemble(Bt, K, V) | KVs], Reds);
-reduce_kv_node(Bt, [Pos | Rest], KVs, Reds) ->
-    {K, V} = get_kv(Bt, Pos),
-    reduce_kv_node(Bt, Rest, [?assemble(Bt, K, V) | KVs], Reds).
+reduce_kv_node(Bt, [], PosList, KVs, Reds, _Count) ->
+    NewKVs = kvs_from_pos_list(Bt, PosList),
+    reduce(Bt, {NewKVs ++ KVs, Reds});
+reduce_kv_node(Bt, NodeList, PosList, KVs, Reds, Count) when Count >= 64 ->
+    NewKVs = kvs_from_pos_list(Bt, PosList),
+    Red = reduce(Bt, {NewKVs ++ KVs, Reds}),
+    reduce_kv_node(Bt, NodeList, [], [], [Red], 1);
+reduce_kv_node(Bt, [{K, V} | Rest], PosList, KVs, Reds, Count) ->
+    KVs2 = [?assemble(Bt, K, V) | KVs],
+    reduce_kv_node(Bt, Rest, PosList, KVs2, Reds, Count + 1);
+reduce_kv_node(Bt, [Pos | Rest], PosList, KVs, Reds, Count) ->
+    reduce_kv_node(Bt, Rest, [Pos | PosList], KVs, Reds, Count + 1).
 
 
+reds_from_pos_list(_Bt, []) ->
+    [];
+reds_from_pos_list(Bt, PosList) ->
+    {ok, InfoTerms} = couch_file:pread_term(Bt#btree.fd, PosList),
+    [element(5, IT) || IT <- InfoTerms].
+
+
+kvs_from_pos_list(_Bt, []) ->
+    [];
+kvs_from_pos_list(Bt, PosList) ->
+    {ok, KVs} = couch_file:pread_term(Bt#btree.fd, PosList),
+    [?assemble(Bt, K, V) || {K, V} <- KVs].
+
+    
 %% @doc Read a node from disk.
 get_node(#btree{fd = Fd}, NodePos) ->
     {ok, {NodeType, NodeList}} = couch_file:pread_term(Fd, NodePos),
