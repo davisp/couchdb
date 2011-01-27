@@ -32,8 +32,8 @@
 
 
 %% Some helper macros
--define(MIN_SZ, 64).
--define(MAX_SZ, 127).
+-define(MIN_SZ, 32).
+-define(MAX_SZ, 63).
 
 
 -define(ts(T), tuple_size(T)).
@@ -450,7 +450,7 @@ find_kv_pos(Bt, Nodes, Start, End, Key) ->
     {Pos, {K, V}}.
 
 
-find_key_pos(_Bt, _Load, _Nodes, Start, End, _Key) when Start == End ->
+find_key_pos(_Bt, _Load, _Nodes, Start, End, _Key) when Start >= End ->
     End;
 find_key_pos(Bt, Load, Nodes, Start, End, Key) ->
     Mid = Start + ((End - Start) div 2),

@@ -21,6 +21,17 @@ rows() -> 4096.
 
 main(_) ->
     test_util:init_code_path(),
+    do_eprof().
+
+do_eprof() ->
+    eprof:start(),
+    eprof:profile(fun() -> main_run() end),
+    eprof:analyze(),
+    timer:sleep(300),
+    eprof:stop(),
+    ok.
+
+main_run() ->
     etap:plan(48),
     case (catch test()) of
         ok ->

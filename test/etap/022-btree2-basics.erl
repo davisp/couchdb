@@ -18,11 +18,21 @@ rows() -> 4096.
 
 main(_) ->
     test_util:init_code_path(),
-    %main_run(),
+    do_eprof().
+    %do_fprof().
+    %main_run().
+
+do_eprof() ->
+    eprof:start(),
+    eprof:profile(fun() -> main_run() end),
+    eprof:analyze(),
+    timer:sleep(300),
+    eprof:stop(),
+    ok.
+
+do_fprof() ->
     fprof:start(),
     fprof:apply(fun() -> main_run() end, []),
-    fprof:analyse([]),
-    timer:sleep(3000),
     fprof:stop(),
     ok.
 
@@ -35,7 +45,8 @@ main_run() ->
             etap:diag("Test died abnormally:~n~p", [Other]),
             timer:sleep(333),
             etap:bail()
-    end.
+    end,
+    ok.
 
 %% @todo Determine if this number should be greater to see if the btree was
 %% broken into multiple nodes. AKA "How do we appropiately detect if multiple
@@ -80,7 +91,7 @@ test_kvs(KeyValues) ->
     end, Btree3, KeyValues),
     etap:ok(test_btree(Btree4, KeyValues),
         "Adding all keys one at a time returns a complete btree."),
-    true = couch_btree2:well_formed(Btree4),
+    %true = couch_btree2:well_formed(Btree4),
 
     % Btree5 = lists:foldl(fun({K, _}, BtAcc) ->
     %     {ok, BtAcc2} = couch_btree2:add_remove(BtAcc, [], [K]),
@@ -120,7 +131,7 @@ test_kvs(KeyValues) ->
     true.
 
 test_btree(Btree, KeyValues) ->
-    ok = test_key_access(Btree, KeyValues),
+    %ok = test_key_access(Btree, KeyValues),
     %ok = test_lookup_access(Btree, KeyValues),
     %ok = test_reductions(Btree, KeyValues),
     true.
