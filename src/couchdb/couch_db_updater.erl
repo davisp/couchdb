@@ -750,7 +750,13 @@ copy_doc_attachments(#db{updater_fd = SrcFd} = SrcDb, SrcSp, DestFd) ->
             end,
             {Name, Type, NewBinSp, AttLen, DiskLen, RevPos, Md5, Enc}
         end, BinInfos),
-    {BodyData, NewBinInfos}.
+    case BodyData of
+    {_} ->
+        %% 1.2.0 upgrade code, EJSON doc body
+        {iolist_to_binary(?JSON_ENCODE(BodyData)), NewBinInfos};
+    _ ->
+        {BodyData, NewBinInfos}
+    end.
 
 copy_docs(Db, #db{updater_fd = DestFd} = NewDb, InfoBySeq0, Retry) ->
     % COUCHDB-968, make sure we prune duplicates during compaction

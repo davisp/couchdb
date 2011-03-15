@@ -187,7 +187,7 @@ open_doc(#httpdb{} = Db, Id, Options) ->
         Db,
         [{path, encode_doc_id(Id)}, {qs, options_to_query_args(Options, [])}],
         fun(200, _, Body) ->
-            {ok, couch_doc:from_json_obj(Body)};
+            {ok, couch_doc:ejson_to_doc(Body, Options)};
         (_, _, {Props}) ->
             {error, get_value(<<"error">>, Props)}
         end);
@@ -211,9 +211,8 @@ update_doc(#httpdb{} = HttpDb, #doc{id = DocId} = Doc, Options, Type) ->
         []
     end ++ options_to_query_args(Options, []),
     Boundary = couch_uuids:random(),
-    JsonBytes = ?JSON_ENCODE(
-        couch_doc:to_json_obj(
-          Doc, [revs, attachments, follows, att_encoding_info | Options])),
+    JsonBytes = couch_doc:doc_to_json(
+          Doc, [revs, attachments, follows, att_encoding_info | Options]),
     {ContentType, Len} = couch_doc:len_doc_to_multi_part_stream(Boundary,
         JsonBytes, Doc#doc.atts, true),
     Headers = case lists:member(delay_commit, Options) of
@@ -262,11 +261,11 @@ update_docs(#httpdb{} = HttpDb, DocList, Options, UpdateType) ->
         ([{prefix, Prefix} | Rest]) ->
             {ok, Prefix, Rest};
         ([Doc]) when is_record(Doc, doc) ->
-            DocJson = couch_doc:to_json_obj(Doc, [revs, attachments]),
-            {ok, ?JSON_ENCODE(DocJson), []};
+            DocJson = couch_doc:doc_to_json(Doc, [revs, attachments]),
+            {ok, DocJson, []};
         ([Doc | RestDocs]) when is_record(Doc, doc) ->
-            DocJson = couch_doc:to_json_obj(Doc, [revs, attachments]),
-            {ok, [?JSON_ENCODE(DocJson), ","], RestDocs};
+            DocJson = couch_doc:doc_to_json(Doc, [revs, attachments]),
+            {ok, [DocJson, ","], RestDocs};
         ([Doc]) ->
             % IO list
             {ok, Doc, []};
@@ -418,6 +417,8 @@ options_to_query_args(HttpDb, Path, Options) ->
 
 options_to_query_args([], Acc) ->
     lists:reverse(Acc);
+options_to_query_args([ejson_body | Rest], Acc) ->
+    options_to_query_args(Rest, Acc);
 options_to_query_args([delay_commit | Rest], Acc) ->
     options_to_query_args(Rest, Acc);
 options_to_query_args([revs | Rest], Acc) ->
@@ -476,8 +477,7 @@ receive_docs(Streamer, UserFun, UserAcc) ->
                 receive_docs(Streamer, UserFun, UserAcc2)
             end;
         {"application/json", []} ->
-            Doc = couch_doc:from_json_obj(
-                    ?JSON_DECODE(receive_all(Streamer, []))),
+            Doc = couch_doc:json_to_doc(receive_all(Streamer, [])),
             UserAcc2 = UserFun({ok, Doc}, UserAcc),
             receive_docs(Streamer, UserFun, UserAcc2);
         {"application/json", [{"error","true"}]} ->
@@ -579,7 +579,7 @@ doc_from_multi_part_stream(ContentType, DataFun) ->
         exit(Parser, kill),
         restart_remote_open_doc_revs();
     {doc_bytes, DocBytes} ->
-        Doc = couch_doc:from_json_obj(?JSON_DECODE(DocBytes)),
+        Doc = couch_doc:json_to_doc(DocBytes),
         ReadAttachmentDataFun = fun() ->
             Parser ! {get_bytes, self()},
             receive

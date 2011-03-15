@@ -548,14 +548,15 @@ fold_replication_logs([], _Vsn, _LogId, _NewId, _Rep, Acc) ->
     lists:reverse(Acc);
 
 fold_replication_logs([Db | Rest] = Dbs, Vsn, LogId, NewId, Rep, Acc) ->
-    case couch_api_wrap:open_doc(Db, LogId, []) of
+    case couch_api_wrap:open_doc(Db, LogId, [ejson_body]) of
     {error, <<"not_found">>} when Vsn > 1 ->
         OldRepId = couch_replicator_utils:replication_id(Rep, Vsn - 1),
         fold_replication_logs(Dbs, Vsn - 1,
             ?l2b(?LOCAL_DOC_PREFIX ++ OldRepId), NewId, Rep, Acc);
     {error, <<"not_found">>} ->
+        Doc = couch_doc:with_ejson_body(#doc{id = NewId}),
         fold_replication_logs(
-            Rest, ?REP_ID_VERSION, NewId, NewId, Rep, [#doc{id = NewId} | Acc]);
+            Rest, ?REP_ID_VERSION, NewId, NewId, Rep, [Doc | Acc]);
     {ok, Doc} when LogId =:= NewId ->
         fold_replication_logs(
             Rest, ?REP_ID_VERSION, NewId, NewId, Rep, [Doc | Acc]);

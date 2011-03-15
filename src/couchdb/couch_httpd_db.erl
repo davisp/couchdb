@@ -152,7 +152,7 @@ handle_design_req(#httpd{
     }=Req, Db) ->
     % load ddoc
     DesignId = <<"_design/", DesignName/binary>>,
-    DDoc = couch_httpd_db:couch_doc_open(Db, DesignId, nil, []),
+    DDoc = couch_httpd_db:couch_doc_open(Db, DesignId, nil, [ejson_body]),
     Handler = couch_util:dict_find(Action, DesignUrlHandlers, fun(_, _, _) ->
             throw({not_found, <<"missing handler: ", Action/binary>>})
         end),
@@ -213,7 +213,7 @@ db_req(#httpd{method='GET',path_parts=[_DbName]}=Req, Db) ->
 
 db_req(#httpd{method='POST',path_parts=[DbName]}=Req, Db) ->
     couch_httpd:validate_ctype(Req, "application/json"),
-    Doc = couch_doc:from_json_obj(couch_httpd:json_body(Req)),
+    Doc = couch_doc:json_to_doc(couch_httpd:body(Req)),
     Doc2 = case Doc#doc.id of
         <<"">> ->
             Doc#doc{id=couch_uuids:new(), revs={0, []}};
@@ -296,7 +296,7 @@ db_req(#httpd{method='POST',path_parts=[_,<<"_bulk_docs">>]}=Req, Db) ->
     true ->
         Docs = lists:map(
             fun({ObjProps} = JsonObj) ->
-                Doc = couch_doc:from_json_obj(JsonObj),
+                Doc = couch_doc:ejson_to_doc(JsonObj),
                 validate_attachment_names(Doc),
                 Id = case Doc#doc.id of
                     <<>> -> couch_uuids:new();
@@ -330,7 +330,7 @@ db_req(#httpd{method='POST',path_parts=[_,<<"_bulk_docs">>]}=Req, Db) ->
         end;
     false ->
         Docs = lists:map(fun(JsonObj) ->
-                Doc = couch_doc:from_json_obj(JsonObj),
+                Doc = couch_doc:ejson_to_doc(JsonObj),
                 validate_attachment_names(Doc),
                 Doc
             end, DocsArray),
@@ -620,8 +620,8 @@ db_doc_req(#httpd{method = 'GET', mochi_req = MochiReq} = Req, Db, DocId) ->
                 fun(Result, AccSeparator) ->
                     case Result of
                     {ok, Doc} ->
-                        JsonDoc = couch_doc:to_json_obj(Doc, Options),
-                        Json = ?JSON_ENCODE({[{ok, JsonDoc}]}),
+                        JsonDoc = couch_doc:doc_to_json(Doc, Options),
+                        Json = ?JSON_ENCODE({[{ok, {json, JsonDoc}}]}),
                         send_chunk(Resp, AccSeparator ++ Json);
                     {{not_found, missing}, RevId} ->
                         RevStr = couch_doc:rev_to_str(RevId),
@@ -649,7 +649,7 @@ db_doc_req(#httpd{method='POST'}=Req, Db, DocId) ->
         Rev = couch_doc:parse_rev(couch_util:get_value("_rev", Form)),
         {ok, [{ok, Doc}]} = couch_db:open_doc_revs(Db, DocId, [Rev], []);
     Json ->
-        Doc = couch_doc_from_req(Req, DocId, ?JSON_DECODE(Json))
+        Doc = couch_doc_from_req(Req, DocId, Json)
     end,
     UpdatedAtts = [
         #att{name=validate_attachment_name(Name),
@@ -695,7 +695,7 @@ db_doc_req(#httpd{method='PUT'}=Req, Db, DocId) ->
         case couch_httpd:qs_value(Req, "batch") of
         "ok" ->
             % batch
-            Doc = couch_doc_from_req(Req, DocId, couch_httpd:json_body(Req)),
+            Doc = couch_doc_from_req(Req, DocId, couch_httpd:body(Req)),
         
             spawn(fun() ->
                     case catch(couch_db:update_doc(Db, Doc, [])) of
@@ -710,8 +710,7 @@ db_doc_req(#httpd{method='PUT'}=Req, Db, DocId) ->
             ]});
         _Normal ->
             % normal
-            Body = couch_httpd:json_body(Req),
-            Doc = couch_doc_from_req(Req, DocId, Body),
+            Doc = couch_doc_from_req(Req, DocId, couch_httpd:body(Req)),
             update_doc(Req, Db, DocId, Doc, RespHeaders, UpdateType)
         end
     end;
@@ -751,18 +750,19 @@ send_doc(Req, Doc, Options) ->
 
 
 send_doc_efficiently(Req, #doc{atts=[]}=Doc, Headers, Options) ->
-        send_json(Req, 200, Headers, couch_doc:to_json_obj(Doc, Options));
+    send_json(Req, 200, Headers, {json, couch_doc:doc_to_json(Doc, Options)});
 send_doc_efficiently(#httpd{mochi_req = MochiReq} = Req,
     #doc{atts = Atts} = Doc, Headers, Options) ->
     case lists:member(attachments, Options) of
     true ->
         case MochiReq:accepts_content_type("multipart/related") of
         false ->
-            send_json(Req, 200, Headers, couch_doc:to_json_obj(Doc, Options));
+            send_json(
+                Req, 200, Headers, {json, couch_doc:doc_to_json(Doc, Options)});
         true ->
             Boundary = couch_uuids:random(),
-            JsonBytes = ?JSON_ENCODE(couch_doc:to_json_obj(Doc, 
-                    [attachments, follows|Options])),
+            JsonBytes = couch_doc:doc_to_json(
+                Doc, [attachments, follows | Options]),
             {ContentType, Len} = couch_doc:len_doc_to_multi_part_stream(
                     Boundary,JsonBytes, Atts, true),
             CType = {<<"Content-Type">>, ContentType},
@@ -771,7 +771,7 @@ send_doc_efficiently(#httpd{mochi_req = MochiReq} = Req,
                     fun(Data) -> couch_httpd:send(Resp, Data) end, true)
         end;
     false ->
-        send_json(Req, 200, Headers, couch_doc:to_json_obj(Doc, Options))
+        send_json(Req, 200, Headers, {json, couch_doc:doc_to_json(Doc, Options)})
     end.
 
 send_docs_multipart(Req, Results, Options1) ->
@@ -784,7 +784,7 @@ send_docs_multipart(Req, Results, Options1) ->
     couch_httpd:send_chunk(Resp, <<"--", OuterBoundary/binary>>),
     lists:foreach(
         fun({ok, #doc{atts=Atts}=Doc}) ->
-            JsonBytes = ?JSON_ENCODE(couch_doc:to_json_obj(Doc, Options)),
+            JsonBytes = couch_doc:doc_to_json(Doc, Options),
             {ContentType, _Len} = couch_doc:len_doc_to_multi_part_stream(
                     InnerBoundary, JsonBytes, Atts, true),
             couch_httpd:send_chunk(Resp, <<"\r\nContent-Type: ",
@@ -885,7 +885,7 @@ couch_doc_from_req(Req, DocId, #doc{revs=Revs}=Doc) ->
     end,
     Doc#doc{id=DocId, revs=Revs2};
 couch_doc_from_req(Req, DocId, Json) ->
-    couch_doc_from_req(Req, DocId, couch_doc:from_json_obj(Json)).
+    couch_doc_from_req(Req, DocId, couch_doc:json_to_doc(Json)).
 
 
 % Useful for debugging

@@ -142,7 +142,8 @@ run(#evstate{ddocs=DDocs}, [<<"reset">>, QueryConfig]) ->
 run(#evstate{funs=Funs}=State, [<<"add_fun">> , BinFunc]) ->
     FunInfo = makefun(State, BinFunc),
     {State#evstate{funs=Funs ++ [FunInfo]}, true};
-run(State, [<<"map_doc">> , Doc]) ->
+run(State, [<<"map_doc">> , {json, JsonDoc}]) ->
+    Doc = ?JSON_DECODE(JsonDoc),
     Resp = lists:map(fun({Sig, Fun}) ->
         erlang:put(Sig, []),
         Fun(Doc),
@@ -159,8 +160,9 @@ run(State, [<<"reduce">>, Funs, KVs]) ->
     {State, catch reduce(State, Funs, Keys2, Vals2, false)};
 run(State, [<<"rereduce">>, Funs, Vals]) ->
     {State, catch reduce(State, Funs, null, Vals, true)};
-run(#evstate{ddocs=DDocs}=State, [<<"ddoc">>, <<"new">>, DDocId, DDoc]) ->
-    DDocs2 = store_ddoc(DDocs, DDocId, DDoc),
+run(#evstate{ddocs=DDocs}=State, [<<"ddoc">>, <<"new">>, DDocId,
+        {json, DDocJson}]) ->
+    DDocs2 = store_ddoc(DDocs, DDocId, ?JSON_DECODE(DDocJson)),
     {State#evstate{ddocs=DDocs2}, true};
 run(#evstate{ddocs=DDocs}=State, [<<"ddoc">>, DDocId | Rest]) ->
     DDoc = load_ddoc(DDocs, DDocId),
@@ -186,7 +188,8 @@ ddoc(State, {DDoc}, [FunPath, Args]) ->
 ddoc(State, {_, Fun}, [<<"validate_doc_update">>], Args) ->
     {State, (catch apply(Fun, Args))};
 ddoc(State, {_, Fun}, [<<"filters">>|_], [Docs, Req]) ->
-    FilterFunWrapper = fun(Doc) ->
+    FilterFunWrapper = fun({json, JsonDoc}) ->
+        Doc = ?JSON_DECODE(JsonDoc),
         case catch Fun(Doc, Req) of
         true -> true;
         false -> false;

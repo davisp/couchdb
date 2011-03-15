@@ -298,7 +298,7 @@ refresh_entry(Db, #doc_info{high_seq = DocSeq} = DocInfo) ->
 user_creds(#doc{deleted = true}) ->
     nil;
 user_creds(#doc{} = Doc) ->
-    {Creds} = couch_query_servers:json_doc(Doc),
+    {Creds} = couch_doc:doc_to_ejson(Doc),
     Creds.
 
 
@@ -365,7 +365,7 @@ get_user_props_from_db(UserName) ->
             DocId = <<"org.couchdb.user:", UserName/binary>>,
             try
                 {ok, Doc} = couch_db:open_doc(Db, DocId, [conflicts]),
-                {DocProps} = couch_query_servers:json_doc(Doc),
+                {DocProps} = couch_doc:doc_to_ejson(Doc),
                 DocProps
             catch
             _:_Error ->
@@ -403,4 +403,4 @@ auth_design_doc(DocId) ->
         {<<"language">>,<<"javascript">>},
         {<<"validate_doc_update">>, ?AUTH_DB_DOC_VALIDATE_FUNCTION}
     ],
-    {ok, couch_doc:from_json_obj({DocProps})}.
+    {ok, couch_doc:ejson_to_doc({DocProps})}.

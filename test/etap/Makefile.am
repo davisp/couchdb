@@ -37,6 +37,8 @@ EXTRA_DIST = \
     021-btree-reductions.t \
     030-doc-from-json.t \
     031-doc-to-json.t \
+    032-json-to-doc.t \
+    033-doc-to-json.t \
     040-util.t \
     041-uuid-gen-seq.ini \
     041-uuid-gen-utc.ini \

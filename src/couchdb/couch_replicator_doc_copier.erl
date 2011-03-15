@@ -422,8 +422,8 @@ maybe_flush_docs(#httpdb{} = Target,
             {Batch, 0, 1}
         end;
     false ->
-        JsonDoc = ?JSON_ENCODE(couch_doc:to_json_obj(Doc, [revs, attachments])),
-        case SizeAcc + iolist_size(JsonDoc) of
+        JsonDoc = couch_doc:doc_to_json(Doc, [revs, attachments]),
+        case SizeAcc + byte_size(JsonDoc) of
         SizeAcc2 when SizeAcc2 > ?DOC_BUFFER_BYTE_SIZE ->
             ?LOG_DEBUG("Worker flushing doc batch of size ~p bytes", [SizeAcc2]),
             {Written, Failed} = flush_docs(Target, [JsonDoc | DocAcc]),

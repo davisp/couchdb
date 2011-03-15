@@ -153,6 +153,8 @@ apply_open_options2(#doc{atts=Atts,revs=Revs}=Doc,
     apply_open_options2(Doc#doc{atts=[A#att{data=
         if AttPos>RevPos -> Data; true -> stub end}
         || #att{revpos=AttPos,data=Data}=A <- Atts]}, Rest);
+apply_open_options2(Doc, [ejson_body | Rest]) ->
+    apply_open_options2(couch_doc:with_ejson_body(Doc), Rest);
 apply_open_options2(Doc,[_|Rest]) ->
     apply_open_options2(Doc,Rest).
 
@@ -272,7 +274,7 @@ get_db_info(Db) ->
 get_design_docs(Db) ->
     {ok,_, Docs} = couch_btree:fold(by_id_btree(Db),
         fun(#full_doc_info{id= <<"_design/",_/binary>>}=FullDocInfo, _Reds, AccDocs) ->
-            {ok, Doc} = couch_db:open_doc_int(Db, FullDocInfo, []),
+            {ok, Doc} = open_doc_int(Db, FullDocInfo, [ejson_body]),
             {ok, [Doc | AccDocs]};
         (_, _Reds, AccDocs) ->
             {stop, AccDocs}
@@ -641,7 +643,8 @@ check_dup_atts2(_) ->
     ok.
 
 
-update_docs(Db, Docs, Options, replicated_changes) ->
+update_docs(Db, Docs1, Options, replicated_changes) ->
+    Docs = [couch_doc:with_json_body(Doc) || Doc <- Docs1],
     increment_stat(Db, {couchdb, database_writes}),
     DocBuckets = group_alike_docs(Docs),
 
@@ -667,7 +670,8 @@ update_docs(Db, Docs, Options, replicated_changes) ->
     {ok, []} = write_and_commit(Db, DocBuckets4, [], [merge_conflicts | Options]),
     {ok, DocErrors};
 
-update_docs(Db, Docs, Options, interactive_edit) ->
+update_docs(Db, Docs1, Options, interactive_edit) ->
+    Docs = [couch_doc:with_json_body(Doc) || Doc <- Docs1],
     increment_stat(Db, {couchdb, database_writes}),
     AllOrNothing = lists:member(all_or_nothing, Options),
     % go ahead and generate the new revision ids for the documents.
@@ -1095,23 +1099,26 @@ open_doc_revs_int(Db, IdRevs, Options) ->
         end,
         IdRevs, LookupResults).
 
-open_doc_int(Db, <<?LOCAL_DOC_PREFIX, _/binary>> = Id, _Options) ->
+open_doc_int(Db, <<?LOCAL_DOC_PREFIX, _/binary>> = Id, Options) ->
     case couch_btree:lookup(local_btree(Db), [Id]) of
     [{ok, {_, {Rev, BodyData}}}] ->
-        {ok, #doc{id=Id, revs={0, [list_to_binary(integer_to_list(Rev))]}, body=BodyData}};
+        Doc = #doc{id=Id, revs={0, [?l2b(integer_to_list(Rev))]}, body=BodyData},
+        apply_open_options({ok, Doc}, Options);
     [not_found] ->
         {not_found, missing}
     end;
 open_doc_int(Db, #doc_info{id=Id,revs=[RevInfo|_]}=DocInfo, Options) ->
     #rev_info{deleted=IsDeleted,rev={Pos,RevId},body_sp=Bp} = RevInfo,
     Doc = make_doc(Db, Id, IsDeleted, Bp, {Pos,[RevId]}),
-    {ok, Doc#doc{meta=doc_meta_info(DocInfo, [], Options)}};
+    apply_open_options(
+       {ok, Doc#doc{meta=doc_meta_info(DocInfo, [], Options)}}, Options);
 open_doc_int(Db, #full_doc_info{id=Id,rev_tree=RevTree}=FullDocInfo, Options) ->
     #doc_info{revs=[#rev_info{deleted=IsDeleted,rev=Rev,body_sp=Bp}|_]} =
         DocInfo = couch_doc:to_doc_info(FullDocInfo),
     {[{_, RevPath}], []} = couch_key_tree:get(RevTree, [Rev]),
     Doc = make_doc(Db, Id, IsDeleted, Bp, RevPath),
-    {ok, Doc#doc{meta=doc_meta_info(DocInfo, RevTree, Options)}};
+    apply_open_options(
+        {ok, Doc#doc{meta=doc_meta_info(DocInfo, RevTree, Options)}}, Options);
 open_doc_int(Db, Id, Options) ->
     case get_full_doc_info(Db, Id) of
     {ok, FullDocInfo} ->
@@ -1165,7 +1172,7 @@ make_doc(#db{updater_fd = Fd} = Db, Id, Deleted, Bp, RevisionPath) ->
     {BodyData, Atts} =
     case Bp of
     nil ->
-        {[], []};
+        {(#doc{})#doc.body, []};
     _ ->
         {ok, {BodyData0, Atts0}} = read_doc(Db, Bp),
         {BodyData0,
