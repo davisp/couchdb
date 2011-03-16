@@ -1175,7 +1175,14 @@ make_doc(#db{updater_fd = Fd} = Db, Id, Deleted, Bp, RevisionPath) ->
         {(#doc{})#doc.body, []};
     _ ->
         {ok, {BodyData0, Atts0}} = read_doc(Db, Bp),
-        {BodyData0,
+        BodyData1 = case BodyData0 of
+        {_} ->
+            % pre 1.2.0 format, EJSON, will be upgraded after compaction
+            BodyData0;
+        _ ->
+            zlib:unzip(BodyData0)
+        end,
+        {BodyData1,
             lists:map(
                 fun({Name,Type,Sp,AttLen,DiskLen,RevPos,Md5,Enc}) ->
                     #att{name=Name,
