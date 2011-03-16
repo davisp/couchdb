@@ -568,35 +568,26 @@ ejson_to_doc(_Other, _Options) ->
 doc_to_json(Doc) ->
     doc_to_json(Doc, []).
 
-doc_to_json(#doc{id = Id, body = <<${, Body/binary>>} = Doc, Options) ->
-    Prefix = <<
-        "\"_id\":", $", Id/binary, $",
-        (case json_rev(Doc#doc.revs) of
-            <<>> -> <<>>;
-            Rev -> <<",\"_rev\":", $", Rev/binary, $">>
-        end)/binary,
-        (case Doc#doc.deleted of
-            true -> <<",\"_deleted\":true">>;
-            _ -> <<>>
-        end)/binary,
-        (case json_revs(Doc#doc.revs, Options) of
-            <<>> -> <<>>;
-            Revs -> <<",\"_revisions\":", Revs/binary>>
-        end)/binary,
-        (case json_meta(Doc#doc.meta) of
-            <<>> -> <<>>;
-            Meta -> <<",", Meta/binary>>
-        end)/binary,
-        (case json_attachments(Doc#doc.atts, Options) of
-            <<>> -> <<>>;
-            Atts -> <<",", Atts/binary>>
-        end)/binary
-    >>,
+doc_to_json(#doc{id = Id, body = <<${, Body/binary>>, revs = {Start, RevIds},
+        meta = Meta, atts = Atts, deleted = Del}, Options) ->
+    Prefix1 = iolist_to_binary(?JSON_ENCODE({
+        [{<<"_id">>, Id}]
+        ++ to_json_rev(Start, RevIds)
+        ++ case Del of
+            true -> [{<<"_deleted">>, true}];
+            _ -> []
+        end
+        ++ to_json_revisions(Options, Start, RevIds)
+        ++ to_json_meta(Meta)
+        ++ to_json_attachments(Atts, Options)
+    })),
+    PrefixSize = byte_size(Prefix1) - 1,
+    <<Prefix:PrefixSize/binary, $}>> = Prefix1,
     case Body of
     <<"}">> ->
-       <<"{", Prefix/binary, "}">>;
+       <<Prefix/binary, "}">>;
     _ ->
-       <<"{", Prefix/binary, ",", Body/binary>>
+       <<Prefix/binary, ",", Body/binary>>
     end;
 doc_to_json(#doc{body = Ejson} = Doc, Options) ->
     doc_to_json(Doc#doc{body = iolist_to_binary(?JSON_ENCODE(Ejson))}, Options).
@@ -619,111 +610,3 @@ with_ejson_body(#doc{body = Json} = Doc) when is_binary(Json) ->
     Doc#doc{body = ?JSON_DECODE(Json)};
 with_ejson_body(Doc) ->
     Doc.
-
-
-% helpers to convert from #doc{} to a raw JSON binary
-
-join_bins(_Separator, []) ->
-    <<>>;
-join_bins(Separator, BinList) ->
-    <<Separator, Rest/binary>> = lists:foldl(
-        fun(Bin, Acc) ->
-            <<Acc/binary, Separator, Bin/binary>>
-        end,
-        <<>>, BinList),
-    Rest.
-
-int_to_bin(Int) ->
-    ?l2b(integer_to_list(Int)).
-
-
-
-json_rev({0, []}) ->
-    <<>>;
-json_rev({Pos, [Rev | _]}) ->
-    ?l2b([integer_to_list(Pos), "-", revid_to_str(Rev)]).
-
-
-json_revs({Pos, Revs}, Options) ->
-    case lists:member(revs, Options) of
-    false ->
-        <<>>;
-    true ->
-        <<
-            "{",
-                "\"start\":", (int_to_bin(Pos))/binary,
-                ",\"ids\":", (iolist_to_binary(
-                    ?JSON_ENCODE([revid_to_str(R) || R <- Revs])))/binary,
-            "}"
-        >>
-    end.
-
-
-json_meta(Meta) ->
-    Items = lists:map(
-        fun({revs_info, Start, RevsInfo}) ->
-            {JsonRevsInfo, _Pos}  = lists:mapfoldl(
-                fun({RevId, Status}, PosAcc) ->
-                    Json = <<"{\"rev\":",
-                             $", (rev_to_str({PosAcc, RevId}))/binary, $",
-                        ",\"status\":",
-                             $", (?l2b(atom_to_list(Status)))/binary, $",
-                        "}">>,
-                    {Json, PosAcc - 1}
-                end, Start, RevsInfo),
-            <<"\"_revs_info\":[", (join_bins($,, JsonRevsInfo))/binary, "]">>;
-        ({local_seq, Seq}) ->
-            <<"\"_local_seq\":", (int_to_bin(Seq))/binary>>;
-        ({conflicts, Conflicts}) ->
-            Revs = ?JSON_ENCODE(revs_to_strs(Conflicts)),
-            <<"\"_conflicts\":", (iolist_to_binary(Revs))/binary>>;
-        ({deleted_conflicts, DConflicts}) ->
-            Revs = ?JSON_ENCODE(revs_to_strs(DConflicts)),
-            <<"\"_deleted_conflicts\":", (iolist_to_binary(Revs))/binary>>
-        end,
-        Meta),
-    join_bins($,, Items).
-
-
-json_attachments([], _Options) ->
-    <<>>;
-json_attachments(Atts, Options) ->
-    OutputData = lists:member(attachments, Options),
-    DataToFollow = lists:member(follows, Options),
-    ShowEncInfo = lists:member(att_encoding_info, Options),
-    AttsJson = lists:map(
-        fun(#att{disk_len = DiskLen, att_len = AttLen, encoding = Enc} = Att) ->
-            <<$", (Att#att.name)/binary, "\":{",
-                "\"content_type\":", $", (Att#att.type)/binary, $", ",",
-                "\"revpos\":", (int_to_bin(Att#att.revpos))/binary, ",",
-                (case (not OutputData) orelse (Att#att.data =:= stub) of
-                    true ->
-                        <<"\"length\":", (int_to_bin(DiskLen))/binary, ",",
-                            "\"stub\":true">>;
-                    false ->
-                        case DataToFollow of
-                        true ->
-                            <<"\"length\":", (int_to_bin(DiskLen))/binary, ",",
-                                "\"follows\":true">>;
-                        false ->
-                            Data = case Enc of
-                            gzip ->
-                                zlib:gunzip(att_to_bin(Att));
-                            identity ->
-                                att_to_bin(Att)
-                            end,
-                            <<"\"data\":\"", (base64:encode(Data))/binary, $">>
-                        end
-                end)/binary,
-                (case {ShowEncInfo, Enc} of
-                    {true, gzip} ->
-                        <<",", "\"encoding\":\"",
-                            (couch_util:to_binary(Enc))/binary, $",
-                            ",\"encoded_length\":", (int_to_bin(AttLen))/binary>>;
-                    _ ->
-                        <<>>
-                end)/binary,
-            "}">>
-        end,
-        Atts),
-    <<"\"_attachments\":{", (join_bins($,, AttsJson))/binary, "}">>.
