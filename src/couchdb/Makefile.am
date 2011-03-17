@@ -89,6 +89,7 @@ source_files = \
     couch_view_group.erl \
     couch_db_updater.erl \
     couch_work_queue.erl \
+	jsonsplice.erl \
     json_stream_parse.erl
 
 EXTRA_DIST = $(source_files) couch_api_wrap.hrl couch_db.hrl couch_js_functions.hrl couch_replicator.hrl
@@ -157,6 +158,7 @@ compiled_files = \
     couch_view_group.beam \
     couch_db_updater.beam \
     couch_work_queue.beam \
+	jsonsplice.beam \
     json_stream_parse.beam
 
 # doc_base = \

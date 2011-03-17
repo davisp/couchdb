@@ -568,10 +568,9 @@ ejson_to_doc(_Other, _Options) ->
 doc_to_json(Doc) ->
     doc_to_json(Doc, []).
 
-doc_to_json(#doc{id = Id, body = <<${, Body/binary>>, revs = {Start, RevIds},
-        meta = Meta, atts = Atts, deleted = Del}, Options) ->
-    Prefix1 = iolist_to_binary(?JSON_ENCODE({
-        [{<<"_id">>, Id}]
+doc_to_json(#doc{id=Id, body=Body, revs={Start, RevIds},
+        meta=Meta, atts=Atts, deleted=Del}, Options) when is_binary(Body) ->
+    Opts = [{<<"_id">>, Id}]
         ++ to_json_rev(Start, RevIds)
         ++ case Del of
             true -> [{<<"_deleted">>, true}];
@@ -579,16 +578,8 @@ doc_to_json(#doc{id = Id, body = <<${, Body/binary>>, revs = {Start, RevIds},
         end
         ++ to_json_revisions(Options, Start, RevIds)
         ++ to_json_meta(Meta)
-        ++ to_json_attachments(Atts, Options)
-    })),
-    PrefixSize = byte_size(Prefix1) - 1,
-    <<Prefix:PrefixSize/binary, $}>> = Prefix1,
-    case Body of
-    <<"}">> ->
-       <<Prefix/binary, "}">>;
-    _ ->
-       <<Prefix/binary, ",", Body/binary>>
-    end;
+        ++ to_json_attachments(Atts, Options),
+    iolist_to_binary(jsonsplice:splice(Opts, Body));
 doc_to_json(#doc{body = Ejson} = Doc, Options) ->
     doc_to_json(Doc#doc{body = iolist_to_binary(?JSON_ENCODE(Ejson))}, Options).
 
