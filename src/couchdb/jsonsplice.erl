@@ -96,9 +96,9 @@ validate(B, S=#state{state=null}) ->
         {ok, S1} ->
             {ok, S1};
         {start_array, S1} ->
-            validate_array(B, S1);
+            validate_array(B, S1#state{state=any});
         {start_object, S1} ->
-            validate_object(B, S1)
+            validate_object(B, S1#state{state=key})
     end.
 
 
@@ -160,7 +160,7 @@ validate_array(B, S=#state{state=any}) ->
             {ok, S2} = validate_array(B, S1),
             validate_array(B, S2#state{state=comma});
         {start_object, S1} ->
-            {ok, S2} = validate_object(B, S1),
+            {ok, S2} = validate_object(B, S1#state{state=key}),
             validate_array(B, S2#state{state=comma});
         {ok, S1} ->
             validate_array(B, S1#state{state=comma})
