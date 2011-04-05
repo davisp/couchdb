@@ -73,7 +73,7 @@ EXTRA_DIST =  \
     priv
 
 if USE_OTP_NIFS
-priv/ejson.so: .libs/ejson.so
+priv/ejson.so: ejson.la
 	$(LN_S) .libs priv
 
 all: priv/ejson.so
