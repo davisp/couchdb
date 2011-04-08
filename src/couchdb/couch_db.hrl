@@ -21,8 +21,8 @@
 % the lowest possible database sequence number
 -define(LOWEST_SEQ, 0).
 
--define(JSON_ENCODE(V), ejson:encode(V)).
--define(JSON_DECODE(V), ejson:decode(V)).
+-define(JSON_ENCODE(V), jiffy:encode(V, [uescape])).
+-define(JSON_DECODE(V), jiffy:decode(V)).
 
 -define(b2l(V), binary_to_list(V)).
 -define(l2b(V), list_to_binary(V)).
