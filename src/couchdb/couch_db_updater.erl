@@ -573,26 +573,33 @@ modify_full_doc_info(Db, Id, MergeConflicts, OldDocInfo,
         {NewFullDocInfo#full_doc_info{deleted=Deleted}, NewSeq}
     end.
 
-
 update_docs_int(Db, DocsList, NonRepDocs, MergeConflicts, FullCommit) ->
     #db{
         fulldocinfo_by_id_btree = DocInfoByIdBTree,
         docinfo_by_seq_btree = DocInfoBySeqBTree,
         update_seq = LastSeq
         } = Db,
+    MakeKeyFun = fun(Id, Docs) ->
+        fun(OldInfo, {Infos, Seq}) ->
+            {NewInfo, Seq2} = modify_full_doc_info(
+                    Db, Id, MergeConflicts, OldInfo, Docs, Seq
+                ),
+            {{insert, NewInfo}, {[{OldInfo, NewInfo} | Infos], Seq2}}
+        end
+    end,
     KeyModFuns = lists:map(fun([{_Client, #doc{id=Id}}|_] = Docs) ->
-            {Id, fun(PrevValue, LastSeqAcc) ->
-                modify_full_doc_info(Db, Id, MergeConflicts, PrevValue, Docs, LastSeqAcc)
-            end}
-        end, DocsList),
-    {ok, KeyResults, NewSeq, DocInfoByIdBTree2} =
-            couch_btree:modify(DocInfoByIdBTree, KeyModFuns, LastSeq),
+        {Id, MakeKeyFun(Id, Docs)}
+    end, DocsList),
+    {ok, {KeyResults, NewSeq}, DocInfoByIdBTree2} = couch_btree:modify(
+            DocInfoByIdBTree, KeyModFuns, {[], LastSeq}
+        ),
 
-    {NewBySeqEntries, RemoveSeqs} =
-            by_seq_index_entries(KeyResults, [], []),
+    {NewBySeqEntries, RemoveSeqs} = by_seq_index_entries(KeyResults, [], []),
 
     {ok, Db2}  = update_local_docs(Db, NonRepDocs),
-    {ok, DocInfoBySeqBTree2} = couch_btree:add_remove(DocInfoBySeqBTree, NewBySeqEntries, RemoveSeqs),
+    {ok, DocInfoBySeqBTree2} = couch_btree:add_remove(
+            DocInfoBySeqBTree, NewBySeqEntries, RemoveSeqs
+    ),
 
     Db3 = Db2#db{
         fulldocinfo_by_id_btree = DocInfoByIdBTree2,

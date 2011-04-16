@@ -16,7 +16,7 @@
 -export([open/1, open/2, open/3, set_options/2, get_state/1]).
 -export([lookup/2, foldl/3, foldl/4, fold/4]).
 -export([full_reduce/1, final_reduce/2, fold_reduce/4]).
--export([add/2, add_remove/3, query_modify/4]).
+-export([add/2, add_remove/3, modify/3, query_modify/4]).
 
 
 -include("couch_db.hrl").
@@ -480,6 +480,16 @@ add_remove(Bt, Insertions, Deletions) ->
     {ok, [], Bt2} = query_modify(Bt, [], Insertions, Deletions),
     {ok, Bt2}.
 
+%% @doc Modify values in the btree
+%%
+%% @spec modify(Bt, KeyFuns, InitAcc) -> {ok, Acc, NewBtree}.
+modify(Bt, KeyFuns, Acc) ->
+    #btree{root=Root} = Bt,
+    Actions = [{modify, Key, Fun} || {Key, Fun} <- lists:sort(KeyFuns)],
+    {ok, KeyPtrs, {[], Acc2}, Bt2} = modify_node(Bt, Root, Actions, {[], Acc}),
+    {ok, NewRoot, Bt3} = complete_root(Bt2, KeyPtrs),
+    {ok, Acc2, Bt3#btree{root=NewRoot}}.
+
 %% @doc Add and remove key/value pairs and return query results from the btree.
 %%
 %% @spec query_modify(Bt, Queries, Insertions, Deletions) -> {ok, Results, Bt2}.
@@ -499,9 +509,10 @@ query_modify(Bt, Queries, Insertions, Deletions) ->
         end
     end,
     Actions = lists:sort(SortFun, InsActions ++ DelActions ++ QryActions),
-    {ok, KeyPointers, QueryResults, Bt2} = modify_node(Bt, Root, Actions, []),
-    {ok, NewRoot, Bt3} = complete_root(Bt2, KeyPointers),
-    {ok, QueryResults, Bt3#btree{root=NewRoot}}.
+    InitAcc = {[], nil},
+    {ok, KeyPtrs, {Result, nil}, Bt2} = modify_node(Bt, Root, Actions, InitAcc),
+    {ok, NewRoot, Bt3} = complete_root(Bt2, KeyPtrs),
+    {ok, Result, Bt3#btree{root=NewRoot}}.
 
 modify_node(Bt, PtrInfo, Actions, Output) ->
     {NodeType, NodeList} = case PtrInfo of
@@ -555,18 +566,24 @@ modify_kv_node(Bt, Nodes, Pos, [], NewNode, Output) ->
     {ok, ?rev2(NewNode, rest_nodes(Nodes, Pos, ?ts(Nodes), [])), Output, Bt};
 modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) when Pos > ?ts(Nodes)->
     [{ActType, ActKey, ActValue} | RestActs] = Actions,
+    {Results, Acc} = Output,
     case ActType of
         insert ->
             NewNode2 = [{ActKey, ActValue} | NewNode],
             modify_kv_node(Bt, Nodes, Pos, RestActs, NewNode2, Output);
         remove ->
             modify_kv_node(Bt, Nodes, Pos, RestActs, NewNode, Output);
+        modify ->
+            {NewNode2, Acc2} = modify_value(Bt, ActValue, nil, Acc, NewNode),
+            Output2 = {Results, Acc2},
+            modify_kv_node(Bt, Nodes, Pos, RestActs, NewNode2, Output2);
         lookup ->
-            Output2 = [{not_found, {ActKey, nil}} | Output],
+            Output2 = {[{not_found, {ActKey, nil}} | Results], Acc},
             modify_kv_node(Bt, Nodes, Pos, RestActs, NewNode, Output2)
     end;
 modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
     [{ActType, ActKey, ActValue} | RestActs] = Actions,
+    {Result, Acc} = Output,
     KvPos = find_key_pos(Bt, Nodes, Pos, ?ts(Nodes), ActKey),
     {Key, Value} = element(KvPos, Nodes),
     NewNode2 =  rest_rev_nodes(Nodes, Pos, KvPos - 1, NewNode),
@@ -576,22 +593,38 @@ modify_kv_node(Bt, Nodes, Pos, Actions, NewNode, Output) ->
             modify_kv_node(Bt, Nodes, KvPos, RestActs, NewNode3, Output);
         {lesser, remove} ->
             modify_kv_node(Bt, Nodes, KvPos, RestActs, NewNode2, Output);
+        {lesser, modify} ->
+            {NewNode3, Acc2} = modify_value(Bt, ActValue, nil, Acc, NewNode2),
+            Output2 = {Result, Acc2},
+            modify_kv_node(Bt, Nodes, KvPos, RestActs, NewNode3, Output2);
         {lesser, lookup} ->
-            Output2 = [{not_found, {ActKey, nil}} | Output],
+            Output2 = {[{not_found, {ActKey, nil}} | Result], Acc},
             modify_kv_node(Bt, Nodes, KvPos, RestActs, NewNode2, Output2);
         {equal, insert} ->
             NewNode3 = [{ActKey, ActValue} | NewNode2],
             modify_kv_node(Bt, Nodes, KvPos + 1, RestActs, NewNode3, Output);
         {equal, remove} ->
             modify_kv_node(Bt, Nodes, KvPos + 1, RestActs, NewNode2, Output);
+        {equal, modify} ->
+            KV = ?assemble(Bt, ActKey, Value),
+            {NewNode3, Acc2} = modify_value(Bt, ActValue, KV, Acc, NewNode2),
+            Output2 = {Result, Acc2},
+            modify_kv_node(Bt, Nodes, KvPos + 1, RestActs, NewNode3, Output2);
         {equal, lookup} ->
-            Output2 = [{ok, ?assemble(Bt, Key, Value)} | Output],
+            Output2 = {[{ok, ?assemble(Bt, Key, Value)} | Result], Acc},
             modify_kv_node(Bt, Nodes, KvPos, RestActs, NewNode2, Output2);
         {greater, _} ->
             NewNode3 = [{Key, Value} | NewNode2],
             modify_kv_node(Bt, Nodes, KvPos + 1, Actions, NewNode3, Output)
     end.
 
+modify_value(Bt, ModFun, KV, Acc, ResultNode) ->
+    case ModFun(KV, Acc) of
+        {{insert, NewValue}, Acc2} ->
+            {[?extract(Bt, NewValue) | ResultNode], Acc2};
+        {remove, Acc2} ->
+            {ResultNode, Acc2}
+    end.
 
 % Read/Write btree nodes.
 
