@@ -230,6 +230,18 @@ handle_port_message(Daemon, [<<"register">>, Sec, Key])
     Pattern = {?b2l(Sec), ?b2l(Key)},
     Patterns = lists:usort(Daemon#daemon.cfg_patterns ++ [Pattern]),
     {ok, Daemon#daemon{cfg_patterns=Patterns}};
+handle_port_message(Daemon, [<<"task_create">>, Type, Task, Status]) ->
+    TaskId = couch_uuids:random(),
+    couch_task_status:add_task(TaskId, Type, Task, Status),
+    Json = iolist_to_binary(?JSON_ENCODE([true, TaskId])),
+    port_command(Daemon#daemon.port, <<Json/binary, "\n">>),
+    {ok, Daemon};
+handle_port_message(Daemon, [<<"task_update">>, Id, Status]) ->
+    couch_task_status:set(Id, Status),
+    {ok, Daemon};
+handle_port_message(Daemon, [<<"task_done">>, Id]) ->
+    couch_task_status:remove(Id),
+    {ok, Daemon};
 handle_port_message(#daemon{name=Name}=Daemon, [<<"log">>, Msg]) ->
     handle_log_message(Name, Msg, <<"info">>),
     {ok, Daemon};

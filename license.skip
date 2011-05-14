@@ -98,6 +98,7 @@
 ^test/etap/.*\.o
 ^test/etap/.deps/*
 ^test/etap/test_cfg_register
+^test/etap/test_os_task_status
 ^test/etap/Makefile
 ^test/etap/Makefile.in
 ^test/etap/temp.*
