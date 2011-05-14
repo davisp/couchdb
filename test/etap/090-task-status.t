@@ -15,7 +15,7 @@
 
 main(_) ->
     test_util:init_code_path(),
-    etap:plan(16),
+    etap:plan(22),
     case (catch test()) of
         ok ->
             etap:end_tests();
@@ -25,29 +25,26 @@ main(_) ->
     end,
     ok.
 
-check_status(Pid,ListPropLists) ->
-    From = list_to_binary(pid_to_list(Pid)),
-    Element = lists:foldl(
-        fun(PropList,Acc) ->
-            case couch_util:get_value(pid,PropList) of
-                From ->
-                    [PropList | Acc];
-                _ ->
-                    []
-            end
-        end,
-        [], ListPropLists
-    ),
-    couch_util:get_value(status,hd(Element)).
-
 loop() ->
     receive
     {add, From} ->
         Resp = couch_task_status:add_task("type", "task", "init"),
         From ! {ok, self(), Resp},
         loop();
+    {add, Id, From} ->
+        Resp = couch_task_status:add_task(Id, "type", "task", "init"),
+        From ! {ok, self(), Resp},
+        loop();
     {update, Status, From} ->
         Resp = couch_task_status:update(Status),
+        From ! {ok, self(), Resp},
+        loop();
+    {set, Id, Status, From} ->
+        Resp = couch_task_status:set(Id, Status),
+        From ! {ok, self(), Resp},
+        loop();
+    {remove, Id, From} ->
+        Resp = couch_task_status:remove(Id),
         From ! {ok, self(), Resp},
         loop();
     {update_frequency, Msecs, From} ->
@@ -66,6 +63,10 @@ call(Pid, Command, Arg) ->
     Pid ! {Command, Arg, self()},
     wait(Pid).
 
+call(Pid, Command, Arg1, Arg2) ->
+    Pid ! {Command, Arg1, Arg2, self()},
+    wait(Pid).
+
 wait(Pid) ->
     receive
         {ok, Pid, Msg} -> Msg
@@ -73,21 +74,58 @@ wait(Pid) ->
         throw(timeout_error)
     end.
 
+close(Pid) ->
+    Before = length(couch_task_status:all()),
+    call(Pid, done),
+    wait_for_removal(Before, 3).
+
+wait_for_removal(_, 0) ->
+    throw(timeout_error);
+wait_for_removal(N, Tries) ->
+    Curr = length(couch_task_status:all()),
+    case Curr < N of
+        true ->
+            Curr;
+        _ ->
+            timer:sleep(333),
+            wait_for_removal(N, Tries-1)
+    end.    
+
+num_tasks() ->
+    length(couch_task_status:all()).
+
+status(TaskId) when is_pid(TaskId) ->
+    status(list_to_binary(pid_to_list(TaskId)));
+status(TaskId) when is_atom(TaskId) ->
+    status(list_to_binary(atom_to_list(TaskId)));
+status(TaskId) when is_binary(TaskId) ->
+    [TaskInfo] = lists:foldl(fun(Props, Acc) ->
+        case couch_util:get_value(id, Props) of
+            TaskId -> [Props | Acc];
+            _ -> Acc
+        end
+    end, [], couch_task_status:all()),
+    couch_util:get_value(status, TaskInfo).
+
+
 test() ->
     {ok, TaskStatusPid} = couch_task_status:start_link(),
 
     TaskUpdater = fun() -> loop() end,
+
     % create three updaters
     Pid1 = spawn(TaskUpdater),
     Pid2 = spawn(TaskUpdater),
     Pid3 = spawn(TaskUpdater),
+    Pid4 = spawn(TaskUpdater),
 
+    % First task, can only add once
     ok = call(Pid1, add),
-    etap:is(
-        length(couch_task_status:all()),
-        1,
-        "Started a task"
-    ),
+    etap:is(num_tasks(), 1, "Started a task"),
+    etap:is(status(Pid1), <<"init">>, "Task status was set to 'init'."),
+
+    call(Pid1,update,"running"),
+    etap:is(status(Pid1), <<"running">>, "Status updated to 'running'."),
 
     etap:is(
         call(Pid1, add),
@@ -95,106 +133,58 @@ test() ->
         "Unable to register multiple tasks for a single Pid."
     ),
 
-    etap:is(
-        check_status(Pid1, couch_task_status:all()),
-        <<"init">>,
-        "Task status was set to 'init'."
-    ),
-
-    call(Pid1,update,"running"),
-    etap:is(
-        check_status(Pid1,couch_task_status:all()),
-        <<"running">>,
-        "Status updated to 'running'."
-    ),
-
-
+    
+    % Second task
     call(Pid2,add),
-    etap:is(
-        length(couch_task_status:all()),
-        2,
-        "Started a second task."
-    ),
-
-    etap:is(
-        check_status(Pid2, couch_task_status:all()),
-        <<"init">>,
-        "Second tasks's status was set to 'init'."
-    ),
+    etap:is(num_tasks(), 2, "Started a second task."),
+    etap:is(status(Pid2), <<"init">>, "Second task's status is 'init'."),
 
     call(Pid2, update, "running"),
-    etap:is(
-        check_status(Pid2, couch_task_status:all()),
-        <<"running">>,
-        "Second task's status updated to 'running'."
-    ),
+    etap:is(status(Pid2), <<"running">>, "Second task's status is 'running'."),
 
 
+    % Task with update limit.
     call(Pid3, add),
-    etap:is(
-        length(couch_task_status:all()),
-        3,
-        "Registered a third task."
-    ),
-
-    etap:is(
-        check_status(Pid3, couch_task_status:all()),
-        <<"init">>,
-        "Third tasks's status was set to 'init'."
-    ),
+    etap:is(num_tasks(), 3, "Registered a third task."),
+    etap:is(status(Pid3), <<"init">>, "Third tasks's status is 'init'."),
 
     call(Pid3, update, "running"),
-    etap:is(
-        check_status(Pid3, couch_task_status:all()),
-        <<"running">>,
-        "Third task's status updated to 'running'."
-    ),
-
+    etap:is(status(Pid3), <<"running">>, "Third task's status is 'running'."),
 
     call(Pid3, update_frequency, 500),
-    call(Pid3, update, "still running"),
-    etap:is(
-        check_status(Pid3, couch_task_status:all()),
-        <<"still running">>,
-        "Third task's status updated to 'still running'."
-    ),
+    call(Pid3, update, "running2"),
+    etap:is(status(Pid3), <<"running2">>, "Third task's status is 'running2'."),
 
     call(Pid3, update, "skip this update"),
-    etap:is(
-        check_status(Pid3, couch_task_status:all()),
-        <<"still running">>,
-        "Status update dropped because of frequency limit."
-    ),
+    etap:is(status(Pid3), <<"running2">>, "Third task is still 'running2'."),
 
     call(Pid3, update_frequency, 0),
-    call(Pid3, update, "don't skip"),
-    etap:is(
-        check_status(Pid3, couch_task_status:all()),
-        <<"don't skip">>,
-        "Status updated after reseting frequency limit."
-    ),
+    call(Pid3, update, "running3"),
+    etap:is(status(Pid3), <<"running3">>, "Status update after limit reset."),
 
 
-    call(Pid1, done),
-    etap:is(
-        length(couch_task_status:all()),
-        2,
-        "First task finished."
-    ),
+    % Multiple tasks per process.
+    call(Pid4, add, task_id_1),
+    etap:is(num_tasks(), 4, "Registered a fourth task with id."),
+    call(Pid4, add, task_id_2),
+    etap:is(num_tasks(), 5, "Registered a fifth task with id."),
+    call(Pid4, add, task_id_3),
+    etap:is(num_tasks(), 6, "Registered a sixth task with id."),
 
-    call(Pid2, done),
-    etap:is(
-        length(couch_task_status:all()),
-        1,
-        "Second task finished."
-    ),
-
-    call(Pid3, done),
-    etap:is(
-        length(couch_task_status:all()),
-        0,
-        "Third task finished."
-    ),
+    call(Pid4, set, task_id_2, <<"new status">>),
+    etap:is(status(task_id_2), <<"new status">>, "Status updated by task id."),
+    
+    call(Pid4, remove, task_id_2),
+    etap:is(num_tasks(), 5, "Removed a task by id."),
+    
+    % Process death clears out all remaining tasks.
+    etap:is(close(Pid4), 3, "Removed both tasks left in Pid4"),
+    
+    
+    % Closing tasks
+    etap:is(close(Pid1), 2, "First task finished."),
+    etap:is(close(Pid2), 1, "Second task finished."),
+    etap:is(close(Pid3), 0, "Third task finished."),
 
     erlang:monitor(process, TaskStatusPid),
     couch_task_status:stop(),

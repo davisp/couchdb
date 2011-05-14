@@ -20,7 +20,10 @@
 % all/0 function
 
 -export([start_link/0, stop/0]).
--export([all/0, add_task/3, update/1, update/2, set_update_frequency/1]).
+-export([add_task/3, add_task/4]).
+-export([update/1, update/2, set/2, set/3, remove/1]).
+-export([set_update_frequency/1]).
+-export([all/0]).
 
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
@@ -29,6 +32,7 @@
 
 -include("couch_db.hrl").
 
+-record(task, {id, pid, type, task, status}).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -43,12 +47,18 @@ all() ->
 
 
 add_task(Type, TaskName, StatusText) ->
+    add_task(self(), Type, TaskName, StatusText).
+
+add_task(Id, Type, TaskName, StatusText) ->
     put(task_status_update, {{0, 0, 0}, 0}),
     Msg = {
         add_task,
-        to_binary(Type),
-        to_binary(TaskName),
-        to_binary(StatusText)
+        #task{
+            id=Id,
+            type=to_binary(Type),
+            task=to_binary(TaskName),
+            status=to_binary(StatusText)
+        }
     },
     gen_server:call(?MODULE, Msg).
 
@@ -58,23 +68,34 @@ set_update_frequency(Msecs) ->
 
 
 update(StatusText) ->
-    update("~s", [StatusText]).
+    set(self(), "~s", [StatusText]).
 
 update(Format, Data) ->
+    set(self(), Format, Data).
+
+
+set(Id, Data) ->
+    set(Id, "~s", [Data]).
+
+set(Id, Format, Data) ->
     {LastUpdateTime, Frequency} = get(task_status_update),
     case timer:now_diff(Now = now(), LastUpdateTime) >= Frequency of
     true ->
         put(task_status_update, {Now, Frequency}),
         Msg = ?l2b(io_lib:format(Format, Data)),
-        gen_server:cast(?MODULE, {update_status, self(), Msg});
+        gen_server:cast(?MODULE, {update_status, Id, Msg});
     false ->
         ok
     end.
 
 
+remove(Id) ->
+    gen_server:cast(?MODULE, {remove_task, Id}).
+
+
 init([]) ->
     % read configuration settings and register for configuration changes
-    ets:new(?MODULE, [ordered_set, protected, named_table]),
+    ets:new(?MODULE, [ordered_set, protected, named_table, {keypos, #task.id}]),
     {ok, nil}.
 
 
@@ -82,10 +103,11 @@ terminate(_Reason,_State) ->
     ok.
 
 
-handle_call({add_task, Type, TaskName, StatusText}, {From, _}, Server) ->
-    case ets:lookup(?MODULE, From) of
+handle_call({add_task, #task{}=Task0}, {From, _}, Server) ->
+    Task = Task0#task{pid=From},
+    case ets:lookup(?MODULE, Task#task.id) of
     [] ->
-        true = ets:insert(?MODULE, {From, {Type, TaskName, StatusText}}),
+        true = ets:insert(?MODULE, Task),
         erlang:monitor(process, From),
         {reply, ok, Server};
     [_] ->
@@ -94,28 +116,39 @@ handle_call({add_task, Type, TaskName, StatusText}, {From, _}, Server) ->
 handle_call(all, _, Server) ->
     All = [
         [
-            {type, Type},
-            {task, Task},
-            {status, Status},
-            {pid, ?l2b(pid_to_list(Pid))}
+            {id, to_binary(Task#task.id)},
+            {pid, ?l2b(pid_to_list(Task#task.pid))},
+            {type, Task#task.type},
+            {task, Task#task.task},
+            {status, Task#task.status}
         ]
         ||
-        {Pid, {Type, Task, Status}} <- ets:tab2list(?MODULE)
+        Task <- ets:tab2list(?MODULE)
     ],
     {reply, All, Server}.
 
 
-handle_cast({update_status, Pid, StatusText}, Server) ->
-    [{Pid, {Type, TaskName, _StatusText}}] = ets:lookup(?MODULE, Pid),
-    ?LOG_DEBUG("New task status for ~s: ~s",[TaskName, StatusText]),
-    true = ets:insert(?MODULE, {Pid, {Type, TaskName, StatusText}}),
+handle_cast({update_status, Id, StatusText}, Server) ->
+    case ets:lookup(?MODULE, Id) of
+        [#task{id=Id}=Task] ->
+            Fmt = "New task status for ~s: ~s",
+            ?LOG_DEBUG(Fmt, [Task#task.task, StatusText]),
+            true = ets:insert(?MODULE, Task#task{status=StatusText});
+        [] ->
+            Fmt = "Update to unknown task ~s: ~s",
+            ?LOG_DEBUG(Fmt, [Id, StatusText])
+    end,
+    {noreply, Server};
+handle_cast({remove_task, Id}, Server) ->
+    ets:delete(?MODULE, Id),
     {noreply, Server};
 handle_cast(stop, State) ->
     {stop, normal, State}.
 
 handle_info({'DOWN', _MonitorRef, _Type, Pid, _Info}, Server) ->
-    %% should we also erlang:demonitor(_MonitorRef), ?
-    ets:delete(?MODULE, Pid),
+    lists:foreach(fun([Id]) ->
+        ets:delete(?MODULE, Id)
+    end, ets:match(?MODULE, #task{id='$1', pid=Pid, _='_'})),
     {noreply, Server}.
 
 
