@@ -548,9 +548,11 @@ with_ejson_body(#doc{body = Body} = Doc) when is_binary(Body) ->
 with_ejson_body(#doc{body = {_}} = Doc) ->
     Doc.
 
-kt_value_chooser(Tuple, _) when is_tuple(Tuple), tuple_size(Tuple) == 4 ->
+kt_value_chooser(Tuple, _) when is_tuple(Tuple), 
+        (tuple_size(Tuple) == 3 orelse tuple_size(Tuple) == 4) ->
     Tuple;
-kt_value_chooser(_, Tuple) when is_tuple(Tuple), tuple_size(Tuple) == 4 ->
+kt_value_chooser(_, Tuple) when is_tuple(Tuple),
+        (tuple_size(Tuple) == 3 orelse tuple_size(Tuple) == 4) ->
     Tuple;
 kt_value_chooser(?REV_MISSING, Other) ->
     Other;
