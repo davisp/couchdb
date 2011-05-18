@@ -526,9 +526,9 @@ mp_parse_atts(body_end) ->
     end.
 
 
-kt_value_chooser(Tuple, _) when is_tuple(Tuple), tuple_size(Tuple) == 4 ->
+kt_value_chooser(Tuple, _) when is_tuple(Tuple), tuple_size(Tuple) == 3 ->
     Tuple;
-kt_value_chooser(_, Tuple) when is_tuple(Tuple), tuple_size(Tuple) == 4 ->
+kt_value_chooser(_, Tuple) when is_tuple(Tuple), tuple_size(Tuple) == 3 ->
     Tuple;
 kt_value_chooser(?REV_MISSING, Other) ->
     Other;
