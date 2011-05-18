@@ -26,16 +26,18 @@ main(_) ->
     ok.
 
 test() ->
+    Choose = fun(A, _) -> A end,
+
     One = {1, {"1","foo",[]}},
 
     etap:is(
         {[One], no_conflicts},
-        couch_key_tree:merge([], One, 10),
+        couch_key_tree:merge([], One, Choose, 10),
         "The empty tree is the identity for merge."
     ),
     etap:is(
         {[One], no_conflicts},
-        couch_key_tree:merge([One], One, 10),
+        couch_key_tree:merge([One], One, Choose, 10),
         "Merging is reflexive."
     ),
 
@@ -44,7 +46,7 @@ test() ->
 
     etap:is(
         {TwoSibs, no_conflicts},
-        couch_key_tree:merge(TwoSibs, One, 10),
+        couch_key_tree:merge(TwoSibs, One, Choose, 10),
         "Merging a prefix of a tree with the tree yields the tree."
     ),
 
@@ -55,7 +57,7 @@ test() ->
 
     etap:is(
         {ThreeSibs, conflicts},
-        couch_key_tree:merge(TwoSibs, Three, 10),
+        couch_key_tree:merge(TwoSibs, Three, Choose, 10),
         "Merging a third unrelated branch leads to a conflict."
     ),
 
@@ -64,7 +66,7 @@ test() ->
 
     etap:is(
         {[TwoChild], no_conflicts},
-        couch_key_tree:merge([TwoChild], TwoChild, 10),
+        couch_key_tree:merge([TwoChild], TwoChild, Choose, 10),
         "Merging two children is still reflexive."
     ),
 
@@ -72,7 +74,7 @@ test() ->
                                      {"1b", "bar", []}]}},
     etap:is(
         {[TwoChildSibs], no_conflicts},
-        couch_key_tree:merge([TwoChildSibs], TwoChildSibs, 10),
+        couch_key_tree:merge([TwoChildSibs], TwoChildSibs, Choose, 10),
         "Merging a tree to itself is itself."),
 
     TwoChildPlusSibs =
@@ -81,13 +83,13 @@ test() ->
 
     etap:is(
         {[TwoChildPlusSibs], no_conflicts},
-        couch_key_tree:merge([TwoChild], TwoChildSibs, 10),
+        couch_key_tree:merge([TwoChild], TwoChildSibs, Choose, 10),
         "Merging tree of uneven length at node 2."),
 
     Stemmed1b = {2, {"1a", "bar", []}},
     etap:is(
         {[TwoChildSibs], no_conflicts},
-        couch_key_tree:merge([TwoChildSibs], Stemmed1b, 10),
+        couch_key_tree:merge([TwoChildSibs], Stemmed1b, Choose, 10),
         "Merging a tree with a stem."
     ),
 
@@ -96,7 +98,7 @@ test() ->
     Stemmed1bb = {3, {"1bb", "boo", []}},
     etap:is(
         {[TwoChildSibs2], no_conflicts},
-        couch_key_tree:merge([TwoChildSibs2], Stemmed1bb, 10),
+        couch_key_tree:merge([TwoChildSibs2], Stemmed1bb, Choose, 10),
         "Merging a stem at a deeper level."
     ),
 
@@ -105,27 +107,27 @@ test() ->
 
     etap:is(
         {StemmedTwoChildSibs2, no_conflicts},
-        couch_key_tree:merge(StemmedTwoChildSibs2, Stemmed1bb, 10),
+        couch_key_tree:merge(StemmedTwoChildSibs2, Stemmed1bb, Choose, 10),
         "Merging a stem at a deeper level against paths at deeper levels."
     ),
 
     Stemmed1aa = {3, {"1aa", "bar", []}},
     etap:is(
         {[TwoChild], no_conflicts},
-        couch_key_tree:merge([TwoChild], Stemmed1aa, 10),
+        couch_key_tree:merge([TwoChild], Stemmed1aa, Choose, 10),
         "Merging a single tree with a deeper stem."
     ),
 
     Stemmed1a = {2, {"1a", "bar", [{"1aa", "bar", []}]}},
     etap:is(
         {[TwoChild], no_conflicts},
-        couch_key_tree:merge([TwoChild], Stemmed1a, 10),
+        couch_key_tree:merge([TwoChild], Stemmed1a, Choose, 10),
         "Merging a larger stem."
     ),
 
     etap:is(
         {[Stemmed1a], no_conflicts},
-        couch_key_tree:merge([Stemmed1a], Stemmed1aa, 10),
+        couch_key_tree:merge([Stemmed1a], Stemmed1aa, Choose, 10),
         "More merging."
     ),
 
@@ -133,13 +135,13 @@ test() ->
     Expect1 = [OneChild, Stemmed1aa],
     etap:is(
         {Expect1, conflicts},
-        couch_key_tree:merge([OneChild], Stemmed1aa, 10),
+        couch_key_tree:merge([OneChild], Stemmed1aa, Choose, 10),
         "Merging should create conflicts."
     ),
 
     etap:is(
         {[TwoChild], no_conflicts},
-        couch_key_tree:merge(Expect1, TwoChild, 10),
+        couch_key_tree:merge(Expect1, TwoChild, Choose, 10),
         "Merge should have no conflicts."
     ),
 
@@ -169,7 +171,7 @@ test() ->
 
     etap:is(
       {[FooBar], no_conflicts},
-      couch_key_tree:merge([Foo],Bar,10),
+      couch_key_tree:merge([Foo],Bar, Choose, 10),
       "Merging trees with conflicts ought to behave."
     ),
 

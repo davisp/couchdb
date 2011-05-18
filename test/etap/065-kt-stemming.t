@@ -26,17 +26,18 @@ main(_) ->
     ok.
 
 test() ->
+    Choose = fun(A, _) -> A end,
     TwoChild = [{0, {"1","foo", [{"1a", "bar", [{"1aa", "bar", []}]}]}}],
     Stemmed1 = [{1, {"1a", "bar", [{"1aa", "bar", []}]}}],
     Stemmed2 = [{2, {"1aa", "bar", []}}],
 
-    etap:is(TwoChild, couch_key_tree:stem(TwoChild, 3),
+    etap:is(TwoChild, couch_key_tree:stem(TwoChild, 3, Choose),
         "Stemming more levels than what exists does nothing."),
 
-    etap:is(Stemmed1, couch_key_tree:stem(TwoChild, 2),
+    etap:is(Stemmed1, couch_key_tree:stem(TwoChild, 2, Choose),
         "Stemming with a depth of two returns the deepest two nodes."),
 
-    etap:is(Stemmed2, couch_key_tree:stem(TwoChild, 1),
+    etap:is(Stemmed2, couch_key_tree:stem(TwoChild, 1, Choose),
         "Stemming to a depth of one returns the deepest node."),
 
     ok.

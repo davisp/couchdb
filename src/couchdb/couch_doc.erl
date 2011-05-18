@@ -21,6 +21,7 @@
 -export([to_path/1]).
 -export([mp_parse_doc/2]).
 -export([with_ejson_body/1, with_bin_body/1]).
+-export([kt_value_chooser/2]).
 
 -include("couch_db.hrl").
 
@@ -546,3 +547,14 @@ with_ejson_body(#doc{body = Body} = Doc) when is_binary(Body) ->
     Doc#doc{body = couch_compress:decompress(Body)};
 with_ejson_body(#doc{body = {_}} = Doc) ->
     Doc.
+
+kt_value_chooser(Tuple, _) when is_tuple(Tuple), tuple_size(Tuple) == 4 ->
+    Tuple;
+kt_value_chooser(_, Tuple) when is_tuple(Tuple), tuple_size(Tuple) == 4 ->
+    Tuple;
+kt_value_chooser(?REV_MISSING, Other) ->
+    Other;
+kt_value_chooser(Other, ?REV_MISSING) ->
+    Other;
+kt_value_chooser(Last, _) ->
+    Last.

@@ -47,25 +47,25 @@
 
 -module(couch_key_tree).
 
--export([merge/3, find_missing/2, get_key_leafs/2, get_full_key_paths/2, get/2]).
--export([get_all_leafs/1, count_leafs/1, remove_leafs/2, get_all_leafs_full/1, stem/2]).
+-export([merge/4, find_missing/2, get_key_leafs/2, get_full_key_paths/2, get/2]).
+-export([get_all_leafs/1, count_leafs/1, remove_leafs/3, get_all_leafs_full/1, stem/3]).
 -export([map/2, mapfold/3, map_leafs/2]).
 
 -include("couch_db.hrl").
 
 %% @doc Merge a path with a list of paths and stem to the given length.
--spec merge([path()], path(), pos_integer()) -> {[path()],
+-spec merge([path()], path(), fun(), pos_integer()) -> {[path()],
     conflicts | no_conflicts}.
-merge(Paths, Path, Depth) ->
-    {Merged, Conflicts} = merge(Paths, Path),
-    {stem(Merged, Depth), Conflicts}.
+merge(Paths, Path, Choose, Depth) ->
+    {Merged, Conflicts} = merge(Paths, Path, Choose),
+    {stem(Merged, Depth, Choose), Conflicts}.
 
 %% @doc Merge a path with an existing list of paths, returning a new list of
 %% paths. A return of conflicts indicates a new conflict was discovered in this
 %% merge. Conflicts may already exist in the original list of paths.
--spec merge([path()], path()) -> {[path()], conflicts | no_conflicts}.
-merge(Paths, Path) ->
-    {ok, Merged, HasConflicts} = merge_one(Paths, Path, [], false),
+-spec merge([path()], path(), fun()) -> {[path()], conflicts | no_conflicts}.
+merge(Paths, Path, Choose) ->
+    {ok, Merged, HasConflicts} = merge_one(Paths, Path, Choose, [], false),
     if HasConflicts ->
         Conflicts = conflicts;
     (length(Merged) =/= length(Paths)) and (length(Merged) =/= 1) ->
@@ -75,56 +75,56 @@ merge(Paths, Path) ->
     end,
     {lists:sort(Merged), Conflicts}.
 
--spec merge_one(Original::[path()], Inserted::path(), [path()], boolean()) ->
+-spec merge_one(Original::[path()], Inserted::path(), fun(), [path()], boolean()) ->
     {ok, Merged::[path()], NewConflicts::boolean()}.
-merge_one([], Insert, OutAcc, ConflictsAcc) ->
+merge_one([], Insert, _Choose, OutAcc, ConflictsAcc) ->
     {ok, [Insert | OutAcc], ConflictsAcc};
-merge_one([{Start, Tree}|Rest], {StartInsert, TreeInsert}, Acc, HasConflicts) ->
-    case merge_at([Tree], StartInsert - Start, [TreeInsert]) of
+merge_one([{Start, Tree}|Rest], {StartInsert, TreeInsert}, Choose, Acc, HasConflicts) ->
+    case merge_at([Tree], StartInsert - Start, [TreeInsert], Choose) of
     {ok, [Merged], Conflicts} ->
         MergedStart = lists:min([Start, StartInsert]),
         {ok, Rest ++ [{MergedStart, Merged} | Acc], Conflicts or HasConflicts};
     no ->
         AccOut = [{Start, Tree} | Acc],
-        merge_one(Rest, {StartInsert, TreeInsert}, AccOut, HasConflicts)
+        merge_one(Rest, {StartInsert, TreeInsert}, Choose, AccOut, HasConflicts)
     end.
 
--spec merge_at(tree(), Place::integer(), tree()) ->
+-spec merge_at(tree(), Place::integer(), tree(), fun()) ->
     {ok, Merged::tree(), HasConflicts::boolean()} | no.
-merge_at(_Ours, _Place, []) ->
+merge_at(_Ours, _Place, [], _Choose) ->
     no;
-merge_at([], _Place, _Insert) ->
+merge_at([], _Place, _Insert, _Choose) ->
     no;
-merge_at([{Key, Value, SubTree}|Sibs], Place, InsertTree) when Place > 0 ->
+merge_at([{Key, Value, SubTree}|Sibs], Place, InsertTree, Choose) when Place > 0 ->
     % inserted starts later than committed, need to drill into committed subtree
-    case merge_at(SubTree, Place - 1, InsertTree) of
+    case merge_at(SubTree, Place - 1, InsertTree, Choose) of
     {ok, Merged, Conflicts} ->
         {ok, [{Key, Value, Merged} | Sibs], Conflicts};
     no ->
         % first branch didn't merge, move to next branch
-        case merge_at(Sibs, Place, InsertTree) of
+        case merge_at(Sibs, Place, InsertTree, Choose) of
         {ok, Merged, Conflicts} ->
             {ok, [{Key, Value, SubTree} | Merged], Conflicts};
         no ->
             no
         end
     end;
-merge_at(OurTree, Place, [{Key, Value, SubTree}]) when Place < 0 ->
+merge_at(OurTree, Place, [{Key, Value, SubTree}], Choose) when Place < 0 ->
     % inserted starts earlier than committed, need to drill into insert subtree
-    case merge_at(OurTree, Place + 1, SubTree) of
+    case merge_at(OurTree, Place + 1, SubTree, Choose) of
     {ok, Merged, Conflicts} ->
         {ok, [{Key, Value, Merged}], Conflicts};
     no ->
         no
     end;
-merge_at([{Key, Value, SubTree}|Sibs], 0, [{Key, _Value, InsertSubTree}]) ->
-    {Merged, Conflicts} = merge_simple(SubTree, InsertSubTree),
-    {ok, [{Key, Value, Merged} | Sibs], Conflicts};
-merge_at([{OurKey, _, _} | _], 0, [{Key, _, _}]) when OurKey > Key ->
+merge_at([{Key, V1, SubTree}|Sibs], 0, [{Key,V2, InsertSubTree}], Choose) ->
+    {Merged, Conflicts} = merge_simple(SubTree, InsertSubTree, Choose),
+    {ok, [{Key, Choose(V1, V2), Merged} | Sibs], Conflicts};
+merge_at([{OurKey, _, _} | _], 0, [{Key, _, _}], _Choose) when OurKey > Key ->
     % siblings keys are ordered, no point in continuing
     no;
-merge_at([Tree | Sibs], 0, InsertTree) ->
-    case merge_at(Sibs, 0, InsertTree) of
+merge_at([Tree | Sibs], 0, InsertTree, Choose) ->
+    case merge_at(Sibs, 0, InsertTree, Choose) of
     {ok, Merged, Conflicts} ->
         {ok, [Tree | Merged], Conflicts};
     no ->
@@ -133,21 +133,21 @@ merge_at([Tree | Sibs], 0, InsertTree) ->
 
 % key tree functions
 
--spec merge_simple(tree(), tree()) -> {Merged::tree(), NewConflicts::boolean()}.
-merge_simple([], B) ->
+-spec merge_simple(tree(), tree(), fun()) -> {Merged::tree(), NewConflicts::boolean()}.
+merge_simple([], B, _Choose) ->
     {B, false};
-merge_simple(A, []) ->
+merge_simple(A, [], _Choose) ->
     {A, false};
-merge_simple([{Key, Value, SubA} | NextA], [{Key, _, SubB} | NextB]) ->
-    {MergedSubTree, Conflict1} = merge_simple(SubA, SubB),
-    {MergedNextTree, Conflict2} = merge_simple(NextA, NextB),
-    {[{Key, Value, MergedSubTree} | MergedNextTree], Conflict1 or Conflict2};
-merge_simple([{A, _, _} = Tree | Next], [{B, _, _} | _] = Insert) when A < B ->
-    {Merged, Conflict} = merge_simple(Next, Insert),
+merge_simple([{Key, V1, SubA} | NextA], [{Key, V2, SubB} | NextB], Choose) ->
+    {MergedSubTree, Conflict1} = merge_simple(SubA, SubB, Choose),
+    {MergedNextTree, Conflict2} = merge_simple(NextA, NextB, Choose),
+    {[{Key, Choose(V1, V2), MergedSubTree} | MergedNextTree], Conflict1 or Conflict2};
+merge_simple([{A, _, _} = Tree | Next], [{B, _, _} | _] = Insert, Choose) when A < B ->
+    {Merged, Conflict} = merge_simple(Next, Insert, Choose),
     % if Merged has more branches than the input we added a new conflict
     {[Tree | Merged], Conflict orelse (length(Merged) > length(Next))};
-merge_simple(Ours, [Tree | Next]) ->
-    {Merged, Conflict} = merge_simple(Ours, Next),
+merge_simple(Ours, [Tree | Next], Choose) ->
+    {Merged, Conflict} = merge_simple(Ours, Next, Choose),
     {[Tree | Merged], Conflict orelse (length(Merged) > length(Next))}.
 
 find_missing(_Tree, []) ->
@@ -186,21 +186,25 @@ filter_leafs([{Pos, [{LeafKey, _}|_]} = Path |Rest], Keys, FilteredAcc, RemovedK
     end.
 
 % Removes any branches from the tree whose leaf node(s) are in the Keys
-remove_leafs(Trees, Keys) ->
+remove_leafs(Trees, Keys, Choose) ->
     % flatten each branch in a tree into a tree path
     Paths = get_all_leafs_full(Trees),
 
     % filter out any that are in the keys list.
     {FilteredPaths, RemovedKeys} = filter_leafs(Paths, Keys, [], []),
 
+    SortedPaths = lists:sort(
+        [{Pos + 1 - length(Path), Path} || {Pos, Path} <- FilteredPaths]
+    ),
+
     % convert paths back to trees
     NewTree = lists:foldl(
-        fun({PathPos, Path},TreeAcc) ->
+        fun({StartPos, Path},TreeAcc) ->
             [SingleTree] = lists:foldl(
                 fun({K,V},NewTreeAcc) -> [{K,V,NewTreeAcc}] end, [], Path),
-            {NewTrees, _} = merge(TreeAcc, {PathPos + 1 - length(Path), SingleTree}),
+            {NewTrees, _} = merge(TreeAcc, {StartPos, SingleTree}, Choose),
             NewTrees
-        end, [], FilteredPaths),
+        end, [], SortedPaths),
     {NewTree, RemovedKeys}.
 
 
@@ -366,20 +370,21 @@ map_leafs_simple(Fun, Pos, [{Key, Value, SubTree} | RestTree]) ->
     [{Key, Value, map_leafs_simple(Fun, Pos + 1, SubTree)} | map_leafs_simple(Fun, Pos, RestTree)].
 
 
-stem(Trees, Limit) ->
-    % flatten each branch in a tree into a tree path
-    Paths = get_all_leafs_full(Trees),
-
-    Paths2 = [{Pos, lists:sublist(Path, Limit)} || {Pos, Path} <- Paths],
+stem(Trees, Limit, Choose) ->
+    % flatten each branch in a tree into a tree path, sort by starting rev #
+    Paths = lists:sort(lists:map(fun({Pos, Path}) ->
+        StemmedPath = lists:sublist(Path, Limit),
+        {Pos + 1 - length(StemmedPath), StemmedPath}
+    end, get_all_leafs_full(Trees))),
 
     % convert paths back to trees
     lists:foldl(
-        fun({PathPos, Path},TreeAcc) ->
+        fun({StartPos, Path},TreeAcc) ->
             [SingleTree] = lists:foldl(
                 fun({K,V},NewTreeAcc) -> [{K,V,NewTreeAcc}] end, [], Path),
-            {NewTrees, _} = merge(TreeAcc, {PathPos + 1 - length(Path), SingleTree}),
+            {NewTrees, _} = merge(TreeAcc, {StartPos, SingleTree}, Choose),
             NewTrees
-        end, [], Paths2).
+        end, [], Paths).
 
 % Tests moved to test/etap/06?-*.t
 

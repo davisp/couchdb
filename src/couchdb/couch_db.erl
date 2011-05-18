@@ -589,8 +589,12 @@ prep_and_validate_replicated_updates(Db, [Bucket|RestBuckets], [OldInfo|RestOldI
     {ok, #full_doc_info{rev_tree=OldTree}} ->
         NewRevTree = lists:foldl(
             fun(NewDoc, AccTree) ->
-                {NewTree, _} = couch_key_tree:merge(AccTree,
-                    couch_doc:to_path(NewDoc), Db#db.revs_limit),
+                {NewTree, _} = couch_key_tree:merge(
+                        AccTree,
+                        couch_doc:to_path(NewDoc),
+                        fun couch_doc:kt_value_chooser/2,
+                        Db#db.revs_limit
+                    ),
                 NewTree
             end,
             OldTree, Bucket),
