@@ -18,6 +18,7 @@
 -export([validate_docid/1]).
 -export([doc_from_multi_part_stream/2]).
 -export([doc_to_multi_part_stream/5, len_doc_to_multi_part_stream/4]).
+-export([kt_value_chooser/2]).
 
 -include("couch_db.hrl").
 
@@ -525,3 +526,13 @@ mp_parse_atts(body_end) ->
     end.
 
 
+kt_value_chooser(Tuple, _) when is_tuple(Tuple), tuple_size(Tuple) == 4 ->
+    Tuple;
+kt_value_chooser(_, Tuple) when is_tuple(Tuple), tuple_size(Tuple) == 4 ->
+    Tuple;
+kt_value_chooser(?REV_MISSING, Other) ->
+    Other;
+kt_value_chooser(Other, ?REV_MISSING) ->
+    Other;
+kt_value_chooser(Last, _) ->
+    Last.
