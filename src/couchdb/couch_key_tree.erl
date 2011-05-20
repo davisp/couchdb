@@ -27,7 +27,7 @@
 %% and C. We now have two key trees, A->B and A->C. When we go to replicate a
 %% second time, the key tree must combine these two trees which gives us
 %% A->(B|C). This is how conflicts are introduced. In terms of the key tree, we
-%% say that we have two leaves (B and C) that are not deleted. The presense of
+%% say that we have two leaves (B and C) that are not deleted. The presene of
 %% the multiple leaves indicate conflict. To remove a conflict, one of the
 %% edits (B or C) can be deleted, which results in, A->(B|C->D) where D is an
 %% edit that is specially marked with the a deleted=true flag.
@@ -37,7 +37,7 @@
 %% this limit is exceeded only the last 1000 are kept. This comes in to play
 %% when branches are merged. The comparison has to begin at the same place in
 %% the branches. A revision id is of the form N-XXXXXXX where N is the current
-%% revision. So each path will have a start number, calculated in
+%% revision depth. So each path will have a start number, calculated in
 %% couch_doc:to_path using the formula N - length(RevIds) + 1 So, .eg. if a doc
 %% was edit 1003 times this start number would be 4, indicating that 3
 %% revisions were truncated.
@@ -47,108 +47,295 @@
 
 -module(couch_key_tree).
 
--export([merge/3, find_missing/2, get_key_leafs/2, get_full_key_paths/2, get/2]).
--export([get_all_leafs/1, count_leafs/1, remove_leafs/2, get_all_leafs_full/1, stem/2]).
+-export([merge/3, stem/2, delete/2]).
+
+-export([find_missing/2, get_key_leafs/2, get_full_key_paths/2, get/2]).
+-export([get_all_leafs/1, count_leafs/1, get_all_leafs_full/1]).
 -export([map/2, mapfold/3, map_leafs/2]).
 
 -include("couch_db.hrl").
 
-%% @doc Merge a path with a list of paths and stem to the given length.
--spec merge([path()], path(), pos_integer()) -> {[path()],
-    conflicts | no_conflicts}.
-merge(Paths, Path, Depth) ->
-    {Merged, Conflicts} = merge(Paths, Path),
-    {stem(Merged, Depth), Conflicts}.
+% Node::term() is really a node(), but we don't want to require R13B04 yet
+-type node() :: {Key::term(), Value::term(), [Node::term()]}.
+-type tree() :: {Depth::pos_integer(), [node()]}.
+-type revtree() :: [tree()].
+-type path() :: {Value::term(), {Depth:pos_integer(), [term()]}}.
 
-%% @doc Merge a path with an existing list of paths, returning a new list of
-%% paths. A return of conflicts indicates a new conflict was discovered in this
+
+%% Testing ideas:
+%% Merge:
+%%   Introduce a new branch with a deleted leaf.
+%%   Collapse two branches by connecting stemmed branches with path.
+%%   Only has conflicts if one is introduced?
+%%
+
+
+
+%% @doc Merge a path into the given tree and then stem the result.
+%% Although Tree is of type tree(), it must not contain any branches.
+-spec merge(revtree(), tree(), pos_integer()) ->
+                {revtree(), conflicts | no_conflicts}.
+merge(RevTree, Tree, StemDepth) ->
+    {Merged, Conflicts} = merge(RevTree, Tree),
+    {stem(Merged, StemDepth), Conflicts}.
+
+
+%% @doc Merge a path into a tree.
+%% XXX: Is the rest of this comment true?
+%% A return of conflicts indicates a new conflict was discovered in this
 %% merge. Conflicts may already exist in the original list of paths.
--spec merge([path()], path()) -> {[path()], conflicts | no_conflicts}.
-merge(Paths, Path) ->
-    {ok, Merged, HasConflicts} = merge_one(Paths, Path, [], false),
-    if HasConflicts ->
-        Conflicts = conflicts;
-    (length(Merged) =/= length(Paths)) and (length(Merged) =/= 1) ->
-        Conflicts = conflicts;
-    true ->
-        Conflicts = no_conflicts
-    end,
-    {lists:sort(Merged), Conflicts}.
-
--spec merge_one(Original::[path()], Inserted::path(), [path()], boolean()) ->
-    {ok, Merged::[path()], NewConflicts::boolean()}.
-merge_one([], Insert, OutAcc, ConflictsAcc) ->
-    {ok, [Insert | OutAcc], ConflictsAcc};
-merge_one([{Start, Tree}|Rest], {StartInsert, TreeInsert}, Acc, HasConflicts) ->
-    case merge_at([Tree], StartInsert - Start, [TreeInsert]) of
-    {ok, [Merged], Conflicts} ->
-        MergedStart = lists:min([Start, StartInsert]),
-        {ok, Rest ++ [{MergedStart, Merged} | Acc], Conflicts or HasConflicts};
-    no ->
-        AccOut = [{Start, Tree} | Acc],
-        merge_one(Rest, {StartInsert, TreeInsert}, AccOut, HasConflicts)
+-spec merge(revtree(), tree()) -> {revtree(), conflicts | no_conflicts}.
+merge(RevTree, Tree) ->
+    {Merged, Conflicts} = merge_tree(RevTree, Tree, []),
+    case Conflicts of
+        true -> {lists:sort(Merged), conflicts};
+        false -> {lists:sort(Merged), no_conflicts}
     end.
 
--spec merge_at(tree(), Place::integer(), tree()) ->
-    {ok, Merged::tree(), HasConflicts::boolean()} | no.
-merge_at(_Ours, _Place, []) ->
-    no;
-merge_at([], _Place, _Insert) ->
-    no;
-merge_at([{Key, Value, SubTree}|Sibs], Place, InsertTree) when Place > 0 ->
-    % inserted starts later than committed, need to drill into committed subtree
-    case merge_at(SubTree, Place - 1, InsertTree) of
-    {ok, Merged, Conflicts} ->
-        {ok, [{Key, Value, Merged} | Sibs], Conflicts};
-    no ->
-        % first branch didn't merge, move to next branch
-        case merge_at(Sibs, Place, InsertTree) of
-        {ok, Merged, Conflicts} ->
-            {ok, [{Key, Value, SubTree} | Merged], Conflicts};
-        no ->
-            no
-        end
-    end;
-merge_at(OurTree, Place, [{Key, Value, SubTree}]) when Place < 0 ->
-    % inserted starts earlier than committed, need to drill into insert subtree
-    case merge_at(OurTree, Place + 1, SubTree) of
-    {ok, Merged, Conflicts} ->
-        {ok, [{Key, Value, Merged}], Conflicts};
-    no ->
-        no
-    end;
-merge_at([{Key, Value, SubTree}|Sibs], 0, [{Key, _Value, InsertSubTree}]) ->
-    {Merged, Conflicts} = merge_simple(SubTree, InsertSubTree),
-    {ok, [{Key, Value, Merged} | Sibs], Conflicts};
-merge_at([{OurKey, _, _} | _], 0, [{Key, _, _}]) when OurKey > Key ->
-    % siblings keys are ordered, no point in continuing
-    no;
-merge_at([Tree | Sibs], 0, InsertTree) ->
-    case merge_at(Sibs, 0, InsertTree) of
-    {ok, Merged, Conflicts} ->
-        {ok, [Tree | Merged], Conflicts};
-    no ->
-        no
+
+%% @private
+%% @doc Attempt to merge Tree into each branch of the RevTree.
+%% If it can't find a branch that the new tree merges into, add it as a
+%% new branch in the RevTree.
+-spec merge_tree(revtree(), tree(), revtree()) -> {revtree(), boolean()}.
+merge_tree([], Tree, []) -> 
+    {[Tree], false};
+merge_tree([], Tree, Merged) ->
+    {[Tree | Merged], true};
+merge_tree([{Depth, Nodes} | Rest], {IDepth, INodes}=Tree, Merged) ->
+    % For the intrepid observer following along at home, notice what we're
+    % doing here with (Depth - IDepth). This tells us which of the two
+    % branches (Nodes or INodes) we need to seek into. If Depth > IDepth
+    % that means we need go into INodes to find where we line up with
+    % Nodes. If Depth < IDepth, its obviously the other way. If it turns
+    % out that (Depth - IDepth) == 0, then we know that this is where
+    % we begin our actual merge operation (ie, looking for key matches).
+    case merge_at(Nodes, Depth - IDepth, INodes) of
+        {NewNodes, Conflicts} ->
+            NewDepth = lists:min([Depth, InsDepth]),
+            {Rest ++ [{NewDepth, NewTree} | Merged], Conflicts};
+        unmerged ->
+            merge(Rest, Tree, [{Depth, Nodes} | Merged])
     end.
 
-% key tree functions
+%% @private
+%% @doc Locate the point at which merging can start.
+%% Because of stemming we may need to seek into one of the branches
+%% before we can start comparing node keys. If one of the branches
+%% ends up running out of nodes we know that these two branches can
+%% not be merged.
+-spec merge_at([node()], integer(), [node()]) -> {revtree(), boolean()} | fail.
+merge_at(_Nodes, _Pos, []) ->
+    fail;
+merge_at([], _Pos, _INodes) ->
+    fail;
+merge_at(Nodes, Pos, [{_, _, [NextNode]} | Rest]) when Place > 0 ->
+    % When Pos is negative, Depth was less than IDepth, so we
+    % need to discard from ITree
+    case merge_at(Nodes, Pos + 1, [NextTree]) of
+        {Merged, Conflicts} -> {[{K, V, Merged}], Conflicts}
+        fail -> fail
+    end;
+merge_at([{K, V, SubTree} | Sibs], Pos, INodes) when Place < 0 ->
+    % Depth was bigger than IDepth, so we need to discard from the
+    % current branch to find where INodes might start matching.
+    case merge_at(SubTree, Pos - 1, INodes) of
+        {Merged, Conflicts} ->
+            {[{K, V, Merged} | Sibs], Conflicts};
+        fail ->
+            % Merging along the subtree failed. We need to also try
+            % merging the insert branch against the siblings of this
+            % node.
+            case merge_at(Sibs, Pos, INodes) of
+                {Merged, Conflicts} -> {[{K, V, SubTree} | Merged], Conflicts};
+                fail -> fail
+            end
+    end;
+merge_at([{K, V1, Nodes} | Sibs], 0, [{K, _, INodes}]) ->
+    % Keys are equal. At this point we have found a possible starting
+    % position for our merge to take place.
+    {Merged, Conflicts} = merge_extend(Nodes, INodes),
+    {[{K, V, Merged} | Sibs], Conflicts};
+merge_at([{K1, _, _} | _], 0, [{K2, _, _}]) when K1 > K2 ->
+    % Siblings keys are ordered, no point in continuing
+    fail;
+merge_at([Tree | Sibs], 0, INodes) ->
+    % INodes key comes after this key, so move on to the next sibling.
+    case merge_at(Sibs, 0, INodes) of
+        {Merged, Conflicts} -> {[Tree | Merged], Conflicts};
+        fail -> fail
+    end.
 
--spec merge_simple(tree(), tree()) -> {Merged::tree(), NewConflicts::boolean()}.
-merge_simple([], B) ->
+-spec merge_extend(tree(), tree()) -> {tree(), boolean()}.
+merge_extend([], B) ->
+    % Insert branch simply extends this one, so the new branch
+    % is exactly B
     {B, false};
-merge_simple(A, []) ->
+merge_extend(A, []) ->
+    % Insert branch ends an internal node in our original revtree()
+    % so the end result is exactly our original revtree.
     {A, false};
-merge_simple([{Key, Value, SubA} | NextA], [{Key, _, SubB} | NextB]) ->
-    {MergedSubTree, Conflict1} = merge_simple(SubA, SubB),
-    {MergedNextTree, Conflict2} = merge_simple(NextA, NextB),
-    {[{Key, Value, MergedSubTree} | MergedNextTree], Conflict1 or Conflict2};
-merge_simple([{A, _, _} = Tree | Next], [{B, _, _} | _] = Insert) when A < B ->
-    {Merged, Conflict} = merge_simple(Next, Insert),
-    % if Merged has more branches than the input we added a new conflict
-    {[Tree | Merged], Conflict orelse (length(Merged) > length(Next))};
-merge_simple(Ours, [Tree | Next]) ->
-    {Merged, Conflict} = merge_simple(Ours, Next),
-    {[Tree | Merged], Conflict orelse (length(Merged) > length(Next))}.
+merge_extend([{K, V, SubA} | NextA], [{K, _, SubB}]) ->
+    % Here we're simply extending the path to the next deeper
+    % level in the two branches.
+    {Merged, Conflicts} = merge_extend(SubA, SubB),
+    {[{Key, V, Merged} | NextA], Conflicts};
+merge_extend([{K1, _, _}=NodeA | Rest], [{K2, _, _}=NodeB]) when K1 > K2 ->
+    % Keys are ordered so we know this is where the insert branch needs
+    % to be inserted into the tree. We also know that this creates a new
+    % branch so we have a new leaf to report.
+    {[NodeB, NodeA | Rest], true};
+merge_extend([Tree | RestA], NextB) ->
+    % Here we're moving on to the next sibling to try and extend our
+    % merge even deeper. The orelse length check is due to the fact
+    % that the key in NextB might be larger than the largest key in
+    % RestA which means we've created a new branch which in turn means
+    % we've created a new leaf.
+    {Merged, Conflicts} = merge_extend(RestA, NextB),
+    {[Tree | Merged], Conflicts orelse length(Merged) =/= length(NextA)}.
+
+
+%% @doc Stem a tree to have paths no longer than Length.
+%% This works by getting the path from each leaf up the tree towards
+%% root as far as possible. These paths are then trimmed and then
+%% merged back to form the branches of the revision tree.
+-spec stem(revtree(), pos_integer()) -> revtree().
+stem(RevTree, Length) ->
+    % Create a list of {Depth, Path} pairs where Path has been
+    % limited to Length nodes. LeafDepth is the depth of the leaf
+    % but LeafPaths refers to the Depth of the first node in the path.
+    % This is so we can sort them below to hopefully gurantee that
+    % we don't return a revision tree that could be simplified any
+    % further. See COUCHDB-1163 for why this is important.
+    LeafPaths = lists:map(fun({LeafDepth, Path}) ->
+        StemmedPath = lists:sublist(Path, StemDepth),
+        {LeafDepth + 1 - length(StemmedPath), StemmedPath}
+    end, get_all_leafs_full(RevTree)),
+    
+    % Convert our sorted list of paths back into a revision tree by
+    % sorting them in order of closest to the root of the tree. After
+    % sorting we're merely merging each new path into our accumulated
+    % new revision tree.
+    lists:foldl(fun({Depth, Path}, NewRevTreeAcc) ->
+        [SingleRevTree] = lists:foldl(fun({K, V}, SingleRevTreeAcc) ->
+            [{K, V, SingleRevTreeAcc}]
+        end, [], Path),
+        {NewRevTree, _} = merge(NewRevTreeAcc, {Depth, SingleRevTree}),
+        NewRevTree
+    end, [], lists:sort(LeafPaths)).
+
+
+%% @doc Delete the nodes unique to branches identified in Leaves.
+%% This works very similarly to stem/2 except that here instead
+%% of limiting the length of each path we're removing any path
+%% identified by a key value in Leaves. Once we remove these we
+%% simple rebuild the revision tree as in stem/2 and return it
+%% and the keys we removed.
+-spec delete
+delete(RevTree, Leaves) ->
+    % Get the full path for each leaf value in the tree.
+    Paths = get_all_leafs_full(RevTree),
+
+    % Remove any paths that are identified by keys in Leaves
+
+    FiltPred = fun({LDepth, [{LKey, _} | _]=Path}, {FiltLeaves, Filt, Rem}) ->
+        case lists:delete({Depth, LKey}, FiltLeaves) of
+            FiltLeaves ->
+                % LKey not in Leaves so we keep it. Also convert our leaf
+                % depth into a normal branch depth.
+                {FiltLeaves, [{LDepth + 1 - length(Path), Path} | Filt], Rem};
+            FiltLeaves2 ->
+                % LKey was in FiltLeaves drop it and record that we found it.
+                {FiltLeaves2, Filt, [{LDepth, LKey} | Rem]}
+        end
+    end,
+    {_, Filtered, Removed} = lists:foldl(FiltPred, {Leaves, [], []}, Paths),
+
+    % The same as we do in stem/2, convert the sorted paths back into
+    % a revision tree though we also need to return the list of
+    % {LDepth, LKey} pairs that we filtered from the tree.
+    RetRevTree = lists:foldl(fun({Depth, Path}, NewRevTreeAcc) ->
+        [SingleRevTree] = lists:foldl(fun({K, V}, SingleRevTreeAcc) ->
+            [{K, V, SingleRevTreeAcc}]
+        end, [], Path),
+        {NewRevTree, _} = merge(NewRevTreeAcc, {Depth, SingleRevTree}),
+        NewRevTree
+    end, [], lists:sort(LeafPaths)),
+    {RetRevTree, Removed}.
+
+
+%% @doc Fold over the nodes in a revision tree.
+%% This is a general function that is reused exctensively through the
+%% rest of this file (eventually). It passes each key to a fun that
+%% can return {ok, Acc}, {skip, Acc}, or {stop, Acc}. Returning
+%% {skip, Acc} will abort continuing further down the current branch and
+%% move on to the branch siblings.
+foldl(_Fun, Acc, []) ->
+    Acc;
+foldl(Fun, Acc0, [{Depth, Branch} | Rest]) ->
+    case foldl(Fun, Acc0, Depth, [Branch]) of
+        {ok, Acc1} ->
+            foldl(Fun, Acc1, Rest);
+        {skip, Acc1} ->
+            foldl(Fun, Acc1, Rest);
+        {stop, Acc1} ->
+            {stop, Acc1}
+    end.
+
+foldl(_Fun, Acc, _Pos, []) ->
+    Acc;
+foldl(Fun, Acc0, Depth, [{Key, Value, SubTree} | RestTree]) ->
+    NodeType = case SubTree of [] -> leaf; _ -> branch end,
+    case Fun({Depth, Key, Value}, NodeType, Acc0) of
+        {ok, Acc1} ->
+            % Recurse and then continue with RestTree
+            case foldl(Fun, Acc1, Pos+1, SubTree) of
+                {ok, Acc2} -> foldl(Fun, Acc2, Pos, RestTree);
+                {skip, Acc2} -> foldl(Fun, Acc2, Pos, RestTree);
+                {stop, Acc2} -> {stop, Acc2}
+            end;
+        {skip, Acc1} ->
+            foldl(Fun, Acc2, Pos, RestTree);
+        {stop, Acc1} ->
+            {stop, Acc1}
+    end.
+
+
+get_all_leafs_full(Tree) ->
+    Pref = fun
+        ({Pos, Key, Value}, branch, Acc) ->
+            {ok, [{Key, Val} | Acc]};
+        ({Pos, Key, Value}, leaf, Acc) ->
+            {ok, {Pos, [{Key, Val} | Acc]}};
+    end,
+    foldl(RevTree, Pred, []).
+
+
+get_all_leafs(RevTree) ->
+    get_all_leafs(RevTree, []).
+
+get_all_leafs(RevTree, Acc0) ->
+    Pred = fun
+        ({_Pos, Key, _Val}, branch, Acc) ->
+            {ok, {Val, {Pos, [Key | Acc]}}};
+        ({Pos, Key, Val}, leaf, Acc) ->
+            {ok, [Key | Acc]}
+    end,
+    foldl(RevTree, Pred, []).
+
+
+count_leaves(RevTree) ->
+    Pred = fun
+        (_, leaf, Count) -> Count + 1;
+        (_, _, Count) -> Count
+    end,
+    foldl(RevTree, Pred, 0).
+
+
+
+
+
+
 
 find_missing(_Tree, []) ->
     [];
@@ -173,35 +360,9 @@ find_missing_simple(Pos, [{Key, _, SubTree} | RestTree], SeachKeys) ->
     ImpossibleKeys ++ find_missing_simple(Pos, RestTree, SrcKeys3).
 
 
-filter_leafs([], _Keys, FilteredAcc, RemovedKeysAcc) ->
-    {FilteredAcc, RemovedKeysAcc};
-filter_leafs([{Pos, [{LeafKey, _}|_]} = Path |Rest], Keys, FilteredAcc, RemovedKeysAcc) ->
-    FilteredKeys = lists:delete({Pos, LeafKey}, Keys),
-    if FilteredKeys == Keys ->
-        % this leaf is not a key we are looking to remove
-        filter_leafs(Rest, Keys, [Path | FilteredAcc], RemovedKeysAcc);
-    true ->
-        % this did match a key, remove both the node and the input key
-        filter_leafs(Rest, FilteredKeys, FilteredAcc, [{Pos, LeafKey} | RemovedKeysAcc])
-    end.
 
-% Removes any branches from the tree whose leaf node(s) are in the Keys
-remove_leafs(Trees, Keys) ->
-    % flatten each branch in a tree into a tree path
-    Paths = get_all_leafs_full(Trees),
 
-    % filter out any that are in the keys list.
-    {FilteredPaths, RemovedKeys} = filter_leafs(Paths, Keys, [], []),
 
-    % convert paths back to trees
-    NewTree = lists:foldl(
-        fun({PathPos, Path},TreeAcc) ->
-            [SingleTree] = lists:foldl(
-                fun({K,V},NewTreeAcc) -> [{K,V,NewTreeAcc}] end, [], Path),
-            {NewTrees, _} = merge(TreeAcc, {PathPos + 1 - length(Path), SingleTree}),
-            NewTrees
-        end, [], FilteredPaths),
-    {NewTree, RemovedKeys}.
 
 
 % get the leafs in the tree matching the keys. The matching key nodes can be
@@ -270,48 +431,6 @@ get_full_key_paths(Pos, [{KeyId, Value, SubTree} | RestTree], KeysToGet, KeyPath
     {KeysGotten2, KeysRemaining2} = get_full_key_paths(Pos, RestTree, KeysRemaining, KeyPathAcc),
     {CurrentNodeResult ++ KeysGotten ++ KeysGotten2, KeysRemaining2}.
 
-get_all_leafs_full(Tree) ->
-    get_all_leafs_full(Tree, []).
-
-get_all_leafs_full([], Acc) ->
-    Acc;
-get_all_leafs_full([{Pos, Tree} | Rest], Acc) ->
-    get_all_leafs_full(Rest, get_all_leafs_full_simple(Pos, [Tree], []) ++ Acc).
-
-get_all_leafs_full_simple(_Pos, [], _KeyPathAcc) ->
-    [];
-get_all_leafs_full_simple(Pos, [{KeyId, Value, []} | RestTree], KeyPathAcc) ->
-    [{Pos, [{KeyId, Value} | KeyPathAcc]} | get_all_leafs_full_simple(Pos, RestTree, KeyPathAcc)];
-get_all_leafs_full_simple(Pos, [{KeyId, Value, SubTree} | RestTree], KeyPathAcc) ->
-    get_all_leafs_full_simple(Pos + 1, SubTree, [{KeyId, Value} | KeyPathAcc]) ++ get_all_leafs_full_simple(Pos, RestTree, KeyPathAcc).
-
-get_all_leafs(Trees) ->
-    get_all_leafs(Trees, []).
-
-get_all_leafs([], Acc) ->
-    Acc;
-get_all_leafs([{Pos, Tree}|Rest], Acc) ->
-    get_all_leafs(Rest, get_all_leafs_simple(Pos, [Tree], []) ++ Acc).
-
-get_all_leafs_simple(_Pos, [], _KeyPathAcc) ->
-    [];
-get_all_leafs_simple(Pos, [{KeyId, Value, []} | RestTree], KeyPathAcc) ->
-    [{Value, {Pos, [KeyId | KeyPathAcc]}} | get_all_leafs_simple(Pos, RestTree, KeyPathAcc)];
-get_all_leafs_simple(Pos, [{KeyId, _Value, SubTree} | RestTree], KeyPathAcc) ->
-    get_all_leafs_simple(Pos + 1, SubTree, [KeyId | KeyPathAcc]) ++ get_all_leafs_simple(Pos, RestTree, KeyPathAcc).
-
-
-count_leafs([]) ->
-    0;
-count_leafs([{_Pos,Tree}|Rest]) ->
-    count_leafs_simple([Tree]) + count_leafs(Rest).
-
-count_leafs_simple([]) ->
-    0;
-count_leafs_simple([{_Key, _Value, []} | RestTree]) ->
-    1 + count_leafs_simple(RestTree);
-count_leafs_simple([{_Key, _Value, SubTree} | RestTree]) ->
-    count_leafs_simple(SubTree) + count_leafs_simple(RestTree).
 
 
 map(_Fun, []) ->
@@ -366,20 +485,5 @@ map_leafs_simple(Fun, Pos, [{Key, Value, SubTree} | RestTree]) ->
     [{Key, Value, map_leafs_simple(Fun, Pos + 1, SubTree)} | map_leafs_simple(Fun, Pos, RestTree)].
 
 
-stem(Trees, Limit) ->
-    % flatten each branch in a tree into a tree path
-    Paths = get_all_leafs_full(Trees),
 
-    Paths2 = [{Pos, lists:sublist(Path, Limit)} || {Pos, Path} <- Paths],
-
-    % convert paths back to trees
-    lists:foldl(
-        fun({PathPos, Path},TreeAcc) ->
-            [SingleTree] = lists:foldl(
-                fun({K,V},NewTreeAcc) -> [{K,V,NewTreeAcc}] end, [], Path),
-            {NewTrees, _} = merge(TreeAcc, {PathPos + 1 - length(Path), SingleTree}),
-            NewTrees
-        end, [], Paths2).
-
-% Tests moved to test/etap/06?-*.t
 
