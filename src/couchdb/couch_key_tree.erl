@@ -110,6 +110,11 @@ merge_tree([{Depth, Nodes} | Rest], {IDepth, INodes}=Tree, Merged) ->
     % Nodes. If Depth < IDepth, its obviously the other way. If it turns
     % out that (Depth - IDepth) == 0, then we know that this is where
     % we begin our actual merge operation (ie, looking for key matches).
+    % Its helpful to note that this whole moving into sub-branches is due
+    % to how we store trees that have been stemmed. When a tree() is
+    % stemmed so that the root node is lost, we wrap it in a tuple with
+    % the number keys that have been droped. This number is the depth
+    % value that's used through out this module.
     case merge_at(Nodes, Depth - IDepth, INodes) of
         {NewNodes, Conflicts} ->
             NewDepth = lists:min([Depth, InsDepth]),
@@ -130,15 +135,15 @@ merge_at(_Nodes, _Pos, []) ->
 merge_at([], _Pos, _INodes) ->
     fail;
 merge_at(Nodes, Pos, [{_, _, [NextNode]} | Rest]) when Place > 0 ->
-    % When Pos is negative, Depth was less than IDepth, so we
-    % need to discard from ITree
+    % Depth was bigger than IDepth, so we need to discard from the
+    % current branch to find where INodes might start matching.
     case merge_at(Nodes, Pos + 1, [NextTree]) of
         {Merged, Conflicts} -> {[{K, V, Merged}], Conflicts}
         fail -> fail
     end;
 merge_at([{K, V, SubTree} | Sibs], Pos, INodes) when Place < 0 ->
-    % Depth was bigger than IDepth, so we need to discard from the
-    % current branch to find where INodes might start matching.
+    % When Pos is negative, Depth was less than IDepth, so we
+    % need to discard from ITree
     case merge_at(SubTree, Pos - 1, INodes) of
         {Merged, Conflicts} ->
             {[{K, V, Merged} | Sibs], Conflicts};
@@ -270,137 +275,121 @@ delete(RevTree, Leaves) ->
 %% can return {ok, Acc}, {skip, Acc}, or {stop, Acc}. Returning
 %% {skip, Acc} will abort continuing further down the current branch and
 %% move on to the branch siblings.
-foldl(_Fun, Acc, []) ->
-    Acc;
-foldl(Fun, Acc0, [{Depth, Branch} | Rest]) ->
-    case foldl(Fun, Acc0, Depth, [Branch]) of
-        {ok, Acc1} ->
-            foldl(Fun, Acc1, Rest);
-        {skip, Acc1} ->
-            foldl(Fun, Acc1, Rest);
-        {stop, Acc1} ->
-            {stop, Acc1}
+foldl(_Fun, VAcc, []) ->
+    {ok, VAcc};
+foldl(Fun, VAcc0, [{Depth, Tree} | Rest]) ->
+    case foldl(Fun, VAcc0, [], Depth, Tree) of
+        {stop, VAcc1} ->
+            {ok, VAcc1};
+        {_, VAcc1} ->
+            foldl(Fun, VAcc1, [], Depth, Rest)}
     end.
 
-foldl(_Fun, Acc, _Pos, []) ->
-    Acc;
-foldl(Fun, Acc0, Depth, [{Key, Value, SubTree} | RestTree]) ->
+foldl(_Fun, VAcc, _PAcc, _Pos, []) ->
+    {ok, VAcc};
+foldl(Fun, VAcc0, PAcc0, Depth, [{Key, Value, SubTree} | RestTree]) ->
     NodeType = case SubTree of [] -> leaf; _ -> branch end,
-    case Fun({Depth, Key, Value}, NodeType, Acc0) of
-        {ok, Acc1} ->
+    case Fun({Depth, Key, Value}, NodeType, VAcc0, PAcc0) of
+        {ok, VAcc1, PAcc1} ->
             % Recurse and then continue with RestTree
-            case foldl(Fun, Acc1, Pos+1, SubTree) of
-                {ok, Acc2} -> foldl(Fun, Acc2, Pos, RestTree);
-                {skip, Acc2} -> foldl(Fun, Acc2, Pos, RestTree);
-                {stop, Acc2} -> {stop, Acc2}
+            case foldl(Fun, VAcc1, PAcc1, Pos+1, SubTree) of
+                {stop, VAcc2} ->
+                    {stop, VAcc2};
+                {_, VAcc2} ->
+                    foldl(Fun, VAcc2, PAcc0, Pos, RestTree);
             end;
-        {skip, Acc1} ->
-            foldl(Fun, Acc2, Pos, RestTree);
-        {stop, Acc1} ->
+        {skip, _, VAcc1} ->
+            foldl(Fun, VAcc2, PAcc0, Pos, RestTree);
+        {stop, _, VAcc1} ->
             {stop, Acc1}
     end.
 
 
 get_all_leafs_full(Tree) ->
     Pref = fun
-        ({Pos, Key, Value}, branch, Acc) ->
-            {ok, [{Key, Val} | Acc]};
-        ({Pos, Key, Value}, leaf, Acc) ->
-            {ok, {Pos, [{Key, Val} | Acc]}};
+        ({Depth, Key, Value}, branch, Acc, PAcc) ->
+            {ok, Acc, [{Key, Val} | PAcc]};
+        ({Depth, Key, Value}, leaf, Acc) ->
+            Leaf = {Pos, [{Key, Val} | PAcc]},
+            {ok, [Leaf | Acc], PAcc}
     end,
     foldl(RevTree, Pred, []).
 
 
 get_all_leafs(RevTree) ->
-    get_all_leafs(RevTree, []).
-
-get_all_leafs(RevTree, Acc0) ->
     Pred = fun
-        ({_Pos, Key, _Val}, branch, Acc) ->
-            {ok, {Val, {Pos, [Key | Acc]}}};
-        ({Pos, Key, Val}, leaf, Acc) ->
-            {ok, [Key | Acc]}
+        ({_Depth, Key, _Val}, branch, Acc, PAcc) ->
+            {ok, Acc, [Key | PAcc]};
+        ({Depth, Key, Val}, leaf, Acc, PAcc) ->
+            Leaf = {Val, {Depth, [Key | PAcc]}},
+            {ok, [Leaf | Acc], PAcc}
     end,
     foldl(RevTree, Pred, []).
 
 
 count_leaves(RevTree) ->
     Pred = fun
-        (_, leaf, Count) -> Count + 1;
-        (_, _, Count) -> Count
+        (_, leaf, Count, _) ->
+            {ok, Count + 1, nil};
+        (_, _, Count) ->
+            {ok, Count, nil}
     end,
     foldl(RevTree, Pred, 0).
 
 
+find_missing(RevTree, Keys0) ->
+    Pred = fun({Depth, Key, _}, _, KAcc0, _) ->
+        KAcc1 = sets:del_element(Key, KAcc0),
+        case sets:size(KAcc1) of
+            0 -> {stop, []};
+            _ -> {ok, KAcc0, nil}
+        end
+    end,
+    Keys1 = [{K, P} || {P, K} <- Keys0],
+    KeySet = sets:from_list([K || {_, K} <- Keys0]),
+    {ok, Missing} = foldl(RevTree, Pred, KeySet),
+    lists:map(fun(K) -> {proplists:get_value(K, Keys1), K} end, Missing).
 
 
-
-
-
-find_missing(_Tree, []) ->
-    [];
-find_missing([], SeachKeys) ->
-    SeachKeys;
-find_missing([{Start, {Key, Value, SubTree}} | RestTree], SeachKeys) ->
-    PossibleKeys = [{KeyPos, KeyValue} || {KeyPos, KeyValue} <- SeachKeys, KeyPos >= Start],
-    ImpossibleKeys = [{KeyPos, KeyValue} || {KeyPos, KeyValue} <- SeachKeys, KeyPos < Start],
-    Missing = find_missing_simple(Start, [{Key, Value, SubTree}], PossibleKeys),
-    find_missing(RestTree, ImpossibleKeys ++ Missing).
-
-find_missing_simple(_Pos, _Tree, []) ->
-    [];
-find_missing_simple(_Pos, [], SeachKeys) ->
-    SeachKeys;
-find_missing_simple(Pos, [{Key, _, SubTree} | RestTree], SeachKeys) ->
-    PossibleKeys = [{KeyPos, KeyValue} || {KeyPos, KeyValue} <- SeachKeys, KeyPos >= Pos],
-    ImpossibleKeys = [{KeyPos, KeyValue} || {KeyPos, KeyValue} <- SeachKeys, KeyPos < Pos],
-
-    SrcKeys2 = PossibleKeys -- [{Pos, Key}],
-    SrcKeys3 = find_missing_simple(Pos + 1, SubTree, SrcKeys2),
-    ImpossibleKeys ++ find_missing_simple(Pos, RestTree, SrcKeys3).
-
-
-
-
-
-
-
-% get the leafs in the tree matching the keys. The matching key nodes can be
-% leafs or an inner nodes. If an inner node, then the leafs for that node
-% are returned.
+%% @doc Get all leaves for the specified Keys.
+%% If a key in Keys is an internal node, the this returns
+%% all leafs in the subtree for that key.
 get_key_leafs(Tree, Keys) ->
-    get_key_leafs(Tree, Keys, []).
+    Pred = fun
+        ({Depth, Key, _}, branch, {Keys0, Acc0}, {AddKeys0, Path0}) ->
+            Keys1 = sets:del_element(Key, Keys0),
+            AddKeys1 = (Keys0 == Keys1) orelse AddKeys0, % Key found
+            Path1 = [Key | Path0],
+            {ok, {Keys1, Acc0}, {AddKeys1, Path1}};
+        ({Depth, Key, _}, leaf, {Keys0, Acc0}, {AddKeys0, Path0})
+            Keys1 = sets:del_element(Key, Keys0),
+            Path1 = [Key | Path0],
+            case (Keys0 == Keys1) orelse AddKeys0 of
+                true ->
+                    Acc1 = [{Val, {Depth, [Key | PAcc]}} | Acc0],
+                    {ok, {Keys1, Acc1}, {true, Path1}};
+                _ ->
+                    {ok, {Keys1, Acc0}, {false, Path1}}
+            end
+    end,
+    KeySet = sets:from_list(Keys),
+    foldl(RevTree, Pred, KeySet).
+    
 
-get_key_leafs(_, [], Acc) ->
-    {Acc, []};
-get_key_leafs([], Keys, Acc) ->
-    {Acc, Keys};
-get_key_leafs([{Pos, Tree}|Rest], Keys, Acc) ->
-    {Gotten, RemainingKeys} = get_key_leafs_simple(Pos, [Tree], Keys, []),
-    get_key_leafs(Rest, RemainingKeys, Gotten ++ Acc).
+%% @doc Get the path for each key in Leaves.
+get_paths(RevTree, Leaves) ->
+    ok.
 
-get_key_leafs_simple(_Pos, _Tree, [], _KeyPathAcc) ->
-    {[], []};
-get_key_leafs_simple(_Pos, [], KeysToGet, _KeyPathAcc) ->
-    {[], KeysToGet};
-get_key_leafs_simple(Pos, [{Key, _Value, SubTree}=Tree | RestTree], KeysToGet, KeyPathAcc) ->
-    case lists:delete({Pos, Key}, KeysToGet) of
-    KeysToGet -> % same list, key not found
-        {LeafsFound, KeysToGet2} = get_key_leafs_simple(Pos + 1, SubTree, KeysToGet, [Key | KeyPathAcc]),
-        {RestLeafsFound, KeysRemaining} = get_key_leafs_simple(Pos, RestTree, KeysToGet2, KeyPathAcc),
-        {LeafsFound ++ RestLeafsFound, KeysRemaining};
-    KeysToGet2 ->
-        LeafsFound = get_all_leafs_simple(Pos, [Tree], KeyPathAcc),
-        LeafKeysFound = [LeafKeyFound || {LeafKeyFound, _} <- LeafsFound],
-        KeysToGet2 = KeysToGet2 -- LeafKeysFound,
-        {RestLeafsFound, KeysRemaining} = get_key_leafs_simple(Pos, RestTree, KeysToGet2, KeyPathAcc),
-        {LeafsFound ++ RestLeafsFound, KeysRemaining}
-    end.
 
-get(Tree, KeysToGet) ->
-    {KeyPaths, KeysNotFound} = get_full_key_paths(Tree, KeysToGet),
-    FixedResults = [ {Value, {Pos, [Key0 || {Key0, _} <- Path]}} || {Pos, [{_Key, Value}|_]=Path} <- KeyPaths],
-    {FixedResults, KeysNotFound}.
+
+%% @doc Get key paths for each key in Keys.
+get(RevTree, Keys) ->
+    Pred = fun({Pos, [{_Key, Value} | _] = Path}) ->
+        {Value, {Pos, [Key || {Key, _} <- Path]}}
+    end,
+    {ok, {Paths, NotFound}} = get_key_paths(RevTree, Keys),
+    {lists:map(Pred, Leaves), NotFound}.
+
 
 get_full_key_paths(Tree, Keys) ->
     get_full_key_paths(Tree, Keys, []).
