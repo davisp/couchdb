@@ -21,10 +21,11 @@
 
 
 handle_proxy_req(Req, ProxyDest) ->
+    {_, DestUrl} = get_urls(Req, ProxyDest),
     Method = get_method(Req),
     Url = get_url(Req, ProxyDest),
     Version = get_version(Req),
-    Headers = get_headers(Req),
+    Headers = get_headers(Req) ++ [{"Host", DestUrl#url.host}],
     Body = get_body(Req),
     Options = [
         {http_vsn, Version},
@@ -89,6 +90,8 @@ to_ibrowse_headers([{K, V} | Rest], Acc) when is_list(K) ->
         % This appears to make ibrowse too smart.
         %"transfer-encoding" ->
         %    to_ibrowse_headers(Rest, [{transfer_encoding, V} | Acc]);
+        "host" ->
+            to_ibrowse_headers(Rest, Acc);
         _ ->
             to_ibrowse_headers(Rest, [{K, V} | Acc])
     end.
