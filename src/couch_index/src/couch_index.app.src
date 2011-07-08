@@ -1,0 +1,10 @@
+{application, couch_index, [
+    {description, "CouchDB Secondary Index Manager"},
+    {vsn, "@version@"},
+    {modules, [
+        couch_index,
+        couch_index_server
+    ]},
+    {registered, [couch_index_server]},
+    {applications, [kernel, stdlib]},
+]}.
