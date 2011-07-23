@@ -5,13 +5,13 @@ db_name(State) ->
 index_name(State) ->
     ok.
 
-current_seq(State) ->
+update_seq(State) ->
     ok.
 
 purge_seq(State) ->
     ok.
 
-update_options(State) ->
+set_update_seq(State, Seq) ->
     ok.
 
 
@@ -29,7 +29,19 @@ commit(State) ->
 update(Parent, State) ->
     ok.
 
+update_options(State) ->
+    ok.
+
+process_docs(State, Docs) ->
+    ok.
+
 finish_loading_docs(State) ->
+    ok.
+
+write_entries(State, Entries) ->
+    ok.
+
+purge_index(State, PurgedIdRevs) ->
     ok.
 
 
@@ -42,3 +54,6 @@ recompact(Parent, State) ->
 switch_compacted(OldState, NewState) ->
     ok.
 
+
+reset_index(State) ->
+    ok.
