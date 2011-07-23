@@ -52,7 +52,8 @@ init(Module, IdxState) ->
     process_flag(trap_exit, true),
     case Module:open_index(IdxState) of
         {ok, NewIdxState} ->
-            with_db(Mod:db_name(IdxState), fun(Db) -> couch_db:monitor(Db) end),
+            Fun = fun(Db) -> couch_db:monitor(Db) end,
+            couch_util:with_db(Mod:db_name(IdxState), Fun),
             {ok, UPid} = couch_index_updater:start_link(Module),
             {ok, CPid} = couch_index_compactor:start_link(Module),
             Delay = couch_config:get("query_server_config", "commit_freq", 10),
@@ -98,6 +99,13 @@ handle_call(get_info, _From, State) ->
     {reply, {ok, Mod:get_info(State#st.idx_state)}, State};
 handle_call({new_state, NewIdxState}, From, State) ->
     {reply, ok, State#st{idx_state=NewIdxState, committed=false}};
+handle_call(reset, _From, State) ->
+    #st{
+        module=Mod,
+        idx_state=IdxState
+    } = State,
+    {ok, NewIdxState} = Mod:reset_index(IdxState),
+    {reply, {ok, NewIdxState}, State#st{idx_state=NewIdxState}};
 handle_call(compact, State) ->
     #st{
         module=Mod,
@@ -138,7 +146,7 @@ handle_info(commit, State) ->
     } = State,
     DbName = Mod:db_name(IdxState),
     GetCommSeq = fun(Db) -> couch_db:get_committed_update_seq(Db) end,
-    CommittedSeq = with_db(DbName, GetCommSeq),
+    CommittedSeq = couch_util:with_db(DbName, GetCommSeq),
     case CommittedSeq >= Mod:current_seq(IdxState) of
         true ->
             % Commit the updates
@@ -167,15 +175,6 @@ handle_info({'DOWN', _, _, _, _}, State) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
-
-
-with_db(DbName, Fun) ->
-    {ok, Db} = couch_db:open_int(DbName, []),
-    try
-        Fun(Db)
-    after
-        couch_db:close(Db)
-    end.
 
 
 send_all(Waiters, Reply) ->

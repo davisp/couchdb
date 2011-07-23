@@ -5,15 +5,33 @@ db_name(State) ->
 index_name(State) ->
     ok.
 
+current_seq(State) ->
+    ok.
+
+purge_seq(State) ->
+    ok.
+
+update_options(State) ->
+    ok.
+
+
 open_index(State) ->
     ok.
 
-current_seq(State) ->
+close_index(State) ->
+    ok.
+
+
+commit(State) ->
     ok.
 
 
 update(Parent, State) ->
     ok.
+
+finish_loading_docs(State) ->
+    ok.
+
 
 compact(Parent, State) ->
     ok.

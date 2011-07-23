@@ -27,6 +27,7 @@
 -export([reorder_results/2]).
 -export([url_strip_password/1]).
 -export([encode_doc_id/1]).
+-export([with_db/2]).
 
 -include("couch_db.hrl").
 
@@ -429,3 +430,12 @@ encode_doc_id(<<"_local/", Rest/binary>>) ->
     "_local/" ++ url_encode(Rest);
 encode_doc_id(Id) ->
     url_encode(Id).
+
+with_db(DbName, Fun) ->
+    {ok, Db} = couch_db:open_int(DbName, []),
+    try
+        Fun(Db)
+    after
+        couch_db:close(Db)
+    end.
+
