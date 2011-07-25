@@ -18,92 +18,87 @@
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
 
--define(TABLE, couchdb_indexes_by_sig).
 
--record(idx, {
-    sig,
-    pid,
-    dbname
-}).
+-define(BY_SIG, couchdb_indexes_by_sig).
+-define(BY_PID, couchdb_indexes_by_pid).
+-define(BY_DB, couchdb_indexes_by_db).
 
--record(st, {
-    pids=gb_trees:empty(),
-    waiters=gb_trees:empty()
-}).
 
+-record(st, {root_dir}).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 
-get_index(Module, DbName, Sig, IdxState) ->
-    case ets:lookup(?TABLE, Sig) of
-        [Idx] ->
-            {ok, Idx#idx.pid}
-        [] ->
-            gen_server:call(?MODULE, {get_index, {Module, DbName, Sig, State}})
+get_index(Module, IdxState) ->
+    DbName = Module:db_name(IdxState),
+    Sig = Module:signature(IdxState),
+    case ets:lookup(?BY_SIG, {DbName, Sig}) of
+        [{_, Pid}] when is_pid(Pid) ->
+            {ok, Pid};
+        _ ->
+            Args = {Module, IdxState, DbName, Sig},
+            gen_server:call(?MODULE, {get_index, Args})
     end.
 
 
 init([]) ->
     process_flag(trap_exit, true),
     couch_config:register(fun config_change/2),
-    couch_db_update_notifier:start_link(fun update_notify/2),
-    ets:new(?TABLE, [protected, set, named_table, [{keypos, #idx.pid}]]),
-    {ok, #st{}}.
+    couch_db_update_notifier:start_link(fun update_notify/1),
+    ets:new(?BY_SIG, [protected, set, named_table]),
+    ets:new(?BY_PID, [private, set, named_table]),
+    ets:new(?BY_DB, [private, bag, named_table]),
+    {ok, #st{root_dir=couch_config:get("couchdb", "index_dir")}}.
 
 
-terminate(_Reason, _Srv) ->
-    Pids = [Pid || #idx{pid=Pid} <- ets:tab2list(?TABLE)],
+terminate(_Reason, _State) ->
+    Pids = [Pid || {Pid, _} <- ets:tab2list(?BY_PID)],
     lists:map(fun couch_util:shutdown_sync/1, Pids),
     ok.
 
 
-handle_call({get_index, {_, _, Sig, _}=Args}, From, State) ->
-    % Check the ets table again in case it was
-    % just inserted.
-    case ets:lookup(?TABLE, Sig) of
-        [#idx{pid=Pid}] ->
-            {reply, {ok, Pid}, State};
+handle_call({get_index, {_Mod, _IdxState, DbName, Sig}=Args}, From, State) ->
+    case ets:lookup(?BY_SIG, {DbName, Sig}) of
         [] ->
-            {ok, Waiters} = spawn_index(Args, From, State#st.waiters),
-            {noreply, State#st{waiters=Waiters}}
+            spawn_link(fun() -> new_index(Args) end),
+            ets:insert(?BY_SIG, {{DbName, Sig}, [From]}),
+            {noreply, State};
+        [{_, Waiters}] when is_list(Waiters) ->
+            ets:insert(?BY_SIG, {{DbName, Sig}, [From | Waiters]}),
+            {noreply, State};
+        [{_, Pid}] when is_pid(Pid) ->
+            {reply, {ok, Pid}, State}
     end;
-handle_call({async_open, Response}, _From, State) ->
-    {Resp, Pids} = case Response of
-        {ok, Pid, Sig, DbName} ->
-            link(Pid),
-            ets:insert(?TABLE, #idx{sig=Sig, pid=Pid, dbname=DbName}),
-            {{ok, Pid}, gb_trees:insert(Pid, Sig, State#st.pids)};
-        {error, Reason, Sig} ->
-            {{error, Reason}, State#st.pids}
-    end,
-    Waiters = gb_trees:lookup(Sig, State#st.waiters),
-    [gen_server:reply(From, Resp) || From <- Waiters],
-    {reply, ok, #st{
-        pids=Pids,
-        waiters=gb_trees:delete(Sig, State#st.waiters)
-    }};
+handle_call({async_open, {DbName, Sig}, {ok, Pid}}, _From, State) ->
+    [{_, Waiters}] = ets:lookup(?BY_SIG, {DbName, Sig}),
+    [gen_server:reply(From, {ok, Pid}) || From <- Waiters],
+    link(Pid),
+    add_to_ets(DbName, Sig, Pid),
+    {reply, ok, State};
+handle_call({async_error, {DbName, Sig}, Error}, _From, State) ->
+    [{_, Waiters}] = ets:lookup(?BY_SIG, {DbName, Sig}),
+    [gen_server:reply(From, Error) || From <- Waiters],
+    ets:delete(?BY_SIG, {DbName, Sig}),
+    {reply, ok, State};
 handle_call({reset_indexes, DbName}, _From, State) ->
-    reset_indexes(State, DbName),
-    {reply, ok, Server};
+    reset_indexes(DbName, State#st.root_dir),
+    {reply, ok, State}.
 
 
 handle_cast({reset_indexes, DbName}, State) ->
-    reset_indexes(State, DbName),
-    {noreply, Server}.
+    reset_indexes(DbName, State#st.root_dir),
+    {noreply, State}.
 
 
-handle_info({'EXIT', FromPid, Reason}, Pids) ->
-    case gb_trees:lookup(FromPid, Pids) of
-        {value, Sig} ->
-            ets:delete(?TABLE, Sig);
-        none when Reason == normal ->
-            ok;
-        none ->
-            Mesg = "Unknown linked process ~p died: ~p",
-            ?LOG_ERROR(Mesg, [FromPid, Reason]),
-            exit(Reason)
+handle_info({'EXIT', Pid, Reason}, Server) ->
+    case ets:lookup(?BY_PID, Pid) of
+        [{_, DbName, Sig}] ->
+            rem_from_ets(DbName, Sig, Pid);
+        [] when Reason /= normal ->
+            exit(Reason);
+        _ ->
+            ok
     end,
     {noreply, Server}.
 
@@ -112,36 +107,39 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 
-spawn_index({_, _, Sig, _}=Args, From, Waiters) ->
-    case gb_trees:lookup(Sig, Waiters) of
-        none ->
-            spawn_link(fun() -> new_index(Args) end),
-            {ok, gb_trees:insert(Sig, [From])};
-        {value, WaiterList} ->
-            {ok, gb_trees:update(Sig, [From | WaiterList])}
-    end.
-
-
-new_index({Module, DbName, Sig, IdxState}=Args) ->
-    Mesg = "Opening index for ~s: ~s",
-    ?LOG_DEBUG(Mesg, [DbName, Module:index_name(IdxState)]),
-    case couch_index:start_link(Args) of
-        {ok, NewPid} ->
-            gen_server:call(?MODULE, {async_open, {ok, Pid, Sig, DbName}}),
-            unlink(NewPid);
+new_index({Mod, IdxState, DbName, Sig}) ->
+    case couch_index:start_link({Mod, IdxState}) of
+        {ok, Pid} ->
+            gen_server:call(?MODULE, {async_open, {DbName, Sig}, {ok, Pid}}),
+            unlink(Pid);
         Error ->
-            gen_server:call(?MODULE, {async_open, {error, Error, Sig}})
+            gen_server:call(?MODULE, {async_error, {DbName, Sig}, Error})
     end.
 
 
-do_reset_indexes(DbName) ->
-    ?LOG_DEBUG("Resetting indexes for: ~s", [DbName]),
-    Sigs = ets:match(?TABLE, #idx{dbname=DbName, sig='$1', _='_'}),
-    lists:foreach(fun(Sig) ->
-        [Idx] = ets:lookup(?TABLE, Sig),
-        couch_index:delete(Idx#idx.pid),
-        ets:delete(?TABLE, Sig)
-    end, Sigs).
+reset_indexes(DbName, Root) ->
+    % shutdown all the updaters and clear the files, the db got changed
+    Fun = fun({_, Sig}) ->
+        [{_, Pid}] = ets:lookup(?BY_SIG, {DbName, Sig}),
+        couch_index:stop(Pid),
+        rem_from_ets(DbName, Sig, Pid)
+    end,
+    lists:foreach(Fun, ets:lookup(?BY_DB, DbName)),
+    Path = Root ++ "/." ++ binary_to_list(DbName) ++ "_design",
+    couch_file:nuke_dir(Root, Path).
+
+
+add_to_ets(DbName, Sig, Pid) ->
+    ets:insert(?BY_SIG, {{DbName, Sig}, Pid}),
+    ets:insert(?BY_PID, {Pid, {DbName, Sig}}),
+    ets:insert(?BY_DB, {DbName, Sig}).
+
+
+rem_from_ets(DbName, Sig, Pid) ->
+    ets:delete(?BY_SIG, {DbName, Sig}),
+    ets:delete(?BY_PID, Pid),
+    ets:delete_object(?BY_DB, {DbName, Sig}).
+
 
 
 config_change("couchdb", "index_dir") ->

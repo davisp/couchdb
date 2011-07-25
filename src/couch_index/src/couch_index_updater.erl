@@ -15,7 +15,7 @@
 
 
 %% API
--export([start_link/1, run/2]).
+-export([start_link/2, run/2, restart/2]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -26,6 +26,31 @@
     idx,
     mod,
     pid=nil
+}).
+
+
+%% TODO: Remove this hack after srcmv happens.
+
+-record(doc_info, {
+    id = <<"">>,
+    high_seq = 0,
+    revs = [] % rev_info
+}).
+
+-record(rev_info, {
+    rev,
+    seq = 0,
+    deleted = false,
+    body_sp = nil % stream pointer
+}).
+
+-record(doc, {
+    id = <<"">>,
+    revs = {0, []},
+    body = {[]},
+    atts = [], % attachments
+    deleted = false,
+    meta = []
 }).
 
 
@@ -51,7 +76,7 @@ terminate(_Reason, State) ->
     ok.
 
 
-handle_call({update, IdxState}, _From, #st{pid=Pid}=State) when is_pid(Pid) ->
+handle_call({update, _IdxState}, _From, #st{pid=Pid}=State) when is_pid(Pid) ->
     {reply, ok, State};
 handle_call({update, IdxState}, _From, State) ->
     Pid = spawn_link(fun() -> update(State#st.mod, IdxState) end),
@@ -63,7 +88,7 @@ handle_cast(_Mesg, State) ->
 
 
 handle_info({'EXIT', Pid, {updated, IdxState}}, #st{pid=Pid}=State) ->
-    ok = gen_server:call(State#st.idx, {new_state, IdxState}),
+    ok = gen_server:call(State#st.idx, {new_state, IdxState});
 handle_info({'EXIT', Pid, reset}, #st{pid=Pid}=State) ->
     {ok, NewIdxState} = gen_server:call(State#st.idx, reset),
     Pid2 = spawn_link(fun() -> update(State#st.mod, NewIdxState) end),
@@ -95,15 +120,15 @@ update(Mod, IdxState) ->
         {ok, DocQueue} = couch_work_queue:new(QueueOpts),
         {ok, WriteQueue} = couch_work_queue:new(QueueOpts),
         
-        InitIdxState = Mod:prep_update_idx_state(IdxState1),
+        IdxState2 = Mod:prep_update_idx_state(IdxState1),
 
-        DProc = fun() -> process_docs(Mod, IdxState, DocQueue, WriteQueue) end,
+        DProc = fun() -> process_docs(Mod, IdxState2, DocQueue, WriteQueue) end,
         spawn_link(DProc),
         
-        WProc = fun() -> write_index(Self, Mod, IdxState, WriteQueue) end,
+        WProc = fun() -> write_index(Self, Mod, IdxState2, WriteQueue) end,
         spawn_link(WProc),
 
-        UpdateOpts = Mod:update_options(IdxState),
+        UpdateOpts = Mod:update_options(IdxState2),
         IncludeDesign = lists:member(UpdateOpts, include_design),
         DocOpts = case lists:member(UpdateOpts, local_seq) of
             true -> [conflicts, deleted_conflicts, local_seq];
@@ -111,7 +136,7 @@ update(Mod, IdxState) ->
         end,
                 
         couch_task_status:set_update_frequency(500),
-        NumChanges = couch_db:count_changes_since(Db, Seq),
+        NumChanges = couch_db:count_changes_since(Db, CurrSeq),
 
         LoadProc = fun(DocInfo, _, Count) ->
             update_task_status(NumChanges, Count),
@@ -143,7 +168,7 @@ purge_index(Db, Mod, IdxState) ->
         DbPurgeSeq == IdxPurgeSeq + 1 ->
             couch_task_status:update(<<"Purging index entries.">>),
             {ok, PurgedIdRevs} = couch_db:get_last_purge(Db),
-            {ok, NewIdxState} = Mod:purge_index(IdxState, PurgedIdRevs);
+            Mod:purge_index(IdxState, PurgedIdRevs);
         true ->
             couch_task_status:update(<<"Resetting index due to purge state.">>),
             reset
@@ -151,7 +176,7 @@ purge_index(Db, Mod, IdxState) ->
 
 
 update_task_status(Total, Count) ->
-    PercDone = (Count * 100) div NumChanges,
+    PercDone = (Count * 100) div Total,
     Mesg = "Processed ~p of ~p changes (~p%)",
     couch_task_status:update(Mesg, [Count, Total, PercDone]).    
 
@@ -164,7 +189,7 @@ queue_doc(Db, DocInfo, DocOpts, IncludeDesign, DocQueue) ->
     } = DocInfo,
     case {IncludeDesign, DocId} of
         {false, <<"_design/", _/binary>>} ->
-            ok
+            ok;
         _ when Deleted ->
             Doc = #doc{id=DocId, deleted=true},
             couch_work_queue:queue(DocQueue, {Seq, Doc});
@@ -178,11 +203,11 @@ process_docs(Mod, IdxState, DocQueue, WriteQueue) ->
     case couch_work_queue:dequeue(DocQueue) of
         closed ->
             couch_work_queue:close(WriteQueue),
-            Mod:finish_loading_docs(IdxState, DocAcc),
+            ok = Mod:finish_loading_docs(IdxState);
         {ok, Docs} ->
-            {ok, Results, IdxState2} = Mod:process_docs(IdxState, Docs, DocAcc),
+            {ok, Results, IdxState2} = Mod:process_docs(IdxState, Docs),
             couch_work_queue:queue(WriteQueue, Results),
-            process_docs(Mod, IdxState2, DocAcc2, DocQueue, WriteQueue)
+            process_docs(Mod, IdxState2, DocQueue, WriteQueue)
     end.
 
 

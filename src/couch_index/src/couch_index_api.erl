@@ -5,14 +5,18 @@ db_name(State) ->
 index_name(State) ->
     ok.
 
+signature(State) ->
+    ok.
+
 update_seq(State) ->
+    ok.
+
+set_update_seq(State, Seq) ->
     ok.
 
 purge_seq(State) ->
     ok.
 
-set_update_seq(State, Seq) ->
-    ok.
 
 
 open_index(State) ->

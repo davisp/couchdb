@@ -438,4 +438,3 @@ with_db(DbName, Fun) ->
     after
         couch_db:close(Db)
     end.
-

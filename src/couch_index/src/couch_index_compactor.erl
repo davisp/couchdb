@@ -15,7 +15,7 @@
 
 
 %% API
--export([start_link/1, run/2]).
+-export([start_link/1, run/2, swap/3]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -29,7 +29,7 @@
 }).
 
 
-start_link(Index, Module) ->
+start_link({Index, Module}) ->
     gen_server:start_link(?MODULE, [{Index, Module}], []).
 
 
@@ -57,7 +57,9 @@ handle_call({compact, IdxState}, _From, State) ->
     Pid = spawn_link(fun() -> compact(State#st.mod, IdxState) end),
     {reply, ok, State#st{pid=Pid}};
 handle_call({swap, OldIdxState, NewIdxState}, _From, State) ->
-    {stop, not_implemented, not_implemented, State}.
+    #st{mod=Mod} = State,
+    {ok, NewIdxState1} = Mod:compaction_swap(OldIdxState, NewIdxState),
+    {reply, {ok, NewIdxState1}, State}.
 
 
 handle_cast(_Mesg, State) ->
@@ -69,7 +71,7 @@ handle_info({'EXIT', Pid, {compacted, IdxState}}, #st{pid=Pid}=State) ->
         recompact ->
             Fun = fun() -> compact(State#st.mod, IdxState, [recompact]) end,
             Pid2 = spawn_link(Fun),
-            {noreply, State#st{pid=Pid}};
+            {noreply, State#st{pid=Pid2}};
         ok ->
             {noreply, State#st{pid=nil}}
     end;
@@ -84,7 +86,7 @@ code_change(_OldVsn, State, _Extra) ->
 compact(Mod, IdxState) ->
     compact(Mod, IdxState, []).
 
-compactor(Mod, IdxState, Opts) ->
+compact(Mod, IdxState, Opts) ->
     {ok, NewIdxState} = Mod:compact(IdxState, Opts),
     exit({compacted, NewIdxState}).
 

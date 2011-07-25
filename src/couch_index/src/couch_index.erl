@@ -23,7 +23,7 @@
 
 
 -record(st, {
-    module,
+    mod,
     idx_state,
     updater,
     compactor,
@@ -33,8 +33,8 @@
 }).
 
 
-start_link(Args) ->
-    case proc_lib:start_link(?MODULE, init, [Args]) of
+start_link({Module, IdxState}) ->
+    case proc_lib:start_link(?MODULE, init, [{Module, IdxState}]) of
         {ok, Pid} -> {ok, Pid};
         {error, Reason} -> {error, Reason}
     end.
@@ -48,19 +48,19 @@ get_info(Pid) ->
     gen_server:call(Pid, get_info).
 
 
-init(Module, IdxState) ->
+init({Mod, IdxState}) ->
     process_flag(trap_exit, true),
-    case Module:open_index(IdxState) of
+    case Mod:open_index(IdxState) of
         {ok, NewIdxState} ->
             Fun = fun(Db) -> couch_db:monitor(Db) end,
             couch_util:with_db(Mod:db_name(IdxState), Fun),
-            {ok, UPid} = couch_index_updater:start_link(Module),
-            {ok, CPid} = couch_index_compactor:start_link(Module),
+            {ok, UPid} = couch_index_updater:start_link(Mod),
+            {ok, CPid} = couch_index_compactor:start_link(Mod),
             Delay = couch_config:get("query_server_config", "commit_freq", 10),
             MsDelay = 1000 * list_to_integer(Delay),
             proc_lib:init_ack({ok, self()}),
             State = #st{
-                module=Module,
+                mod=Mod,
                 idx_state=NewIdxState,
                 updater=UPid,
                 compactor=CPid,
@@ -73,7 +73,7 @@ init(Module, IdxState) ->
 
 
 terminate(Reason, State) ->
-    reply_all(S, Reason),
+    send_all(State#st.waiters, Reason),
     couch_util:shutdown_sync(State#st.updater),
     couch_util:shutdown_sync(State#st.compactor),
     timer:cancel(State#st.tref),
@@ -82,7 +82,7 @@ terminate(Reason, State) ->
 
 handle_call({get_state, ReqSeq}, From, State) ->
     #st{
-        module=Mod,
+        mod=Mod,
         idx_state=IdxState,
         waiters=Waiters
     } = State,
@@ -91,31 +91,35 @@ handle_call({get_state, ReqSeq}, From, State) ->
         true ->
             {reply, {ok, IdxState}, State};
         _ -> % View update required
-            couch_index_updater:run(State#st.updater, IdxState, RequestSeq)
-            Waiters2 = [{From, RequestSeq} | Waiters],
+            couch_index_updater:run(State#st.updater, IdxState),
+            Waiters2 = [{From, ReqSeq} | Waiters],
             {noreply, State#st{waiters=Waiters2}, infinity}
     end;
 handle_call(get_info, _From, State) ->
+    #st{mod=Mod} = State,
     {reply, {ok, Mod:get_info(State#st.idx_state)}, State};
-handle_call({new_state, NewIdxState}, From, State) ->
-    {reply, ok, State#st{idx_state=NewIdxState, committed=false}};
+handle_call({new_state, NewIdxState}, _From, State) ->
+    #st{mod=Mod} = State,
+    CurrSeq = Mod:update_seq(NewIdxState),
+    Rest = send_replies(State#st.waiters, CurrSeq, NewIdxState),
+    {reply, ok, State#st{
+        idx_state=NewIdxState,
+        waiters=Rest,
+        committed=false
+    }};
 handle_call(reset, _From, State) ->
     #st{
-        module=Mod,
+        mod=Mod,
         idx_state=IdxState
     } = State,
     {ok, NewIdxState} = Mod:reset_index(IdxState),
     {reply, {ok, NewIdxState}, State#st{idx_state=NewIdxState}};
-handle_call(compact, State) ->
-    #st{
-        module=Mod,
-        idx_state=IdxState,
-    } = State,
-    couch_index_compactor:run(State#st.compactor, IdxState),
+handle_call(compact, _From, State) ->
+    couch_index_compactor:run(State#st.compactor, State#st.idx_state),
     {reply, ok, State};
-handle_call({compacted, NewIdxState}, State) ->
+handle_call({compacted, NewIdxState}, _From, State) ->
     #st{
-        module=Mod,
+        mod=Mod,
         idx_state=OldIdxState,
         updater=Updater
     } = State,
@@ -137,13 +141,19 @@ handle_call({compacted, NewIdxState}, State) ->
             {reply, recompact, State}
     end.
 
+
+handle_cast(delete, State) ->
+    #st{mod=Mod, idx_state=IdxState} = State,
+    ok = Mod:delete(IdxState),
+    {stop, normal, IdxState};
+handle_cast(_Mesg, State) ->
+    {stop, unhandled_cast, State}.
+
+
 handle_info(commit, #st{committed=true}=State) ->
     {noreply, State};
 handle_info(commit, State) ->
-    #st{
-        module=Mod,
-        idx_state=IdxState
-    } = State,
+    #st{mod=Mod, idx_state=IdxState} = State,
     DbName = Mod:db_name(IdxState),
     GetCommSeq = fun(Db) -> couch_db:get_committed_update_seq(Db) end,
     CommittedSeq = couch_util:with_db(DbName, GetCommSeq),
@@ -162,14 +172,7 @@ handle_info(commit, State) ->
             {noreply, State}
     end;
 handle_info({'DOWN', _, _, _, _}, State) ->
-    #st{
-        module=Mod,
-        idx_state=IdxState,
-        waiters=Waiters
-    } = State
-    Mesg = "Closing index ~s because the db has closed.",
-    ?LOG_INFO(Mesg, [Mod:index_name(IdxState)]),
-    send_all(Waiters, shutdown),
+    send_all(State#st.waiters, shutdown),
     {stop, normal, State#st{waiters=[]}}.
 
 
@@ -178,7 +181,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 
 send_all(Waiters, Reply) ->
-    [gen_server:reply(From, Reply) || {From, _} <- Waiterse].
+    [gen_server:reply(From, Reply) || {From, _} <- Waiters].
 
 
 send_replies(Waiters, UpdateSeq, IdxState) ->
