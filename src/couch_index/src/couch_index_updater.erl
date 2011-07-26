@@ -126,7 +126,9 @@ update(Mod, IdxState) ->
         QueueOpts = [{max_size, 100000}, {max_items, 500}],
         {ok, Queue} = couch_work_queue:new(QueueOpts),
         
-        ProcDocFun = fun() -> process_docs(Self, Mod, IdxState, Queue) end,
+        ProcIdxState = Mod:start_update(self(), self(), IdxState),
+
+        ProcDocFun = fun() -> process_docs(Self, Mod, ProcIdxState, Queue) end,
         spawn_link(ProcDocFun),
                         
         couch_task_status:set_update_frequency(500),
@@ -188,7 +190,7 @@ queue_doc(Db, DocInfo, DocOpts, IncludeDesign, DocQueue) ->
 process_docs(Parent, Mod, IdxState, Queue) ->
     case couch_work_queue:dequeue(Queue) of
         closed ->
-            Mod:finish_update(Parent, IdxState);
+            Mod:finish_update(IdxState);
         {ok, Docs} ->
             FoldFun = fun(Doc, IdxStAcc) -> Mod:process_doc(Doc, IdxStAcc) end,
             NewIdxState = lists:foldl(FoldFun, IdxState, Docs),

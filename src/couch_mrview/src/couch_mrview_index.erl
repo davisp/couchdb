@@ -77,12 +77,17 @@ update_options(#mrst{design_opts=Opts}=State) ->
     Opts1 ++ Opts2.
 
 
+start_update(Parent, PartialDest, State) ->
+    couch_mrview_updater:start_update(Parent, PartialDest, State).
+
+
+finish_update(State) ->
+    couch_mrview_updater:finish_update(State).
+
+
 process_doc(Doc, State) ->
     couch_mrview_updater:process_doc(Doc, State).
 
-
-finish_update(Parent, State) ->
-    couch_mrview_updater:finish_update(Parent, State).
 
 
 commit(State) ->

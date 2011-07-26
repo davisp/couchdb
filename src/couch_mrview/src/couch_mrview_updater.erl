@@ -39,6 +39,20 @@ purge_index(_Db, PurgeSeq, PurgedIdRevs, State) ->
     }.
 
 
+start_update(Parent, Partial, State) ->
+    State#mrst{
+        updater_pid=Parent,
+        partial_resp_pid=Partial
+    }.
+
+
+finish_update(State) ->
+    receive
+        {new_state, State} ->
+            State
+    end.
+
+
 process_doc(Doc, #mrst{query_server=nil}=State) ->
     process_doc(Doc, start_query_server(State));
 process_doc(#doc{id=DocId, deleted=false}, #mrst{views=Views}=State) ->
@@ -49,10 +63,6 @@ process_doc(#doc{id=DocId, deleted=false}, #mrst{views=Views}=State) ->
 process_doc(#doc{id=Id, deleted=true}, State) ->
     couch_work_queue:queue(State#mrst.write_queue, {[], [{Id, []}]}),
     State.
-
-
-finish_update(Parent, State) ->
-    ok.
 
 
 start_query_server(State) ->
@@ -74,9 +84,12 @@ start_query_server(State) ->
     State#mrst{
         query_server=QServer,
         write_queue=Queue,
+        initial_build=State#mrst.update_seq==0
     }.
 
 
+process_results(_, [], [], {KVAcc, ByIdAcc}) ->
+    {lists:reverse(KVAcc), ByIdAcc};
 process_results(DocId, [V | RViews], [KVs | RKVs], {KVAcc, ByIdAcc}) ->
     CombineDupesFun = fun
         ({Key, Val}, [{Key, {dups, Vals}} | Rest]) ->
@@ -95,48 +108,66 @@ process_results(DocId, [V | RViews], [KVs | RKVs], {KVAcc, ByIdAcc}) ->
     process_results(DocId, RViews, RKVs, {ViewKVs, DocIdKeys}).
 
 
-write_results(Parent, Owner, Group) ->
-    case couch_work_queue:dequeue(WriteQueue) of
-    closed ->
-        Parent ! {new_group, Group};
-    {ok, Queue} ->
-        {NewSeq, ViewKeyValues, DocIdViewIdKeys} = lists:foldl(
-            fun({Seq, ViewKVs, DocIdViewIdKeys}, nil) ->
-                {Seq, ViewKVs, DocIdViewIdKeys};
-            ({Seq, ViewKVs, DocIdViewIdKeys}, Acc) ->
-                {Seq2, AccViewKVs, AccDocIdViewIdKeys} = Acc,
-                AccViewKVs2 = lists:zipwith(
-                    fun({View, KVsIn}, {_View, KVsAcc}) ->
-                        {View, KVsIn ++ KVsAcc}
-                    end, ViewKVs, AccViewKVs),
-                {lists:max([Seq, Seq2]),
-                        AccViewKVs2, DocIdViewIdKeys ++ AccDocIdViewIdKeys}
-            end, nil, Queue),
-        Group2 = write_changes(Group, ViewKeyValues, DocIdViewIdKeys, NewSeq,
-                InitialBuild),
-        case Owner of
-        nil -> ok;
-        _ -> ok = gen_server:cast(Owner, {partial_update, Parent, Group2})
-        end,
-        do_writes(Parent, Owner, Group2, WriteQueue, InitialBuild)
+write_results(Parent, Mod, State, Queue) ->
+    case couch_work_queue:dequeue(Queue) of
+        closed ->
+            Parent ! {new_state, IdxState};
+        {ok, Results} ->
+            {ViewKVs, DocIdKeys} = lists:foldl(fun merge_kvs/2, nil, Results),
+            NewState = write_kvs(State, ViewKVs, DocIdKeys),
+            send_partial(NewIdxState#mrst.partial_resp_pid, NewState),
+            write_results(Parent, Mod, NewState, Queue)
     end.
 
 
-
-
-write_changes(Group, ViewKeyValuesToAdd, DocIdViewIdKeys, NewSeq, InitialBuild) ->
-    #group{id_btree=IdBtree} = Group,
-
-    AddDocIdViewIdKeys = [{DocId, ViewIdKeys} || {DocId, ViewIdKeys} <- DocIdViewIdKeys, ViewIdKeys /= []],
-    if InitialBuild ->
-        RemoveDocIds = [],
-        LookupDocIds = [];
-    true ->
-        RemoveDocIds = [DocId || {DocId, ViewIdKeys} <- DocIdViewIdKeys, ViewIdKeys == []],
-        LookupDocIds = [DocId || {DocId, _ViewIdKeys} <- DocIdViewIdKeys]
+write_kvs(State, ViewKVs, DocIdKeys) ->
+    #mrst{
+        id_btree=IdBtree,
+        initial_build=InitialBuild
+    } = State,
+    
+    UpdateByDocIdBtree = fun
+        (Btree, DocIdKeys, true) ->
+            ToAdd = [{Id, DIKeys} || {Id, DIKeys} <- DocIdKeys, DIKeys /= []],
+            couch_btree:query_modify(Btree, [], ToAdd, []);
+        (Btree, DocIdKeys, _) ->
+            ToFind = [Id || {DocId, _} <- DocIdKeys]
+            ToAdd = [{Id, DIKeys} || {Id, DIKeys} <- DocIdKeys, DIKeys /= []],
+            ToRem = [Id || {DocId, DIKeys} <- DocIdKeys, DIKeys == []],
+            couch_btree:query_modify(IdBtree, ToFind, ToAdd, ToRem)
     end,
-    {ok, LookupResults, IdBtree2}
-        = couch_btree:query_modify(IdBtree, LookupDocIds, AddDocIdViewIdKeys, RemoveDocIds),
+    
+    CollectRemKeys = fun(KeysToRem, RemAcc) ->
+        case KeysToRem of
+            {ok, {DocId, ViewIdKeys}} ->
+                FoldFun = fun({ViewId, Key}, RemAcc2) ->
+                    dict:append(ViewId, {Key, DocId}, RemAcc2)
+                end,
+                lists:foldl(FoldFun, RemAcc, ViewIdKeys);
+            {not_found, _} ->
+                RemAcc
+        end
+    end,
+    
+    UpdateViewFun = fun(View, ViewKVsPerView) ->
+        KeysToRem = couch_util:dict_find(View#view.id_num, )
+    
+    Views2 = lists:zipwith(fun(View, {_View, AddKeyValues}) ->
+            KeysToRemove = couch_util:dict_find(View#view.id_num, KeysToRemoveByView, []),
+            {ok, ViewBtree2} = couch_btree:add_remove(View#view.btree, AddKeyValues, KeysToRemove),
+            case ViewBtree2 =/= View#view.btree of
+                true ->
+                    View#view{btree=ViewBtree2, update_seq=NewSeq};
+                _ ->
+                    View#view{btree=ViewBtree2}
+            end
+        end,    Group#group.views, ViewKeyValuesToAdd),
+    
+    
+    
+    
+    {ok, Results, IdBtree} = update_by_docid(IdBtree, DocIdKeys, InitialBuild),
+    
     KeysToRemoveByView = lists:foldl(
         fun(LookupResult, KeysToRemoveByViewAcc) ->
             case LookupResult of
@@ -163,3 +194,19 @@ write_changes(Group, ViewKeyValuesToAdd, DocIdViewIdKeys, NewSeq, InitialBuild) 
         end,    Group#group.views, ViewKeyValuesToAdd),
     Group#group{views=Views2, current_seq=NewSeq, id_btree=IdBtree2}.
 
+
+merge_kvs([{ViewKVs, DocIdKeys} | Rest], nil) ->
+    combine_results(Rest, {ViewKVs, DocIdKeys});
+merge_kvs([{ViewKVs, DocIdKeys} | Rest], {ViewKVsAcc, DocIdKeysAcc}) ->
+    KVCombine = fun({ViewNum, KVs}, {ViewNum, KVsAcc}) ->
+        {ViewNum, KVs ++ KVsAcc}
+    end,
+    ViewKVs2 = lists:zipwith(KVCombin, ViewKVs, ViewKVsAcc),
+    {ViewKVs2, DocIdKeys ++ DocIdKeysAcc}.
+
+
+send_partial(Pid, State) when is_pid(Pid) ->
+    Pid ! {parital_update, State};
+send_partial(_, _) ->
+    ok.
+    
