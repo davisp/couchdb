@@ -58,7 +58,7 @@ handle_call({compact, IdxState}, _From, State) ->
     {reply, ok, State#st{pid=Pid}};
 handle_call({swap, OldIdxState, NewIdxState}, _From, State) ->
     #st{mod=Mod} = State,
-    {ok, NewIdxState1} = Mod:compaction_swap(OldIdxState, NewIdxState),
+    {ok, NewIdxState1} = Mod:swap_compacted(OldIdxState, NewIdxState),
     {reply, {ok, NewIdxState1}, State}.
 
 

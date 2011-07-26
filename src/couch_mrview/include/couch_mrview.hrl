@@ -1,20 +1,19 @@
--record(group, {
+-record(mrst, {
     sig=nil,
     fd=nil,
     name,
-    def_lang,
-    design_options=[],
+    language,
+    design_opts=[],
     views,
     lib,
     id_btree=nil,
-    current_seq=0,
+    update_seq=0,
     purge_seq=0,
-    query_server=nil,
-    waiting_delayed_commit=nil
-    }).
+    query_server=nil
+}).
 
--record(view,
-    {id_num,
+-record(view, {
+    id_num,
     update_seq=0,
     purge_seq=0,
     map_names=[],
@@ -22,11 +21,11 @@
     btree=nil,
     reduce_funs=[],
     options=[]
-    }).
+}).
 
--record(index_header,
-    {seq=0,
+-record(index_header, {
+    seq=0,
     purge_seq=0,
     id_btree_state=nil,
     view_states=nil
-    }).
+}).

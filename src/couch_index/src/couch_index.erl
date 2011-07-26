@@ -50,29 +50,35 @@ get_info(Pid) ->
 
 init({Mod, IdxState}) ->
     process_flag(trap_exit, true),
-    case Mod:open_index(IdxState) of
-        {ok, NewIdxState} ->
-            Fun = fun(Db) -> couch_db:monitor(Db) end,
-            couch_util:with_db(Mod:db_name(IdxState), Fun),
-            {ok, UPid} = couch_index_updater:start_link(Mod),
-            {ok, CPid} = couch_index_compactor:start_link(Mod),
-            Delay = couch_config:get("query_server_config", "commit_freq", 10),
-            MsDelay = 1000 * list_to_integer(Delay),
-            proc_lib:init_ack({ok, self()}),
-            State = #st{
-                mod=Mod,
-                idx_state=NewIdxState,
-                updater=UPid,
-                compactor=CPid,
-                tref=timer:send_interval(MsDelay, commit)
-            },
-            gen_server:enter_loop(?MODULE, [], State);
-        {error, Reason} ->
-            exit(Reason)
+    DbName = Mod:db_name(IdxState),
+    couch_util:with_db(DbName, fun(Db) ->
+        case Mod:open_index(Db, IdxState) of
+            {ok, NewIdxState} ->
+                couch_db:monitor(Db),
+                {ok, UPid} = couch_index_updater:start_link(Mod),
+                {ok, CPid} = couch_index_compactor:start_link(Mod),
+                Delay = couch_config:get(
+                    "query_server_config", "commit_freq", "10"
+                ),
+                MsDelay = 1000 * list_to_integer(Delay),
+                proc_lib:init_ack({ok, self()}),
+                State = #st{
+                    mod=Mod,
+                    idx_state=NewIdxState,
+                    updater=UPid,
+                    compactor=CPid,
+                    tref=timer:send_interval(MsDelay, commit)
+                },
+                gen_server:enter_loop(?MODULE, [], State);
+            {error, Reason} ->
+                exit(Reason)
+        end
     end.
 
 
 terminate(Reason, State) ->
+    #st{mod=Mod, idx_state=IdxState}=State,
+    Mod:close_index(IdxState),
     send_all(State#st.waiters, Reason),
     couch_util:shutdown_sync(State#st.updater),
     couch_util:shutdown_sync(State#st.compactor),

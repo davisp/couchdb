@@ -11,7 +11,7 @@ signature(State) ->
 update_seq(State) ->
     ok.
 
-set_update_seq(State, Seq) ->
+set_update_seq(Seq, State) ->
     ok.
 
 purge_seq(State) ->
@@ -19,43 +19,31 @@ purge_seq(State) ->
 
 
 
-open_index(State) ->
+open_index(Db, State) ->
     ok.
 
 close_index(State) ->
     ok.
 
 
+update_options(State) ->
+    ok.
+
+process_doc(Doc, State) ->
+    ok.
+
+purge_index(PurgedIdRevs, State) ->
+    ok.
+
 commit(State) ->
     ok.
 
 
-update(Parent, State) ->
-    ok.
-
-update_options(State) ->
-    ok.
-
-process_docs(State, Docs) ->
-    ok.
-
-finish_loading_docs(State) ->
-    ok.
-
-write_entries(State, Entries) ->
-    ok.
-
-purge_index(State, PurgedIdRevs) ->
+compact(Parent, State, Opts) ->
     ok.
 
 
-compact(Parent, State) ->
-    ok.
-
-recompact(Parent, State) ->
-    ok.
-
-switch_compacted(OldState, NewState) ->
+swap_compacted(OldState, NewState) ->
     ok.
 
 

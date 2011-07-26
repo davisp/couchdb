@@ -116,34 +116,27 @@ update(Mod, IdxState) ->
             reset -> exit(reset)
         end,
         
-        QueueOpts = [{max_size, 100000}, {max_items, 500}],
-        {ok, DocQueue} = couch_work_queue:new(QueueOpts),
-        {ok, WriteQueue} = couch_work_queue:new(QueueOpts),
-        
-        IdxState2 = Mod:prep_update_idx_state(IdxState1),
-
-        DProc = fun() -> process_docs(Mod, IdxState2, DocQueue, WriteQueue) end,
-        spawn_link(DProc),
-        
-        WProc = fun() -> write_index(Self, Mod, IdxState2, WriteQueue) end,
-        spawn_link(WProc),
-
-        UpdateOpts = Mod:update_options(IdxState2),
+        UpdateOpts = Mod:update_options(IdxState),
         IncludeDesign = lists:member(UpdateOpts, include_design),
         DocOpts = case lists:member(UpdateOpts, local_seq) of
             true -> [conflicts, deleted_conflicts, local_seq];
             _ -> [conflicts, deleted_conflicts]
         end,
-                
+
+        QueueOpts = [{max_size, 100000}, {max_items, 500}],
+        {ok, Queue} = couch_work_queue:new(QueueOpts),
+        
+        ProcDocFun = fun() -> process_docs(Self, Mod, IdxState, Queue) end,
+        spawn_link(ProcDocFun),
+                        
         couch_task_status:set_update_frequency(500),
         NumChanges = couch_db:count_changes_since(Db, CurrSeq),
 
         LoadProc = fun(DocInfo, _, Count) ->
             update_task_status(NumChanges, Count),
-            queue_doc(Db, DocInfo, DocOpts, IncludeDesign, DocQueue)
+            queue_doc(Db, DocInfo, DocOpts, IncludeDesign, Queue)
         end,
         {ok, _, _} = couch_db:enum_docs_since(Db, CurrSeq, LoadProc, 0, []),
-
 
         couch_work_queue:close(DocQueue),
         couch_task_status:set_udpate_frequency(0),
@@ -158,7 +151,6 @@ update(Mod, IdxState) ->
     end).
 
 
-
 purge_index(Db, Mod, IdxState) ->
     DbPurgeSeq = couch_db:get_purge_seq(Db),
     IdxPurgeSeq = Mod:purge_seq(IdxState),
@@ -168,17 +160,11 @@ purge_index(Db, Mod, IdxState) ->
         DbPurgeSeq == IdxPurgeSeq + 1 ->
             couch_task_status:update(<<"Purging index entries.">>),
             {ok, PurgedIdRevs} = couch_db:get_last_purge(Db),
-            Mod:purge_index(IdxState, PurgedIdRevs);
+            Mod:purge_index(Db, DbPurgeSeq, PurgedIdRevs, IdxState);
         true ->
             couch_task_status:update(<<"Resetting index due to purge state.">>),
             reset
     end.
-
-
-update_task_status(Total, Count) ->
-    PercDone = (Count * 100) div Total,
-    Mesg = "Processed ~p of ~p changes (~p%)",
-    couch_task_status:update(Mesg, [Count, Total, PercDone]).    
 
 
 queue_doc(Db, DocInfo, DocOpts, IncludeDesign, DocQueue) ->
@@ -199,23 +185,18 @@ queue_doc(Db, DocInfo, DocOpts, IncludeDesign, DocQueue) ->
     end.
 
 
-process_docs(Mod, IdxState, DocQueue, WriteQueue) ->
-    case couch_work_queue:dequeue(DocQueue) of
+process_docs(Parent, Mod, IdxState, Queue) ->
+    case couch_work_queue:dequeue(Queue) of
         closed ->
-            couch_work_queue:close(WriteQueue),
-            ok = Mod:finish_loading_docs(IdxState);
+            Mod:finish_update(Parent, IdxState);
         {ok, Docs} ->
-            {ok, Results, IdxState2} = Mod:process_docs(IdxState, Docs),
-            couch_work_queue:queue(WriteQueue, Results),
-            process_docs(Mod, IdxState2, DocQueue, WriteQueue)
+            FoldFun = fun(Doc, IdxStAcc) -> Mod:process_doc(Doc, IdxStAcc) end,
+            NewIdxState = lists:foldl(FoldFun, IdxState, Docs),
+            process_docs(Parent, Mod, NewIdxState, Queue)
     end.
 
 
-write_index(Parent, Mod, IdxState, WriteQueue) ->
-    case couch_work_queue:dequeue(WriteQueue) of
-        closed ->
-            Parent ! {new_state, IdxState};
-        {ok, Items} ->
-            {ok, NewIdxState} = Mod:write_entries(IdxState, Items),
-            write_index(Parent, Mod, NewIdxState, WriteQueue)
-    end.
+update_task_status(Total, Count) ->
+    PercDone = (Count * 100) div Total,
+    Mesg = "Processed ~p of ~p changes (~p%)",
+    couch_task_status:update(Mesg, [Count, Total, PercDone]).    
