@@ -432,9 +432,9 @@ encode_doc_id(Id) ->
     url_encode(Id).
 
 with_db(DbName, Fun) ->
-    {ok, Db} = couch_db:open_int(DbName, []),
-    try
-        Fun(Db)
-    after
-        couch_db:close(Db)
+    case couch_db:open_int(DbName, []) of
+        {ok, Db} ->
+            try Fun(Db) after couch_db:close(Db) end;
+        Else ->
+            throw(Else)
     end.
