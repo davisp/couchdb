@@ -14,14 +14,10 @@
 
 SRCDIR="%abs_top_srcdir%"
 BUILDIR="%abs_top_builddir%"
-
 export ERL_FLAGS="$ERL_FLAGS -pa $BUILDIR/test/etap/"
 
-if test $# -gt 0; then
-    while [ $# -gt 0 ]; do
-        $1
-        shift
-    done
+if test $# -eq 1; then
+    prove $1/*.t
 else
-    prove $SRCDIR/test/etap/*.t
+    prove $1 $2/*.t
 fi
