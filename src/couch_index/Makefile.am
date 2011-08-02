@@ -32,5 +32,5 @@ compiled_files = \
 
 ebin/%.beam: src/%.erl
 	@mkdir -p ebin/
-	$(ERLC) -o ebin/ $(ERLC_FLAGS) ${TEST} $<;
+	$(ERLC) -I../couchdb -o ebin/ $(ERLC_FLAGS) ${TEST} $<;
 

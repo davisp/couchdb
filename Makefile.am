@@ -81,8 +81,7 @@ README.gz: $(top_srcdir)/README
 THANKS.gz: $(top_srcdir)/THANKS
 	-gzip -9 < $< > $@
 
-check: dev
-	$(top_builddir)/test/etap/run
+check: dev #$(top_builddir)/test/etap/run test/etap
 
 cover: dev
 	rm -f cover/*.coverdata
