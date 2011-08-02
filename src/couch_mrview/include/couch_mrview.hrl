@@ -1,31 +1,66 @@
+
+
 -record(mrst, {
     sig=nil,
     fd=nil,
-    name,
+    db_name,
+    idx_name,
     language,
     design_opts=[],
-    views,
     lib,
+    views,
     id_btree=nil,
     update_seq=0,
     purge_seq=0,
+    root_dir=[],
+
+    first_build,
+    updater_pid,
+    partial_resp_pid,
+    write_queue,
     query_server=nil
 }).
 
--record(view, {
+
+-record(mrview, {
     id_num,
     update_seq=0,
     purge_seq=0,
     map_names=[],
+    reduce_funs=[],
     def,
     btree=nil,
-    reduce_funs=[],
     options=[]
 }).
 
--record(index_header, {
+
+-record(mrheader, {
     seq=0,
     purge_seq=0,
     id_btree_state=nil,
     view_states=nil
+}).
+
+
+-record(mrargs, {
+    view_type,
+    reduce=true,
+    
+    start_key,
+    start_key_docid = <<"">>,
+    end_key,
+    end_key_docid = <<255>>,
+    keys = [],
+
+    direction = fwd,
+    limit = 16#10000000,
+    skip = 0,
+    group_level = 0,
+    stale = false,
+    inclusive_end = true,
+    include_docs = false,
+    conflicts,
+    callback,
+    list,
+    extra = []
 }).

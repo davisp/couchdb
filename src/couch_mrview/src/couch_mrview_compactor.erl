@@ -2,9 +2,9 @@
 
 -export([compact/3, swap_compacted/2]).
 
-compact(Parent, State, Opts) ->
+compact(_Parent, State, _Opts) ->
     State.
 
-swap_compacted(OldState, NewState) ->
+swap_compacted(_OldState, NewState) ->
     NewState.
 

@@ -1,11 +1,12 @@
--module(couch_mrview_util).
+-module(couch_mrview_index).
 
 
 -export([db_name/1, index_name/1, signature/1]).
 -export([update_seq/1, set_update_seq/2, purge_seq/1]).
--export([open_index/1, close_index/1]).
--export([update_options/1, process_doc/2, purge_index/2, commit/1]).
--export([compact/2, recompact/2, switch_compacted/2]).
+-export([open/2, close/1]).
+-export([update_options/1]).
+-export([start_update/3, process_doc/3, finish_update/1, purge/4, commit/1]).
+-export([compact/3, swap_compacted/2]).
 -export([reset/1]).
 
 
@@ -36,7 +37,7 @@ purge_seq(#mrst{purge_seq=PurgeSeq}) ->
     PurgeSeq.
 
 
-open_index(Db, State) ->
+open(Db, State) ->
     #mrst{
         db_name=DbName,
         sig=Sig,
@@ -49,23 +50,23 @@ open_index(Db, State) ->
                     % Matching view signatures.
                     {ok, couch_mrview_util:init_state(Db, Fd, State, Header)};
                 _ ->
-                    {ok, couch_mrview_util:reset_file(Db, Fd, State)}
+                    {ok, couch_mrview_util:reset_index(Db, Fd, State)}
             end;
         Error ->
-            catch couch_mrview_util:delete_index_file(RootDir, DbName, Sig)
-        end
+            (catch couch_mrview_util:delete_index_file(RootDir, DbName, Sig)),
+            Error
     end.
 
 
-close_index(State) ->
+close(State) ->
     couch_file:close(State#mrst.fd).
 
 
-purge_index(Db, PurgeSeq, PurgedIdRevs, State) ->
+purge(Db, PurgeSeq, PurgedIdRevs, State) ->
     couch_mrview_updater:purge_index(Db, PurgeSeq, PurgedIdRevs, State).
 
 
-update_options(#mrst{design_opts=Opts}=State) ->
+update_options(#mrst{design_opts=Opts}) ->
     Opts1 = case couch_util:get_value(<<"include_design">>, Opts, false) of
         true -> [include_design];
         _ -> []
@@ -81,13 +82,12 @@ start_update(Parent, PartialDest, State) ->
     couch_mrview_updater:start_update(Parent, PartialDest, State).
 
 
+process_doc(Doc, Seq, State) ->
+    couch_mrview_updater:process_doc(Doc, Seq, State).
+
+
 finish_update(State) ->
     couch_mrview_updater:finish_update(State).
-
-
-process_doc(Doc, State) ->
-    couch_mrview_updater:process_doc(Doc, State).
-
 
 
 commit(State) ->
@@ -103,5 +103,5 @@ swap_compacted(OldState, NewState) ->
     couch_mrview_compactor:swap(OldState, NewState).
 
 
-reset_index(State) ->
+reset(State) ->
     couch_mrview_util:reset_index(State).
