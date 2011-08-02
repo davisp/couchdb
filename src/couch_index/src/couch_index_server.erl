@@ -38,7 +38,7 @@ get_index(Module, IdxState) ->
             {ok, Pid};
         _ ->
             Args = {Module, IdxState, DbName, Sig},
-            gen_server:call(?MODULE, {get_index, Args})
+            gen_server:call(?MODULE, {get_index, Args}, infinity)
     end.
 
 
@@ -49,7 +49,9 @@ init([]) ->
     ets:new(?BY_SIG, [protected, set, named_table]),
     ets:new(?BY_PID, [private, set, named_table]),
     ets:new(?BY_DB, [private, bag, named_table]),
-    {ok, #st{root_dir=couch_config:get("couchdb", "index_dir")}}.
+    RootDir = couch_config:get("couchdb", "index_dir"),
+    couch_file:init_delete_dir(RootDir),
+    {ok, #st{root_dir=RootDir}}.
 
 
 terminate(_Reason, _State) ->

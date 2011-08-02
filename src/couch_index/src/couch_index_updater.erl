@@ -21,6 +21,7 @@
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
 
+-include("couch_db.hrl").
 
 -record(st, {
     idx,
@@ -29,33 +30,8 @@
 }).
 
 
-%% TODO: Remove this hack after srcmv happens.
-
--record(doc_info, {
-    id = <<"">>,
-    high_seq = 0,
-    revs = [] % rev_info
-}).
-
--record(rev_info, {
-    rev,
-    seq = 0,
-    deleted = false,
-    body_sp = nil % stream pointer
-}).
-
--record(doc, {
-    id = <<"">>,
-    revs = {0, []},
-    body = {[]},
-    atts = [], % attachments
-    deleted = false,
-    meta = []
-}).
-
-
 start_link(Index, Module) ->
-    gen_server:start_link(?MODULE, [{Index, Module}], []).
+    gen_server:start_link(?MODULE, {Index, Module}, []).
 
 
 run(Pid, IdxState) ->
@@ -88,7 +64,8 @@ handle_cast(_Mesg, State) ->
 
 
 handle_info({'EXIT', Pid, {updated, IdxState}}, #st{pid=Pid}=State) ->
-    ok = gen_server:call(State#st.idx, {new_state, IdxState});
+    ok = gen_server:call(State#st.idx, {new_state, IdxState}),
+    {noreply, State};
 handle_info({'EXIT', Pid, reset}, #st{pid=Pid}=State) ->
     {ok, NewIdxState} = gen_server:call(State#st.idx, reset),
     Pid2 = spawn_link(fun() -> update(State#st.mod, NewIdxState) end),
@@ -104,21 +81,21 @@ code_change(_OldVsn, State, _Extra) ->
 update(Mod, IdxState) ->
     Self = self(),
     DbName = Mod:db_name(IdxState),
-    CurrSeq = Mod:current_seq(IdxState),
-    
+    CurrSeq = Mod:update_seq(IdxState),
+   
     TaskType = <<"Indexer">>,
     Starting = <<"Starting index update.">>,
-    couch_task_stats:add_task(TaskType, Mod:index_name(IdxState), Starting),
+    couch_task_status:add_task(TaskType, Mod:index_name(IdxState), Starting),
 
     couch_util:with_db(DbName, fun(Db) ->
-        IdxState1 = case purge_index(Db, Mod, IdxState) of
+        PurgedIdxState = case purge_index(Db, Mod, IdxState) of
             {ok, IdxState0} -> IdxState0;
             reset -> exit(reset)
         end,
         
-        UpdateOpts = Mod:update_options(IdxState),
-        IncludeDesign = lists:member(UpdateOpts, include_design),
-        DocOpts = case lists:member(UpdateOpts, local_seq) of
+        UpdateOpts = Mod:update_options(PurgedIdxState),
+        IncludeDesign = lists:member(include_design, UpdateOpts),
+        DocOpts = case lists:member(local_seq, UpdateOpts) of
             true -> [conflicts, deleted_conflicts, local_seq];
             _ -> [conflicts, deleted_conflicts]
         end,
@@ -126,7 +103,7 @@ update(Mod, IdxState) ->
         QueueOpts = [{max_size, 100000}, {max_items, 500}],
         {ok, Queue} = couch_work_queue:new(QueueOpts),
         
-        ProcIdxState = Mod:start_update(self(), self(), IdxState),
+        ProcIdxState = Mod:start_update(self(), self(), PurgedIdxState),
 
         ProcDocFun = fun() -> process_docs(Self, Mod, ProcIdxState, Queue) end,
         spawn_link(ProcDocFun),
@@ -136,18 +113,19 @@ update(Mod, IdxState) ->
 
         LoadProc = fun(DocInfo, _, Count) ->
             update_task_status(NumChanges, Count),
-            queue_doc(Db, DocInfo, DocOpts, IncludeDesign, Queue)
+            queue_doc(Db, DocInfo, DocOpts, IncludeDesign, Queue),
+            {ok, Count+1}
         end,
         {ok, _, _} = couch_db:enum_docs_since(Db, CurrSeq, LoadProc, 0, []),
 
-        couch_work_queue:close(DocQueue),
-        couch_task_status:set_udpate_frequency(0),
+        couch_work_queue:close(Queue),
+        couch_task_status:set_update_frequency(0),
         couch_task_status:update("Waiting for index writer to finish."),
 
         receive
             {new_state, NewIdxState} ->
                 NewSeq = couch_db:get_update_seq(Db),
-                NewIdxState2 = Mod:set_update_seq(NewIdxState, NewSeq),
+                NewIdxState2 = Mod:set_update_seq(NewSeq, NewIdxState),
                 exit({updated, NewIdxState2})
         end
     end).
@@ -192,7 +170,9 @@ process_docs(Parent, Mod, IdxState, Queue) ->
         closed ->
             Mod:finish_update(IdxState);
         {ok, Docs} ->
-            FoldFun = fun(Doc, IdxStAcc) -> Mod:process_doc(Doc, IdxStAcc) end,
+            FoldFun = fun({Seq, Doc}, IdxStAcc) ->
+                Mod:process_doc(Doc, Seq, IdxStAcc)
+            end,
             NewIdxState = lists:foldl(FoldFun, IdxState, Docs),
             process_docs(Parent, Mod, NewIdxState, Queue)
     end.

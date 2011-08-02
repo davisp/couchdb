@@ -52,11 +52,11 @@ init({Mod, IdxState}) ->
     process_flag(trap_exit, true),
     DbName = Mod:db_name(IdxState),
     couch_util:with_db(DbName, fun(Db) ->
-        case Mod:open_index(Db, IdxState) of
+        case Mod:open(Db, IdxState) of
             {ok, NewIdxState} ->
                 couch_db:monitor(Db),
-                {ok, UPid} = couch_index_updater:start_link(Mod),
-                {ok, CPid} = couch_index_compactor:start_link(Mod),
+                {ok, UPid} = couch_index_updater:start_link(self(), Mod),
+                {ok, CPid} = couch_index_compactor:start_link(self(), Mod),
                 Delay = couch_config:get(
                     "query_server_config", "commit_freq", "10"
                 ),
@@ -73,12 +73,12 @@ init({Mod, IdxState}) ->
             {error, Reason} ->
                 exit(Reason)
         end
-    end.
+    end).
 
 
 terminate(Reason, State) ->
     #st{mod=Mod, idx_state=IdxState}=State,
-    Mod:close_index(IdxState),
+    Mod:close(IdxState),
     send_all(State#st.waiters, Reason),
     couch_util:shutdown_sync(State#st.updater),
     couch_util:shutdown_sync(State#st.compactor),
@@ -163,7 +163,7 @@ handle_info(commit, State) ->
     DbName = Mod:db_name(IdxState),
     GetCommSeq = fun(Db) -> couch_db:get_committed_update_seq(Db) end,
     CommittedSeq = couch_util:with_db(DbName, GetCommSeq),
-    case CommittedSeq >= Mod:current_seq(IdxState) of
+    case CommittedSeq >= Mod:update_seq(IdxState) of
         true ->
             % Commit the updates
             ok = Mod:commit(IdxState),
@@ -177,7 +177,7 @@ handle_info(commit, State) ->
             % changes since last committal.
             {noreply, State}
     end;
-handle_info({'DOWN', _, _, _, _}, State) ->
+handle_info({'DOWN', _, _, Pid, _}, State) ->
     send_all(State#st.waiters, shutdown),
     {stop, normal, State#st{waiters=[]}}.
 

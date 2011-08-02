@@ -15,7 +15,7 @@
 
 
 %% API
--export([start_link/1, run/2, swap/3]).
+-export([start_link/2, run/2, swap/3]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -29,8 +29,8 @@
 }).
 
 
-start_link({Index, Module}) ->
-    gen_server:start_link(?MODULE, [{Index, Module}], []).
+start_link(Index, Module) ->
+    gen_server:start_link(?MODULE, {Index, Module}, []).
 
 
 run(Pid, IdxState) ->
