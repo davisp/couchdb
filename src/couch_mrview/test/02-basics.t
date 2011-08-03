@@ -31,19 +31,25 @@ test() ->
     couch_server_sup:start_link(test_util:config_files()),
 
     {ok, Db} = couch_mrview_test_util:init_db(<<"foo">>),
-    Result = couch_mrview:query_view(Db, <<"_design/bar">>, <<"baz">>),
-    etap:is(ok, check_result(Result), "Basic view result ok."),
+    
+    check_basic(Db),
+    
     ok.
 
-check_result({ok, [{total_and_offset, 10, 0} | Rest]}) ->
-    check_result(1, Rest, 0).
+check_basic(Db) ->
+    Result = couch_mrview:query_view(Db, <<"_design/bar">>, <<"baz">>),
+    Expect = {ok, [
+        {total_and_offset, 10, 0},
+        {row, [{key, 1}, {id, <<"1">>}, {val, 1}]},
+        {row, [{key, 2}, {id, <<"2">>}, {val, 2}]},
+        {row, [{key, 3}, {id, <<"3">>}, {val, 3}]},
+        {row, [{key, 4}, {id, <<"4">>}, {val, 4}]},
+        {row, [{key, 5}, {id, <<"5">>}, {val, 5}]},
+        {row, [{key, 6}, {id, <<"6">>}, {val, 6}]},
+        {row, [{key, 7}, {id, <<"7">>}, {val, 7}]},
+        {row, [{key, 8}, {id, <<"8">>}, {val, 8}]},
+        {row, [{key, 9}, {id, <<"9">>}, {val, 9}]},
+        {row, [{key, 10}, {id, <<"10">>}, {val, 10}]}
+    ]},
+    etap:is(Result, Expect, "Simple view query worked.").
 
-check_result(_, [], Num) when Num == 10 ->
-    ok;
-check_result(Key, [{row, Row} | Rest], Num) ->
-    Id = list_to_binary(integer_to_list(Key)),
-    {value, {id, Id}} = lists:keysearch(id, 1, Row),
-    {value, {key, Key}} = lists:keysearch(key, 1, Row),
-    {value, {val, Key}} = lists:keysearch(val, 1, Row),
-    check_result(Key+1, Rest, Num+1).
-    
