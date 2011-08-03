@@ -46,6 +46,7 @@ check:
 	$(abs_top_builddir)/test/etap/run ./test
 
 ebin/%.app: src/%.app.src
+	@mkdir -p ebin/
 	sed -e "s|%version%|@version@|g" \
 	< $< > $@
 
