@@ -22,13 +22,13 @@ query_view(Db, DDoc, ViewName) ->
 
 
 query_view(Db, DDoc, ViewName, Args) when is_list(Args) ->
-    query_view(Db, DDoc, ViewName, to_mracc(Args));
+    query_view(Db, DDoc, ViewName, to_mrargs(Args));
 query_view(Db, DDoc, ViewName, Args) ->
     query_view(Db, DDoc, ViewName, Args, fun default_callback/2, []).
 
 
 query_view(Db, DDoc, ViewName, Args0, Callback, Acc0) when is_list(Args0) ->
-    query_view(Db, DDoc, ViewName, to_mracc(Args0), Callback, Acc0);
+    query_view(Db, DDoc, ViewName, to_mrargs(Args0), Callback, Acc0);
 query_view(Db, DDoc, ViewName, Args0, Callback, Acc0) ->
     {Type, View, Args} = couch_mrview_util:get_view(Db, DDoc, ViewName, Args0),
     case Type of
@@ -97,7 +97,7 @@ default_callback(Row, Acc) ->
     {ok, [Row | Acc]}.
 
 
-to_mracc(KeyList) ->
+to_mrargs(KeyList) ->
     lists:foldl(fun({Key, Value}, Acc) ->
         Index = lookup_index(couch_util:to_existing_atom(Key)),
         setelement(Index, Acc, Value)

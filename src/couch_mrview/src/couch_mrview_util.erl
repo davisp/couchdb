@@ -24,8 +24,8 @@ get_view(Db, DDoc, ViewName, Args) when is_binary(DDoc) ->
     end;
 get_view(Db, DDoc, ViewName, Args0) ->
     InitState = ddoc_to_mrst(couch_db:name(Db), DDoc),
-    Args = set_view_type(Args0, ViewName, InitState#mrst.views),
-    validate_args(Args),
+    Args1 = set_view_type(Args0, ViewName, InitState#mrst.views),
+    Args = validate_args(Args1),
     MinSeq = case Args#mrargs.stale of
         ok -> 0;
         update_after -> 0;
@@ -148,10 +148,22 @@ validate_args(Args) ->
         _ -> mrverror(<<"`start_key` is incompatible with `keys`">>)
     end,
 
+    case Args#mrargs.start_key_docid of
+        undefined -> ok;
+        SKDocId0 when is_binary(SKDocId0) -> ok;
+        _ -> mrverror(<<"`start_key_docid` must be a string.">>)
+    end,
+
     case {Args#mrargs.keys, Args#mrargs.end_key} of
         {[], _} -> ok;
         {[_|_], undefined} -> ok;
         _ -> mrverror(<<"`end_key` is incompatible with `keys`">>)
+    end,
+
+    case Args#mrargs.end_key_docid of
+        undefined -> ok;
+        EKDocId0 when is_binary(EKDocId0) -> ok;
+        _ -> mrverror(<<"`end_key_docid` must be a string.">>)
     end,
 
     case Args#mrargs.direction of
@@ -201,7 +213,24 @@ validate_args(Args) ->
         {reduce, undefined} -> ok;
         {map, _} -> mrverror(<<"Invalid value for `conflicts`.">>);
         {reduce, _} -> mrverror(<<"`conflicts` is invalid for reduce views.">>)
-    end.
+    end,
+
+    SKDocId = case {Args#mrargs.direction, Args#mrargs.start_key_docid} of
+        {fwd, undefined} -> <<>>;
+        {rev, undefined} -> <<255>>;
+        {_, SKDocId1} -> SKDocId1
+    end,
+
+    EKDocId = case {Args#mrargs.direction, Args#mrargs.end_key_docid} of
+        {fwd, undefined} -> <<255>>;
+        {rev, undefined} -> <<>>;
+        {_, EKDocId1} -> EKDocId1
+    end,
+
+    Args#mrargs{
+        start_key_docid=SKDocId,
+        end_key_docid=EKDocId
+    }.
 
 
 init_state(Db, Fd, #mrst{views=Views}=State, nil) ->
@@ -372,7 +401,7 @@ ekey_opts(#mrargs{end_key=undefined}) ->
 ekey_opts(#mrargs{end_key=EKey, end_key_docid=EKeyDocId}=Args) ->
     case Args#mrargs.inclusive_end of
         true -> [{end_key, {EKey, EKeyDocId}}];
-        false -> [{end_key, {EKey, reverse_key_default(EKeyDocId)}}]
+        false -> [{end_key_gt, {EKey, reverse_key_default(EKeyDocId)}}]
     end.
     
 

@@ -47,9 +47,9 @@
     reduce=true,
     
     start_key,
-    start_key_docid = <<"">>,
+    start_key_docid,
     end_key,
-    end_key_docid = <<255>>,
+    end_key_docid,
     keys = [],
 
     direction = fwd,
