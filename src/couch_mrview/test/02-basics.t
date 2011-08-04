@@ -35,8 +35,11 @@ test() ->
     test_basic(Db),
     test_range(Db),
     test_rev_range(Db),
+    test_limit_and_skip(Db),
+    test_include_docs(Db),
 
     ok.
+
 
 test_basic(Db) ->
     Result = run_query(Db, []),
@@ -55,6 +58,7 @@ test_basic(Db) ->
     ]},
     etap:is(Result, Expect, "Simple view query worked.").
 
+
 test_range(Db) ->
     Result = run_query(Db, [{start_key, 3}, {end_key, 5}]),
     Expect = {ok, [
@@ -72,13 +76,47 @@ test_rev_range(Db) ->
         {start_key, 5}, {end_key, 3},
         {inclusive_end, true}
     ]),
-    Expect = {ok, [
+    Expect = {ok, [  
         {total_and_offset, 10, 5},
         {row, [{key, 5}, {id, <<"5">>}, {val, 5}]},
         {row, [{key, 4}, {id, <<"4">>}, {val, 4}]},
         {row, [{key, 3}, {id, <<"3">>}, {val, 3}]}
     ]},
     etap:is(Result, Expect, "Query with reversed range works.").
+
+
+test_limit_and_skip(Db) ->
+    Result = run_query(Db, [
+        {start_key, 2},
+        {limit, 3},
+        {skip, 3}
+    ]),
+    Expect = {ok, [
+        {total_and_offset, 10, 4},
+        {row, [{key, 5}, {id, <<"5">>}, {val, 5}]},
+        {row, [{key, 6}, {id, <<"6">>}, {val, 6}]},
+        {row, [{key, 7}, {id, <<"7">>}, {val, 7}]}
+    ]},
+    etap:is(Result, Expect, "Query with limit and skip works.").
+
+
+test_include_docs(Db) ->
+    Result = run_query(Db, [
+        {start_key, 8},
+        {end_key, 8},
+        {include_docs, true}
+    ]),
+    Doc = {[
+        {<<"_id">>,<<"8">>},
+        {<<"_rev">>, <<"1-55b9a29311341e07ec0a7ca13bc1b59f">>},
+        {<<"val">>,8}
+    ]},
+    Expect = {ok, [
+        {total_and_offset, 10, 7},
+        {row, [{key, 8}, {id, <<"8">>}, {val, 8}, {doc, Doc}]}
+    ]},
+    etap:is(Result, Expect, "Query with include docs works.").
+
 
 run_query(Db, Opts) ->
     couch_mrview:query_view(Db, <<"_design/bar">>, <<"baz">>, Opts).

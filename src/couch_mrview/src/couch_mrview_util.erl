@@ -431,7 +431,6 @@ reverse_key_default(Key) -> Key.
 maybe_load_doc(_, _, _, false) ->
     [];
 maybe_load_doc(Db, Id, Value, _IncludeDocs) ->
-    etap:diag("Include: ~p", [_IncludeDocs]),
     DocId = case Value of
         {Props} -> couch_util:get_value(<<"_id">>, Props, Id);
         _ -> Id

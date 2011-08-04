@@ -9,6 +9,7 @@
     total_rows,
     offset,
     limit,
+    skip,
     group_level,
     callback,
     user_acc,
@@ -43,6 +44,7 @@ map_fold(Db, View, Args, Callback, UAcc) ->
         db=Db,
         total_rows=Total,
         limit=Args#mrargs.limit,
+        skip=Args#mrargs.skip,
         callback=Callback,
         user_acc=UAcc,
         reduce_fun=fun couch_mrview_util:reduce_to_count/1,
@@ -57,6 +59,8 @@ map_fold(Db, View, Args, Callback, UAcc) ->
     {ok, UAcc1}.
 
 
+map_fold(_KV, _Offset, #mracc{skip=N}=Acc) when N > 0 ->
+    {ok, Acc#mracc{skip=N-1}};
 map_fold(KV, OffsetReds, #mracc{offset=undefined}=Acc) ->
     #mracc{
         total_rows=Total,
