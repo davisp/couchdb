@@ -112,9 +112,11 @@ append_raw_chunk(Fd, Chunk) ->
 
 
 assemble_file_chunk(Bin) ->
+    io:format("Data: ~p~nNo Md5~n", [Bin]),
     <<0:1/integer, (iolist_size(Bin)):31/integer, Bin/binary>>.
 
 assemble_file_chunk(Bin, Md5) ->
+    io:format("Data: ~p~nMD5: ~p~n", [Bin, Md5]),
     <<1:1/integer, (iolist_size(Bin)):31/integer, Md5/binary, Bin/binary>>.
 
 %%----------------------------------------------------------------------
@@ -144,13 +146,14 @@ pread_binary(Fd, Pos) ->
 
 pread_iolist(Fd, Pos) ->
     case gen_server:call(Fd, {pread_iolist, Pos}, infinity) of
-    {ok, IoList, <<>>} ->
+        {ok, {IoList, <<>>}} ->
         {ok, IoList};
-    {ok, IoList, Md5} ->
+    {ok, {IoList, Md5}} ->
         case couch_util:md5(IoList) of
         Md5 ->
             {ok, IoList};
-        _ ->
+        Other ->
+            io:format("~p~n~p ~p~n", [IoList, Md5, Other]),
             exit({file_corruption, <<"file corruption">>})
         end;
     Error ->
@@ -320,14 +323,16 @@ handle_call({pread_iolist, Pos}, _From, #file{fd=Fd}=File) ->
     {ok, <<Flag:1/integer, Len:31/integer>>} = file:pread(Fd, Pos, 4),
     Resp = case Flag of
         0 ->
-            {ok, Data} = file:read(Fd, Pos+4, Len),
+            {ok, Data} = file:pread(Fd, Pos+4, Len),
             {Data, <<>>};
         1 ->
-            {ok, Md5} = file:read(Fd, Pos+4, 16),
+            {ok, Md5} = file:pread(Fd, Pos+4, 16),
             case Md5 of
                 <<0:16/binary>> ->
+                    io:format("Unsplitting~n", []),
                     read_iolist(Fd, Pos+20, Len);
                 _ ->
+                    io:format("Return raw.~n", []),
                     {ok, Data} = file:pread(Fd, Pos+20, Len),
                     {Data, Md5}
             end
@@ -355,8 +360,9 @@ handle_call({append_bin, Bin}, _From, #file{fd = Fd, eof = Pos} = File) ->
     {IoInfo, IoData} = sizes_to_ioinfo(Bin, SizeList, Pos, [], []),
     case write_iodata(Fd, IoInfo, IoData) of
         {ok, Size} ->
-            IoSize = iolist_size(IoData) + Size,
-            {reply, {ok, Pos, IoSize}, File#file{eof=Pos+IoSize}};
+            IoSize = iolist_size(IoData),
+            IoPos = Pos + IoSize,
+            {reply, {ok, IoPos, IoSize+Size}, File#file{eof=IoPos+Size}};
         Error ->
             {reply, Error, File}
     end;
@@ -423,9 +429,9 @@ read_iolist(Fd, Pos, Len) ->
     {ok, IoBin} = file:pread(Fd, Pos, Len),
     {ok, IoData} = file:pread(Fd, binary_to_term(IoBin)),
     case IoData of
-        <<0:1/integer, Len:31/integer, Data:Len/binary>> ->
+        <<0:1/integer, DLen:31/integer, Data:DLen/binary>> ->
             {Data, <<>>};
-        <<1:1/integer, Len:31/integer, Md5:16/binary, Data:Len/binary>> ->
+        <<1:1/integer, DLen:31/integer, Md5:16/binary, Data:DLen/binary>> ->
             {Data, Md5}
     end.
 
@@ -435,10 +441,10 @@ block_sizes(<<>>, 0, _Off, Acc) ->
 block_sizes(<<1, _/binary>>=Bin, Sz, 0, Acc) ->
     block_sizes(Bin, Sz, ?BLOCK_SIZE-1, [0 | Acc]);
 block_sizes(_Bin, Sz, Off, [Len | Rest]) when Sz =< Off ->
-    lists:reverse([Len+Sz, Rest]);
+    lists:reverse([Len+Sz | Rest]);
 block_sizes(Bin, Sz, Off, [Len | Rest]) ->
-    <<_:Off/binary, Rest/binary>> = Bin,
-    block_sizes(Rest, Sz-Off, ?BLOCK_SIZE, [Len+Off | Rest]).
+    <<_:Off/binary, RestBin/binary>> = Bin,
+    block_sizes(RestBin, Sz-Off, ?BLOCK_SIZE, [Len+Off | Rest]).
 
 
 sizes_to_ioinfo(Bin, [Size], Pos, Info, Acc) when size(Bin) == Size ->
@@ -451,11 +457,13 @@ sizes_to_ioinfo(Bin, [Size | RestSizes], Pos, Info, Acc) ->
 
 
 write_iodata(Fd, [_], [Bin]) ->
+    io:format("No split: ~p~n", [Bin]),
     case file:write(Fd, Bin) of
-        ok -> {ok, byte_size(Bin), 0};
+        ok -> {ok, byte_size(Bin)};
         Error -> Error
     end;
 write_iodata(Fd, IoSizes, IoData) ->
+    io:format("Split ~p~n", [iolist_to_binary(IoData)]),
     case file:write(Fd, IoData) of
         ok ->
             Bin = term_to_binary(IoSizes),
