@@ -112,11 +112,9 @@ append_raw_chunk(Fd, Chunk) ->
 
 
 assemble_file_chunk(Bin) ->
-    io:format("Data: ~p~nNo Md5~n", [Bin]),
     <<0:1/integer, (iolist_size(Bin)):31/integer, Bin/binary>>.
 
 assemble_file_chunk(Bin, Md5) ->
-    io:format("Data: ~p~nMD5: ~p~n", [Bin, Md5]),
     <<1:1/integer, (iolist_size(Bin)):31/integer, Md5/binary, Bin/binary>>.
 
 %%----------------------------------------------------------------------
@@ -153,7 +151,6 @@ pread_iolist(Fd, Pos) ->
         Md5 ->
             {ok, IoList};
         Other ->
-            io:format("~p~n~p ~p~n", [IoList, Md5, Other]),
             exit({file_corruption, <<"file corruption">>})
         end;
     Error ->
@@ -329,10 +326,8 @@ handle_call({pread_iolist, Pos}, _From, #file{fd=Fd}=File) ->
             {ok, Md5} = file:pread(Fd, Pos+4, 16),
             case Md5 of
                 <<0:16/binary>> ->
-                    io:format("Unsplitting~n", []),
                     read_iolist(Fd, Pos+20, Len);
                 _ ->
-                    io:format("Return raw.~n", []),
                     {ok, Data} = file:pread(Fd, Pos+20, Len),
                     {Data, Md5}
             end
@@ -457,13 +452,11 @@ sizes_to_ioinfo(Bin, [Size | RestSizes], Pos, Info, Acc) ->
 
 
 write_iodata(Fd, [_], [Bin]) ->
-    io:format("No split: ~p~n", [Bin]),
     case file:write(Fd, Bin) of
-        ok -> {ok, byte_size(Bin)};
+        ok -> {ok, 0};
         Error -> Error
     end;
 write_iodata(Fd, IoSizes, IoData) ->
-    io:format("Split ~p~n", [iolist_to_binary(IoData)]),
     case file:write(Fd, IoData) of
         ok ->
             Bin = term_to_binary(IoSizes),
@@ -471,7 +464,7 @@ write_iodata(Fd, IoSizes, IoData) ->
             Data = <<1:1/integer, Size:31/integer, 0:(16*8), Bin/binary>>,
             case file:write(Fd, Data) of
                 ok ->
-                    {ok, Size+20};
+                    {ok, byte_size(Data)};
                 Error ->
                     Error
             end;
