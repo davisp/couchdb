@@ -15,7 +15,7 @@
 
 -include("couch_db.hrl").
 
--define(SIZE_BLOCK, 4096).
+-define(BLOCK_SIZE, 4096).
 
 -record(file, {
     fd,
@@ -100,21 +100,22 @@ append_term_md5(Fd, Term, Options) ->
 %%----------------------------------------------------------------------
 
 append_binary(Fd, Bin) ->
-    gen_server:call(Fd, {append_bin, assemble_file_chunk(Bin)}, infinity).
+    Chunk = assemble_file_chunk(Bin),
+    gen_server:call(Fd, {append_bin, iolist_to_binary(Chunk)}, infinity).
     
 append_binary_md5(Fd, Bin) ->
-    gen_server:call(Fd,
-        {append_bin, assemble_file_chunk(Bin, couch_util:md5(Bin))}, infinity).
+    Chunk = assemble_file_chunk(Bin, couch_util:md5(Bin)),
+    gen_server:call(Fd, {append_bin, iolist_to_binary(Chunk)}, infinity).
 
 append_raw_chunk(Fd, Chunk) ->
-    gen_server:call(Fd, {append_bin, Chunk}, infinity).
+    gen_server:call(Fd, {append_bin, iolist_to_binary(Chunk)}, infinity).
 
 
 assemble_file_chunk(Bin) ->
-    [<<0:1/integer, (iolist_size(Bin)):31/integer>>, Bin].
+    <<0:1/integer, (iolist_size(Bin)):31/integer, Bin/binary>>.
 
 assemble_file_chunk(Bin, Md5) ->
-    [<<1:1/integer, (iolist_size(Bin)):31/integer>>, Md5, Bin].
+    <<1:1/integer, (iolist_size(Bin)):31/integer, Md5/binary, Bin/binary>>.
 
 %%----------------------------------------------------------------------
 %% Purpose: Reads a term from a file that was written with append_term
@@ -315,25 +316,23 @@ terminate(_Reason, #file{fd = Fd}) ->
     ok = file:close(Fd).
 
 
-handle_call({pread_iolist, Pos}, _From, File) ->
-    {RawData, NextPos} = try
-        % up to 8Kbs of read ahead
-        read_raw_iolist_int(File, Pos, 2 * ?SIZE_BLOCK - (Pos rem ?SIZE_BLOCK))
-    catch
-    _:_ ->
-        read_raw_iolist_int(File, Pos, 4)
+handle_call({pread_iolist, Pos}, _From, #file{fd=Fd}=File) ->
+    {ok, <<Flag:1/integer, Len:31/integer>>} = file:pread(Fd, Pos, 4),
+    Resp = case Flag of
+        0 ->
+            {ok, Data} = file:read(Fd, Pos+4, Len),
+            {Data, <<>>};
+        1 ->
+            {ok, Md5} = file:read(Fd, Pos+4, 16),
+            case Md5 of
+                <<0:16/binary>> ->
+                    read_iolist(Fd, Pos+20, Len);
+                _ ->
+                    {ok, Data} = file:pread(Fd, Pos+20, Len),
+                    {Data, Md5}
+            end
     end,
-    <<Prefix:1/integer, Len:31/integer, RestRawData/binary>> =
-        iolist_to_binary(RawData),
-    case Prefix of
-    1 ->
-        {Md5, IoList} = extract_md5(
-            maybe_read_more_iolist(RestRawData, 16 + Len, NextPos, File)),
-        {reply, {ok, IoList, Md5}, File};
-    0 ->
-        IoList = maybe_read_more_iolist(RestRawData, Len, NextPos, File),
-        {reply, {ok, IoList, <<>>}, File}
-    end;
+    {reply, {ok, Resp}, File};
 
 handle_call(bytes, _From, #file{fd = Fd} = File) ->
     {reply, file:position(Fd, eof), File};
@@ -351,24 +350,26 @@ handle_call({truncate, Pos}, _From, #file{fd=Fd}=File) ->
     end;
 
 handle_call({append_bin, Bin}, _From, #file{fd = Fd, eof = Pos} = File) ->
-    Blocks = make_blocks(Pos rem ?SIZE_BLOCK, Bin),
-    Size = iolist_size(Blocks),
-    case file:write(Fd, Blocks) of
-    ok ->
-        {reply, {ok, Pos, Size}, File#file{eof = Pos + Size}};
-    Error ->
-        {reply, Error, File}
+    Offset = Pos rem ?BLOCK_SIZE,
+    SizeList = block_sizes(Bin, byte_size(Bin), Offset, [0]),
+    {IoInfo, IoData} = sizes_to_ioinfo(Bin, SizeList, Pos, [], []),
+    case write_iodata(Fd, IoInfo, IoData) of
+        {ok, Size} ->
+            IoSize = iolist_size(IoData) + Size,
+            {reply, {ok, Pos, IoSize}, File#file{eof=Pos+IoSize}};
+        Error ->
+            {reply, Error, File}
     end;
 
 handle_call({write_header, Bin}, _From, #file{fd = Fd, eof = Pos} = File) ->
     BinSize = byte_size(Bin),
-    case Pos rem ?SIZE_BLOCK of
+    case Pos rem ?BLOCK_SIZE of
     0 ->
         Padding = <<>>;
     BlockOffset ->
-        Padding = <<0:(8*(?SIZE_BLOCK-BlockOffset))>>
+        Padding = <<0:(8*(?BLOCK_SIZE-BlockOffset))>>
     end,
-    FinalBin = [Padding, <<1, BinSize:32/integer>> | make_blocks(5, [Bin])],
+    FinalBin = [Padding, <<1, BinSize:32/integer>> | Bin],
     case file:write(Fd, FinalBin) of
     ok ->
         {reply, ok, File#file{eof = Pos + iolist_size(FinalBin)}};
@@ -377,7 +378,7 @@ handle_call({write_header, Bin}, _From, #file{fd = Fd, eof = Pos} = File) ->
     end;
 
 handle_call(find_header, _From, #file{fd = Fd, eof = Pos} = File) ->
-    {reply, find_header(Fd, Pos div ?SIZE_BLOCK), File}.
+    {reply, find_header(Fd, Pos div ?BLOCK_SIZE), File}.
 
 handle_cast(close, Fd) ->
     {stop,normal,Fd}.
@@ -402,105 +403,71 @@ find_header(Fd, Block) ->
     end.
 
 load_header(Fd, Block) ->
-    {ok, <<1, HeaderLen:32/integer, RestBlock/binary>>} =
-        file:pread(Fd, Block * ?SIZE_BLOCK, ?SIZE_BLOCK),
-    TotalBytes = calculate_total_read_len(5, HeaderLen),
+    {ok, <<1, TotalBytes:32/integer, RestBlock/binary>>} =
+        file:pread(Fd, Block * ?BLOCK_SIZE, ?BLOCK_SIZE),
     case TotalBytes > byte_size(RestBlock) of
     false ->
         <<RawBin:TotalBytes/binary, _/binary>> = RestBlock;
     true ->
         {ok, Missing} = file:pread(
-            Fd, (Block * ?SIZE_BLOCK) + 5 + byte_size(RestBlock),
+            Fd, (Block * ?BLOCK_SIZE) + 5 + byte_size(RestBlock),
             TotalBytes - byte_size(RestBlock)),
         RawBin = <<RestBlock/binary, Missing/binary>>
     end,
-    <<Md5Sig:16/binary, HeaderBin/binary>> =
-        iolist_to_binary(remove_block_prefixes(1, RawBin)),
+    <<Md5Sig:16/binary, HeaderBin/binary>> = RawBin,
     Md5Sig = couch_util:md5(HeaderBin),
     {ok, HeaderBin}.
 
-maybe_read_more_iolist(Buffer, DataSize, _, _)
-    when DataSize =< byte_size(Buffer) ->
-    <<Data:DataSize/binary, _/binary>> = Buffer,
-    [Data];
-maybe_read_more_iolist(Buffer, DataSize, NextPos, File) ->
-    {Missing, _} =
-        read_raw_iolist_int(File, NextPos, DataSize - byte_size(Buffer)),
-    [Buffer, Missing].
 
--spec read_raw_iolist_int(#file{}, Pos::non_neg_integer(), Len::non_neg_integer()) ->
-    {Data::iolist(), CurPos::non_neg_integer()}.
-read_raw_iolist_int(Fd, {Pos, _Size}, Len) -> % 0110 UPGRADE CODE
-    read_raw_iolist_int(Fd, Pos, Len);
-read_raw_iolist_int(#file{fd = Fd}, Pos, Len) ->
-    BlockOffset = Pos rem ?SIZE_BLOCK,
-    TotalBytes = calculate_total_read_len(BlockOffset, Len),
-    {ok, <<RawBin:TotalBytes/binary>>} = file:pread(Fd, Pos, TotalBytes),
-    {remove_block_prefixes(BlockOffset, RawBin), Pos + TotalBytes}.
-
--spec extract_md5(iolist()) -> {binary(), iolist()}.
-extract_md5(FullIoList) ->
-    {Md5List, IoList} = split_iolist(FullIoList, 16, []),
-    {iolist_to_binary(Md5List), IoList}.
-
-calculate_total_read_len(0, FinalLen) ->
-    calculate_total_read_len(1, FinalLen) + 1;
-calculate_total_read_len(BlockOffset, FinalLen) ->
-    case ?SIZE_BLOCK - BlockOffset of
-    BlockLeft when BlockLeft >= FinalLen ->
-        FinalLen;
-    BlockLeft ->
-        FinalLen + ((FinalLen - BlockLeft) div (?SIZE_BLOCK -1)) +
-            if ((FinalLen - BlockLeft) rem (?SIZE_BLOCK -1)) =:= 0 -> 0;
-                true -> 1 end
+read_iolist(Fd, Pos, Len) ->
+    {ok, IoBin} = file:pread(Fd, Pos, Len),
+    {ok, IoData} = file:pread(Fd, binary_to_term(IoBin)),
+    case IoData of
+        <<0:1/integer, Len:31/integer, Data:Len/binary>> ->
+            {Data, <<>>};
+        <<1:1/integer, Len:31/integer, Md5:16/binary, Data:Len/binary>> ->
+            {Data, Md5}
     end.
 
-remove_block_prefixes(_BlockOffset, <<>>) ->
-    [];
-remove_block_prefixes(0, <<_BlockPrefix,Rest/binary>>) ->
-    remove_block_prefixes(1, Rest);
-remove_block_prefixes(BlockOffset, Bin) ->
-    BlockBytesAvailable = ?SIZE_BLOCK - BlockOffset,
-    case size(Bin) of
-    Size when Size > BlockBytesAvailable ->
-        <<DataBlock:BlockBytesAvailable/binary,Rest/binary>> = Bin,
-        [DataBlock | remove_block_prefixes(0, Rest)];
-    _Size ->
-        [Bin]
-    end.
 
-make_blocks(_BlockOffset, []) ->
-    [];
-make_blocks(0, IoList) ->
-    [<<0>> | make_blocks(1, IoList)];
-make_blocks(BlockOffset, IoList) ->
-    case split_iolist(IoList, (?SIZE_BLOCK - BlockOffset), []) of
-    {Begin, End} ->
-        [Begin | make_blocks(0, End)];
-    _SplitRemaining ->
-        IoList
-    end.
+block_sizes(<<>>, 0, _Off, Acc) ->
+    lists:reverse(Acc);
+block_sizes(<<1, _/binary>>=Bin, Sz, 0, Acc) ->
+    block_sizes(Bin, Sz, ?BLOCK_SIZE-1, [0 | Acc]);
+block_sizes(_Bin, Sz, Off, [Len | Rest]) when Sz =< Off ->
+    lists:reverse([Len+Sz, Rest]);
+block_sizes(Bin, Sz, Off, [Len | Rest]) ->
+    <<_:Off/binary, Rest/binary>> = Bin,
+    block_sizes(Rest, Sz-Off, ?BLOCK_SIZE, [Len+Off | Rest]).
 
-%% @doc Returns a tuple where the first element contains the leading SplitAt
-%% bytes of the original iolist, and the 2nd element is the tail. If SplitAt
-%% is larger than byte_size(IoList), return the difference.
--spec split_iolist(IoList::iolist(), SplitAt::non_neg_integer(), Acc::list()) ->
-    {iolist(), iolist()} | non_neg_integer().
-split_iolist(List, 0, BeginAcc) ->
-    {lists:reverse(BeginAcc), List};
-split_iolist([], SplitAt, _BeginAcc) ->
-    SplitAt;
-split_iolist([<<Bin/binary>> | Rest], SplitAt, BeginAcc) when SplitAt > byte_size(Bin) ->
-    split_iolist(Rest, SplitAt - byte_size(Bin), [Bin | BeginAcc]);
-split_iolist([<<Bin/binary>> | Rest], SplitAt, BeginAcc) ->
-    <<Begin:SplitAt/binary,End/binary>> = Bin,
-    split_iolist([End | Rest], 0, [Begin | BeginAcc]);
-split_iolist([Sublist| Rest], SplitAt, BeginAcc) when is_list(Sublist) ->
-    case split_iolist(Sublist, SplitAt, BeginAcc) of
-    {Begin, End} ->
-        {Begin, [End | Rest]};
-    SplitRemaining ->
-        split_iolist(Rest, SplitAt - (SplitAt - SplitRemaining), [Sublist | BeginAcc])
+
+sizes_to_ioinfo(Bin, [Size], Pos, Info, Acc) when size(Bin) == Size ->
+    {lists:reverse([{Pos, Size} | Info]), lists:reverse([Bin | Acc])};
+sizes_to_ioinfo(Bin, [Size | RestSizes], Pos, Info, Acc) ->
+    <<Begin:Size/binary, RestBin/binary>> = Bin,
+    Info1 = [{Pos, Size} | Info],
+    Acc1 = [<<0>>, Begin | Acc],
+    sizes_to_ioinfo(RestBin, RestSizes, Pos+Size+1, Info1, Acc1).
+
+
+write_iodata(Fd, [_], [Bin]) ->
+    case file:write(Fd, Bin) of
+        ok -> {ok, byte_size(Bin), 0};
+        Error -> Error
     end;
-split_iolist([Byte | Rest], SplitAt, BeginAcc) when is_integer(Byte) ->
-    split_iolist(Rest, SplitAt - 1, [Byte | BeginAcc]).
+write_iodata(Fd, IoSizes, IoData) ->
+    case file:write(Fd, IoData) of
+        ok ->
+            Bin = term_to_binary(IoSizes),
+            Size = byte_size(Bin),
+            Data = <<1:1/integer, Size:31/integer, 0:(16*8), Bin/binary>>,
+            case file:write(Fd, Data) of
+                ok ->
+                    {ok, Size+20};
+                Error ->
+                    Error
+            end;
+        Error ->
+            Error
+    end.
+
