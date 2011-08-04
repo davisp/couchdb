@@ -4,8 +4,8 @@
 -export([make_header/1]).
 -export([open_index_file/3, open_compaction_file/3]).
 -export([get_row_count/1, reduce_to_count/1]).
--export([key_opts/1]).
--export([fold/4]).
+-export([key_opts/1, key_opts/2]).
+-export([fold/4, fold_reduce/4]).
 -export([maybe_load_doc/4]).
 
 
@@ -34,7 +34,7 @@ get_view(Db, DDoc, ViewName, Args0) ->
     {ok, Pid} = couch_index_server:get_index(couch_mrview_index, InitState),
     {ok, State} = couch_index:get_state(Pid, MinSeq),
     erlang:monitor(process, State#mrst.fd),
-    extract_view(Args, ViewName, State#mrst.views).
+    extract_view(InitState#mrst.language, Args, ViewName, State#mrst.views).
 
 
 ddoc_to_mrst(DbName, #doc{id=Id, body={Fields}}) ->
@@ -104,7 +104,7 @@ set_view_type(Args, ViewName, [View | Rest]) ->
     case lists:member(ViewName, RedNames) of
         true ->
             case Args#mrargs.reduce of
-                true -> Args#mrargs{view_type=reduce};
+                true -> Args#mrargs{view_type=red};
                 false -> Args#mrargs{view_type=map}
             end;
         false ->
@@ -115,19 +115,19 @@ set_view_type(Args, ViewName, [View | Rest]) ->
     end.
 
 
-extract_view(_Args, _ViewName, []) ->
+extract_view(_Lang, _Args, _ViewName, []) ->
     throw({not_found, missing_named_view});
-extract_view(#mrargs{view_type=map}=Args, Name, [View | Rest]) ->
+extract_view(Lang, #mrargs{view_type=map}=Args, Name, [View | Rest]) ->
     Names = View#mrview.map_names ++ [N || {N, _} <- View#mrview.reduce_funs],
     case lists:member(Name, Names) of
         true -> {map, View, Args};
-        _ -> extract_view(Args, Name, Rest)
+        _ -> extract_view(Lang, Args, Name, Rest)
     end;
-extract_view(#mrargs{view_type=red}=Args, Name, [View | Rest]) ->
+extract_view(Lang, #mrargs{view_type=red}=Args, Name, [View | Rest]) ->
     RedNames = [N || {N, _} <- View#mrview.reduce_funs],
     case lists:member(Name, RedNames) of
-        true -> {red, {index_of(Name, RedNames), View}, Args};
-        false -> extract_view(Args, Name, Rest)
+        true -> {red, {index_of(Name, RedNames), Lang, View}, Args};
+        false -> extract_view(Lang, Args, Name, Rest)
     end.
 
 
@@ -184,9 +184,10 @@ validate_args(Args) ->
     end,
 
     case {Args#mrargs.view_type, Args#mrargs.group_level} of
+        {_, exact} -> ok;
         {_, 0} -> ok;
-        {reduce, Int} when is_integer(Int), Int >= 0 -> ok;
-        {reduce, _} -> mrverror(<<"`group_level` must be >= 0">>);
+        {red, Int} when is_integer(Int), Int >= 0 -> ok;
+        {red, _} -> mrverror(<<"`group_level` must be >= 0">>);
         {map, _} -> mrverror(<<"Invalid use of grouping on a map view.">>)
     end,
 
@@ -202,9 +203,10 @@ validate_args(Args) ->
         _ -> mrverror(<<"Invalid value for `inclusive_end`.">>)
     end,
 
-    case is_boolean(Args#mrargs.include_docs) of
-        true -> ok;
-        _ -> mrverror(<<"Invalid value for `include_docs`.">>)
+    case {Args#mrargs.view_type, Args#mrargs.include_docs} of
+        {reduce, true} -> mrverror(<<"`include_docs` is invalid for reduce">>);
+        {_, ID} when is_boolean(ID) -> ok;
+        _ -> mrverror(<<"Invalid value for `include_docs`">>)
     end,
 
     case {Args#mrargs.view_type, Args#mrargs.conflicts} of
@@ -382,11 +384,15 @@ reduce_to_count(Reductions) ->
     Count.
 
 
-key_opts(#mrargs{keys=[], direction=Dir}=Args) ->
-    [[{dir, Dir}] ++ skey_opts(Args) ++ ekey_opts(Args)];
-key_opts(#mrargs{keys=Keys}) ->
+key_opts(Args) ->
+    key_opts(Args, []).
+
+
+key_opts(#mrargs{keys=[], direction=Dir}=Args, Extra) ->
+    [[{dir, Dir}] ++ skey_opts(Args) ++ ekey_opts(Args) ++ Extra];
+key_opts(#mrargs{keys=Keys}, Extra) ->
     lists:map(fun(K) ->
-        [{dir, fwd}, {start_key, {K, <<>>}}, {end_key, {K, <<255>>}}]
+        [{dir, fwd}, {start_key, {K, <<>>}}, {end_key, {K, <<255>>}}] ++ Extra
     end, Keys).
 
 
@@ -405,11 +411,11 @@ ekey_opts(#mrargs{end_key=EKey, end_key_docid=EKeyDocId}=Args) ->
     end.
     
 
-fold(#mrview{btree=Btree}, Fun, Acc, Opts) ->
+fold(#mrview{btree=Bt}, Fun, Acc, Opts) ->
     WrapperFun = fun(KV, Reds, Acc2) ->
         fold_fun(Fun, expand_dups([KV], []), Reds, Acc2)
     end,
-    {ok, _LastRed, _Acc} = couch_btree:fold(Btree, WrapperFun, Acc, Opts).
+    {ok, _LastRed, _Acc} = couch_btree:fold(Bt, WrapperFun, Acc, Opts).
 
 
 fold_fun(_Fun, [], _, Acc) ->
@@ -421,6 +427,36 @@ fold_fun(Fun, [KV|Rest], {KVReds, Reds}, Acc) ->
         {stop, Acc2} ->
             {stop, Acc2}
     end.
+
+
+fold_reduce({NthRed, Lang, View}, Fun,  Acc, Options) ->
+    #mrview{
+        btree=Bt,
+        reduce_funs=RedFuns
+    } = View,
+    LPad = lists:duplicate(NthRed - 1, []),
+    RPad = lists:duplicate(length(RedFuns) - NthRed, []),
+    {_Name, FunSrc} = lists:nth(NthRed,RedFuns),
+
+    ReduceFun = fun
+        (reduce, KVs0) ->
+            KVs1 = detuple_kvs(expand_dups(KVs0, []), []),
+            {ok, Red} = couch_query_servers:reduce(Lang, [FunSrc], KVs1),
+            {0, LPad ++ Red ++ RPad};
+        (rereduce, Reds) ->
+            ExtractRed = fun({_, UReds0}) -> lists:nth(NthRed, UReds0) end,
+            UReds = lists:map(ExtractRed, Reds),
+            {ok, Red} = couch_query_servers:rereduce(Lang, [FunSrc], UReds),
+            {0, LPad ++ Red ++ RPad}
+    end,
+    
+    WrapperFun = fun({GroupedKey, _}, PartialReds, Acc0) ->
+        {_, Reds} = couch_btree:final_reduce(ReduceFun, PartialReds),
+        Fun(GroupedKey, lists:nth(NthRed, Reds), Acc0)
+    end,
+
+    couch_btree:fold_reduce(Bt, WrapperFun, Acc, Options).
+
 
 
 reverse_key_default(<<>>) -> <<255>>;

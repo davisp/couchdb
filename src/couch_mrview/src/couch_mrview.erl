@@ -91,9 +91,81 @@ map_fold({{Key, Id}, Val}, _Offset, Acc) ->
     {Go, Acc#mracc{limit=Limit-1, user_acc=UAcc1}}.
 
 
-red_fold(_Db, {_Idx, _View}, _Args, _Callback, _Acc0) ->
-    ok.
-    
+red_fold(Db, View, Args, Callback, UAcc) ->
+    Acc = #mracc{
+        db=Db,
+        total_rows=null,
+        limit=Args#mrargs.limit,
+        skip=Args#mrargs.skip,
+        group_level=Args#mrargs.group_level,
+        callback=Callback,
+        user_acc=UAcc,
+        include_docs=Args#mrargs.include_docs
+    },
+    GroupFun = group_rows_fun(Args#mrargs.group_level),
+    OptList = couch_mrview_util:key_opts(Args, [{key_group_fun, GroupFun}]),
+    Acc2 = lists:foldl(fun(Opts, Acc0) ->
+        {ok, Acc1} =
+            couch_mrview_util:fold_reduce(View, fun red_fold/3,  Acc0, Opts),
+        Acc1
+    end, Acc, OptList),
+    {_, UAcc1} = Callback(complete, Acc2#mracc.user_acc),
+    {ok, UAcc1}.
+
+
+red_fold(_Key, _Red, #mracc{skip=N}=Acc) when N > 0 ->
+    {ok, Acc#mracc{skip=N-1}};
+red_fold(_Key, _Red, #mracc{limit=0} = Acc) ->
+    {stop, Acc};
+red_fold(_Key, Red, #mracc{group_level=0} = Acc) ->
+    #mracc{
+        limit=Limit,
+        callback=Callback,
+        user_acc=UAcc0
+    } = Acc,
+    Row = [{key, null}, {val, Red}],
+    {Go, UAcc1} = Callback({row, Row}, UAcc0),
+    {Go, Acc#mracc{user_acc=UAcc1, limit=Limit-1}};
+red_fold(Key, Red, #mracc{group_level=exact} = Acc) ->
+    #mracc{
+        limit=Limit,
+        callback=Callback,
+        user_acc=UAcc0
+    } = Acc,
+    Row = [{key, Key}, {val, Red}],
+    {Go, UAcc1} = Callback({row, Row}, UAcc0),
+    {Go, Acc#mracc{user_acc=UAcc1, limit=Limit-1}};
+red_fold(K, Red, #mracc{group_level=I} = Acc) when I > 0, is_list(K) ->
+    #mracc{
+        limit=Limit,
+        callback=Callback,
+        user_acc=UAcc0
+    } = Acc,
+    Row = [{key, lists:sublist(K, I)}, {val, Red}],
+    {Go, UAcc1} = Callback({row, Row}, UAcc0),
+    {Go, Acc#mracc{user_acc=UAcc1, limit=Limit-1}};
+red_fold(K, Red, #mracc{group_level=I} = Acc) when I > 0 ->
+    #mracc{
+        limit=Limit,
+        callback=Callback,
+        user_acc=UAcc0
+    } = Acc,
+    Row = [{key, K}, {val, Red}],
+    {Go, UAcc1} = Callback({row, Row}, UAcc0),
+    {Go, Acc#mracc{user_acc=UAcc1, limit=Limit-1}}.
+
+
+group_rows_fun(exact) ->
+    fun({Key1,_}, {Key2,_}) -> Key1 == Key2 end;
+group_rows_fun(0) ->
+    fun(_A, _B) -> true end;
+group_rows_fun(GroupLevel) when is_integer(GroupLevel) ->
+    fun({[_|_] = Key1,_}, {[_|_] = Key2,_}) ->
+        lists:sublist(Key1, GroupLevel) == lists:sublist(Key2, GroupLevel);
+    ({Key1,_}, {Key2,_}) ->
+        Key1 == Key2
+    end.
+
 
 default_callback(complete, Acc) ->
     {ok, lists:reverse(Acc)};

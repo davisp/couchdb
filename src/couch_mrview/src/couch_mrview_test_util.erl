@@ -6,10 +6,10 @@
 -define(ADMIN, #user_ctx{roles=[<<"_admin">>]}).
 
 
-init_db(Name) ->
+init_db(Name, Type) ->
     couch_server:delete(Name, [{user_ctx, ?ADMIN}]),
     {ok, Db} = couch_db:create(Name, [{user_ctx, ?ADMIN}]),
-    Docs = [ddoc()] ++ make_docs(10),
+    Docs = [ddoc(Type)] ++ make_docs(10),
     {ok, _} = couch_db:update_docs(Db, Docs, []),
     couch_db:reopen(Db).
 
@@ -23,12 +23,26 @@ make_docs(Count, Acc) ->
     make_docs(Count-1, [doc(Count) | Acc]).
 
 
-ddoc() ->
+ddoc(map) ->
     couch_doc:from_json_obj({[
         {<<"_id">>, <<"_design/bar">>},
         {<<"views">>, {[
             {<<"baz">>, {[
                 {<<"map">>, <<"function(doc) {emit(doc.val, doc.val);}">>}
+            ]}}
+        ]}}
+    ]});
+ddoc(red) ->
+    couch_doc:from_json_obj({[
+        {<<"_id">>, <<"_design/bar">>},
+        {<<"views">>, {[
+            {<<"baz">>, {[
+                {<<"map">>, <<
+                    "function(doc) {\n"
+                    "  emit([doc.val % 2, doc.val], doc.val);\n"
+                    "}\n"
+                >>},
+                {<<"reduce">>, <<"function(keys, vals) {return sum(vals);}">>}
             ]}}
         ]}}
     ]}).
