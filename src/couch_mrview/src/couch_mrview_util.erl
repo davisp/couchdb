@@ -1,12 +1,14 @@
 -module(couch_mrview_util).
 
--export([get_view/4, reset_index/3]).
+-export([get_view/4, get_info/2, init_state/4, reset_index/3]).
 -export([make_header/1]).
 -export([open_index_file/3, open_compaction_file/3]).
 -export([get_row_count/1, reduce_to_count/1]).
 -export([key_opts/1, key_opts/2]).
 -export([fold/4, fold_reduce/4]).
+-export([calculate_data_size/2]).
 -export([maybe_load_doc/4]).
+-export([hexsig/1]).
 
 
 -include("couch_db.hrl").
@@ -35,6 +37,19 @@ get_view(Db, DDoc, ViewName, Args0) ->
     {ok, State} = couch_index:get_state(Pid, MinSeq),
     erlang:monitor(process, State#mrst.fd),
     extract_view(InitState#mrst.language, Args, ViewName, State#mrst.views).
+
+
+get_info(DbName, DDoc) when is_binary(DbName) ->
+    couch_util:with_db(DbName, fun(Db) -> get_info(Db, DDoc) end);
+get_info(Db, DDoc) when is_binary(DDoc) ->
+    case couch_db:open_doc(Db, DDoc, [ejson_body]) of
+        {ok, Doc} -> get_info(Db, Doc);
+        Error -> Error
+    end;
+get_info(Db, DDoc) ->
+    InitState = ddoc_to_mrst(couch_db:name(Db), DDoc),
+    {ok, Pid} = couch_index_server:get_index(couch_mrview_index, InitState),
+    couch_index:get_info(Pid).
 
 
 ddoc_to_mrst(DbName, #doc{id=Id, body={Fields}}) ->
@@ -462,6 +477,22 @@ fold_reduce({NthRed, Lang, View}, Fun,  Acc, Options) ->
 reverse_key_default(<<>>) -> <<255>>;
 reverse_key_default(<<255>>) -> <<>>;
 reverse_key_default(Key) -> Key.
+
+
+calculate_data_size(IdBt, Views) ->
+    SumFun = fun(#mrview{btree=Bt}, Acc) ->
+        sum_btree_sizes(Acc, couch_btree:size(Bt))
+    end,
+    Size = lists:foldl(SumFun, couch_btree:size(IdBt), Views),
+    {ok, Size}.
+
+
+sum_btree_sizes(nil, _) ->
+    null;
+sum_btree_sizes(_, nil) ->
+    null;
+sum_btree_sizes(Size1, Size2) ->
+    Size1 + Size2.
     
 
 maybe_load_doc(_, _, _, false) ->
@@ -506,8 +537,8 @@ expand_dups([KV | Rest], Acc) ->
     expand_dups(Rest, [KV | Acc]).
 
 
-hexsig(GroupSig) ->
-    couch_util:to_hex(binary_to_list(GroupSig)).
+hexsig(Sig) ->
+    couch_util:to_hex(binary_to_list(Sig)).
 
 
 index_of(Key, List) ->

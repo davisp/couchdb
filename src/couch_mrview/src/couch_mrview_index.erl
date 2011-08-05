@@ -3,6 +3,7 @@
 
 -export([db_name/1, index_name/1, signature/1]).
 -export([update_seq/1, set_update_seq/2, purge_seq/1]).
+-export([get_info/1]).
 -export([open/2, close/1]).
 -export([update_options/1]).
 -export([start_update/3, process_doc/3, finish_update/1, purge/4, commit/1]).
@@ -35,6 +36,28 @@ set_update_seq(Seq, State) ->
 
 purge_seq(#mrst{purge_seq=PurgeSeq}) ->
     PurgeSeq.
+
+
+get_info(State) ->
+    #mrst{
+        fd = Fd,
+        sig = Sig,
+        id_btree = Btree,
+        language = Lang,
+        update_seq = UpdateSeq,
+        purge_seq = PurgeSeq,
+        views = Views
+    } = State,
+    {ok, Size} = couch_file:bytes(Fd),
+    {ok, DataSize} = couch_mrview_util:calculate_data_size(Btree, Views),
+    {ok, [
+        {signature, list_to_binary(couch_mrview_util:hexsig(Sig))},
+        {language, Lang},
+        {disk_size, Size},
+        {data_size, DataSize},
+        {update_seq, UpdateSeq},
+        {purge_seq, PurgeSeq}
+    ]}.
 
 
 open(Db, State) ->

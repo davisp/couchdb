@@ -15,7 +15,7 @@
 
 
 %% API
--export([start_link/2, run/2, swap/3]).
+-export([start_link/2, run/2, is_running/1, swap/3]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -37,6 +37,10 @@ run(Pid, IdxState) ->
     gen_server:call(Pid, {compact, IdxState}).
 
 
+is_running(Pid) ->
+    gen_server:call(Pid, is_running).
+
+
 swap(Pid, OldIdxState, NewIdxState) ->
     gen_server:call(Pid, {swap, OldIdxState, NewIdxState}).
 
@@ -56,6 +60,10 @@ handle_call({compact, _}, _From, #st{pid=Pid}=State) when is_pid(Pid) ->
 handle_call({compact, IdxState}, _From, State) ->
     Pid = spawn_link(fun() -> compact(State#st.mod, IdxState) end),
     {reply, ok, State#st{pid=Pid}};
+handle_call(is_running, _From, #st{pid=Pid}=State) when is_pid(Pid) ->
+    {reply, true, State};
+handle_call(is_running, _From, State) ->
+    {reply, false, State};
 handle_call({swap, OldIdxState, NewIdxState}, _From, State) ->
     #st{mod=Mod} = State,
     {ok, NewIdxState1} = Mod:swap_compacted(OldIdxState, NewIdxState),

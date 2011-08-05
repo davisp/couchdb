@@ -12,14 +12,14 @@
 
 -module(couch_mrview_http).
 
--export([handle_view_req/3]).
+-export([handle_view_req/3, handle_info_req/3]).
 
 -include("couch_db.hrl").
 -include_lib("couch_mrview/include/couch_mrview.hrl").
 
 handle_view_req(#httpd{method='GET'}=Req, Db, DDoc) ->
     [_, _, _, _, ViewName] = Req#httpd.path_parts,
-    design_doc_view(Req, Db, DDoc, ViewName, undefined);
+    design_doc_view(Req, Db, DDoc, ViewName, []);
 handle_view_req(#httpd{method='POST'}=Req, Db, DDoc) ->
     [_, _, _, _, ViewName] = Req#httpd.path_parts,
     {Fields} = couch_httpd:json_body_obj(Req),
@@ -34,6 +34,17 @@ handle_view_req(Req, _Db, _DDoc) ->
     couch_httpd:send_method_not_allowed(Req, "GET,POST,HEAD").
 
 
+handle_info_req(#httpd{method='GET'}=Req, Db, DDoc) ->
+    [_, _, Name, _] = Req#httpd.path_parts,
+    {ok, Info} = couch_mrview_util:get_info(Db, DDoc),
+    couch_httpd:send_json(Req, 200, {[
+        {name, Name},
+        {view_index, {Info}}
+    ]});
+handle_info_req(Req, _Db, _DDoc) ->
+    couch_httpd:send_method_not_allowed(Req, "GET").
+
+
 design_doc_view(Req, Db, DDoc, ViewName, Keys) ->
     Args0 = parse_qs(Req),
     Args = Args0#mrargs{keys=Keys},
@@ -43,7 +54,7 @@ design_doc_view(Req, Db, DDoc, ViewName, Keys) ->
         Hdrs = [{"ETag", ETag}],
         {ok, Resp} = couch_httpd:start_json_response(Req, 200, Hdrs),
         CB = fun view_callback/2,
-        couch_mrview:query_view(Db, DDoc, ViewName, CB, {nil, Resp}, Args),
+        couch_mrview:query_view(Db, DDoc, ViewName, Args, CB, {nil, Resp}),
         couch_httpd:end_json_response(Resp)
     end).
 
@@ -52,15 +63,11 @@ view_callback({total_and_offset, Total, Offset}, {nil, Resp}) ->
     Chunk = "{\"total_rows\":~p,\"offset\":~p,\"rows\":[\r\n",
     couch_httpd:send_chunk(Resp, io_lib:format(Chunk, [Total, Offset])),
     {ok, {"", Resp}};
-view_callback({total_and_offset, _, _}, Acc) ->
-    % a sorted=false view where the message came in late.  Ignore.
-    {ok, Acc};
 view_callback({row, Row}, {nil, Resp}) ->
-    % first row of a reduce view, or a sorted=false view
-    couch_httpd:send_chunk(Resp, ["{\"rows\":[\r\n", ?JSON_ENCODE(Row)]),
+    couch_httpd:send_chunk(Resp, ["{\"rows\":[\r\n", ?JSON_ENCODE({Row})]),
     {ok, {",\r\n", Resp}};
 view_callback({row, Row}, {Prepend, Resp}) ->
-    couch_httpd:send_chunk(Resp, [Prepend, ?JSON_ENCODE(Row)]),
+    couch_httpd:send_chunk(Resp, [Prepend, ?JSON_ENCODE({Row})]),
     {ok, {",\r\n", Resp}};
 view_callback(complete, {nil, Resp}) ->
     couch_httpd:send_chunk(Resp, "{\"rows\":[]}");

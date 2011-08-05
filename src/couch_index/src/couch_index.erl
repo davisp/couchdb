@@ -103,7 +103,16 @@ handle_call({get_state, ReqSeq}, From, State) ->
     end;
 handle_call(get_info, _From, State) ->
     #st{mod=Mod} = State,
-    {reply, {ok, Mod:get_info(State#st.idx_state)}, State};
+    {ok, Info0} = Mod:get_info(State#st.idx_state),
+    IsUpdating = couch_index_updater:is_running(State#st.updater),
+    IsCompacting = couch_index_compactor:is_running(State#st.compactor),
+    Info = Info0 ++ [
+        {updater_running, IsUpdating},
+        {compact_running, IsCompacting},
+        {waiting_commit, State#st.committed == false},
+        {waiting_clients, length(State#st.waiters)}
+    ],
+    {reply, {ok, Info}, State};
 handle_call({new_state, NewIdxState}, _From, State) ->
     #st{mod=Mod} = State,
     CurrSeq = Mod:update_seq(NewIdxState),

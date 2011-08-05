@@ -1,6 +1,6 @@
 -module(couch_mrview).
 
--export([query_view/3, query_view/4, query_view/6]).
+-export([query_view/3, query_view/4, query_view/6, get_info/2]).
 
 -include_lib("couch_mrview/include/couch_mrview.hrl").
 
@@ -36,6 +36,11 @@ query_view(Db, DDoc, ViewName, Args0, Callback, Acc0) ->
         map -> map_fold(Db, View, Args, Callback, Acc0);
         red -> red_fold(Db, View, Args, Callback, Acc0)
     end.
+
+
+% API convenience.
+get_info(Db, DDoc) ->
+    couch_mrview_util:get_info(Db, DDoc).
 
 
 map_fold(Db, View, Args, Callback, UAcc) ->

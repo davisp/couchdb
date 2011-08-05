@@ -1,22 +1,10 @@
 
-db_name(State) ->
+
+get(Field, State) ->
     ok.
 
-index_name(State) ->
-    ok.
-
-signature(State) ->
-    ok.
-
-update_seq(State) ->
-    ok.
-
-set_update_seq(Seq, State) ->
-    ok.
-
-purge_seq(State) ->
-    ok.
-
+set(Field, Value, State) ->
+    {ok, State}.
 
 
 open_index(Db, State) ->
@@ -25,12 +13,18 @@ open_index(Db, State) ->
 close_index(State) ->
     ok.
 
-
-update_options(State) ->
+reset_index(State) ->
     ok.
+
+
+start_update(State) ->
+    {ok, State}.
 
 process_doc(Doc, State) ->
     ok.
+
+finish_update(State) ->
+    {ok, State}.
 
 purge_index(PurgedIdRevs, State) ->
     ok.
@@ -42,10 +36,5 @@ commit(State) ->
 compact(Parent, State, Opts) ->
     ok.
 
-
 swap_compacted(OldState, NewState) ->
-    ok.
-
-
-reset_index(State) ->
     ok.
