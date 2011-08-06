@@ -434,7 +434,11 @@ encode_doc_id(Id) ->
 with_db(DbName, Fun) ->
     case couch_db:open_int(DbName, []) of
         {ok, Db} ->
-            try Fun(Db) after couch_db:close(Db) end;
+            try
+                Fun(Db)
+            after
+                catch couch_db:close(Db)
+            end;
         Else ->
             throw(Else)
     end.

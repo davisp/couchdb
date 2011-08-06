@@ -31,9 +31,9 @@ query_view(Db, DDoc, ViewName, Args) ->
     
 query_view(Db, DDoc, ViewName, Args, Callback, Acc) when is_list(Args) ->
     query_view(Db, DDoc, ViewName, to_mrargs(Args), Callback, Acc);
-query_view(Db, DDoc, ViewName, Args, Callback, Acc) ->
-    {ok, ViewInfo, Args} = couch_mrview_util:get_view(Db, DDoc, ViewName, Args),
-    run_view(Db, ViewInfo, Callback, Acc).
+query_view(Db, DDoc, ViewName, Args0, Callback, Acc) ->
+    {ok, VInfo, Args} = couch_mrview_util:get_view(Db, DDoc, ViewName, Args0),
+    run_view(Db, VInfo, Args, Callback, Acc).
 
 
 open_view(Db, DDoc, ViewName) ->
@@ -42,8 +42,7 @@ open_view(Db, DDoc, ViewName) ->
 open_view(Db, DDoc, ViewName, Args) when is_list(Args) ->
     open_view(Db, DDoc, ViewName, to_mrargs(Args));
 open_view(Db, DDoc, ViewName, Args0) ->
-    {Type, View, Args} = couch_mrutil:get_view(Db, DDOc, ViewName, Args0),
-    {ok, {Type, View}, Args}.
+    couch_mrview_util:get_view(Db, DDoc, ViewName, Args0).
 
 
 run_view(Db, {map, View}, Args, Callback, Acc) ->

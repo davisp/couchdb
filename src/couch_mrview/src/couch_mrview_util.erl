@@ -37,7 +37,9 @@ get_view(Db, DDoc, ViewName, Args0) ->
     {ok, Pid} = couch_index_server:get_index(couch_mrview_index, InitState),
     {ok, State} = couch_index:get_state(Pid, MinSeq),
     erlang:monitor(process, State#mrst.fd),
-    extract_view(InitState#mrst.language, Args, ViewName, State#mrst.views).
+    #mrst{language=Lang, views=Views} = State,
+    {Type, View, Args} = extract_view(Lang, Args, ViewName, Views),
+    {ok, {Type, View}, Args}.
 
 
 get_info(DbName, DDoc) when is_binary(DbName) ->
@@ -342,20 +344,6 @@ make_header(State) ->
     }.
 
 
-view_etag(Db, Group, View, QueryArgs) ->
-    view_etag(Db, Group, View, QueryArgs, nil).
-
-view_etag(Db, Group, {reduce, _, _, View}, QueryArgs, Extra) ->
-    view_etag(Db, Group, View, QueryArgs, Extra);
-view_etag(Db, Group, {temp_reduce, View}, QueryArgs, Extra) ->
-    view_etag(Db, Group, View, QueryArgs, Extra);
-view_etag(_Db, #group{sig=Sig, current_seq=CurrentSeq}, _View, #view_query_args{include_docs=true}, Extra) ->
-    couch_httpd:make_etag({Sig, CurrentSeq, Extra});
-view_etag(_Db, #group{sig=Sig}, #view{update_seq=UpdateSeq, purge_seq=PurgeSeq}, _QueryArgs, Extra) ->
-    couch_httpd:make_etag({Sig, UpdateSeq, PurgeSeq, Extra}).
-
-
-
 open_index_file(RootDir, DbName, GroupSig) ->
     FName = design_root(RootDir, DbName) ++ hexsig(GroupSig) ++".view",
     case couch_file:open(FName) of
@@ -504,7 +492,6 @@ temp_view_to_ddoc({Props}) ->
             {<<"temp">>, {View1}}
         ]}}
     ]},
-    io:format("~p~n", [DDoc]),
     couch_doc:from_json_obj(DDoc).
 
 

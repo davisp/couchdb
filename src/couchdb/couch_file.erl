@@ -222,6 +222,8 @@ nuke_dir(RootDelDir, Dir) ->
                 case delete(RootDelDir, Path, false) of
                     {error, eperm} ->
                         ok = nuke_dir(RootDelDir, Path);
+                    {error, enoent} ->
+                        ok;
                     ok ->
                         ok
                 end

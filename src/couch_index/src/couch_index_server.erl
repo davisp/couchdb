@@ -123,7 +123,7 @@ reset_indexes(DbName, Root) ->
     % shutdown all the updaters and clear the files, the db got changed
     Fun = fun({_, Sig}) ->
         [{_, Pid}] = ets:lookup(?BY_SIG, {DbName, Sig}),
-        couch_index:stop(Pid),
+        couch_util:shutdown_sync(Pid),
         rem_from_ets(DbName, Sig, Pid)
     end,
     lists:foreach(Fun, ets:lookup(?BY_DB, DbName)),

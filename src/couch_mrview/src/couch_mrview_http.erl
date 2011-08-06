@@ -54,37 +54,37 @@ handle_info_req(Req, _Db, _DDoc) ->
 
 design_doc_view(Req, Db, DDoc, ViewName, Keys) ->
     Args0 = parse_qs(Req),
-    Args = Args0#mrargs{keys=Keys},
-    ETag = couch_uuids:new(),
+    Args1 = Args0#mrargs{keys=Keys},
+    {ok, ViewInfo, Args} = couch_mrview:open_view(Db, DDoc, ViewName, Args1),
+    ETag = calculate_view_etag(Db, ViewInfo, Args),
     couch_stats_collector:increment({httpd, view_reads}),
     couch_httpd:etag_respond(Req, ETag, fun() ->
         Hdrs = [{"ETag", ETag}],
         {ok, Resp} = couch_httpd:start_json_response(Req, 200, Hdrs),
-        CB = fun view_callback/2,
-        couch_mrview:query_view(Db, DDoc, ViewName, Args, CB, {nil, Resp}),
+        couch_mrview:run_view(Db, ViewInfo, Args, fun view_cb/2, {nil, Resp}),
         couch_httpd:end_json_response(Resp)
     end).
 
 
-view_callback({meta, Meta}, {nil, Resp}) ->
+view_cb({meta, Meta}, {nil, Resp}) ->
     % Map function starting
     Total = couch_util:get_value(total, Meta),
     Offset = couch_util:get_value(offset, Meta),
     Chunk = "{\"total_rows\":~p,\"offset\":~p,\"rows\":[\r\n",
     couch_httpd:send_chunk(Resp, io_lib:format(Chunk, [Total, Offset])),
     {ok, {"", Resp}};
-view_callback({row, Row}, {nil, Resp}) ->
+view_cb({row, Row}, {nil, Resp}) ->
     % Reduce function starting
     couch_httpd:send_chunk(Resp, ["{\"rows\":[\r\n", row_to_json(Row)]),
     {ok, {",\r\n", Resp}};
-view_callback({row, Row}, {Prepend, Resp}) ->
+view_cb({row, Row}, {Prepend, Resp}) ->
     % Adding another row
     couch_httpd:send_chunk(Resp, [Prepend, row_to_json(Row)]),
     {ok, {",\r\n", Resp}};
-view_callback(complete, {nil, Resp}) ->
+view_cb(complete, {nil, Resp}) ->
     % Nothing in view
     couch_httpd:send_chunk(Resp, "{\"rows\":[]}");
-view_callback(complete, {_, Resp}) ->
+view_cb(complete, {_, Resp}) ->
     % Finish view output
     couch_httpd:send_chunk(Resp, "\r\n]}").
 
@@ -102,6 +102,35 @@ row_to_json(Row) ->
     end,
     Obj = {Id ++ [{key, Key}, {value, Val}] ++ Doc},
     ?JSON_ENCODE(Obj).
+
+
+calculate_view_etag(Db, {map, View}, Args0) ->
+    #mrview{
+        update_seq=UpdateSeq,
+        purge_seq=PurgeSeq,
+        def=MapSrc,
+        options=Opts
+    } = View,
+    Args = Args0#mrargs{extra=[]},
+    DbSeq = case Args#mrargs.include_docs of
+        true -> [couch_db:get_update_seq(Db)];
+        _ -> []
+    end,
+    Parts = [map, UpdateSeq, PurgeSeq, MapSrc, Opts, Args] ++ DbSeq,
+    ?LOG_INFO("Parts: ~p", [Parts]),
+    couch_httpd:make_etag(Parts);
+calculate_view_etag(_Db, {red, {Nth, _Lang, View}}, Args0) ->
+    #mrview{
+        update_seq=UpdateSeq,
+        purge_seq=PurgeSeq,
+        def=MapSrc,
+        reduce_funs=RedFuns,
+        options=Opts
+    } = View,
+    RedSrc = lists:nth(Nth, RedFuns),
+    Args = Args0#mrargs{extra=[]},
+    Parts = [red, UpdateSeq, PurgeSeq, MapSrc, RedSrc, Opts, Args],
+    couch_httpd:make_etag(Parts).
 
 
 parse_qs(Req) ->

@@ -71,18 +71,18 @@ purge_index(_Db, PurgeSeq, PurgedIdRevs, State) ->
                     true -> PurgeSeq;
                     _ -> View#mrview.purge_seq
                 end,
-                View#mview{btree=Btree2, purge_seq=PurgeSeq};
+                View#mrview{btree=Btree2, purge_seq=NewPurgeSeq};
             error ->
                 View
         end
     end,
 
     Views2 = lists:map(RemKeysFun, Views),
-    State#mrst{
+    {ok, State#mrst{
         id_btree=IdBtree2,
         views=Views2,
         purge_seq=PurgeSeq
-    }.
+    }}.
 
 
 start_query_server(State) ->

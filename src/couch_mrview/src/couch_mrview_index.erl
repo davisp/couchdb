@@ -90,7 +90,6 @@ purge(Db, PurgeSeq, PurgedIdRevs, State) ->
 
 
 update_options(#mrst{design_opts=Opts}) ->
-    io:format("Opts: ~p~n", [Opts]),
     Opts1 = case couch_util:get_value(<<"include_design">>, Opts, false) of
         true -> [include_design];
         _ -> []
@@ -128,4 +127,7 @@ swap_compacted(OldState, NewState) ->
 
 
 reset(State) ->
-    couch_mrview_util:reset_index(State).
+    couch_util:with_db(State#mrst.db_name, fun(Db) ->
+        NewState = couch_mrview_util:reset_index(Db, State#mrst.fd, State),
+        {ok, NewState}
+    end).

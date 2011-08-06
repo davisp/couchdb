@@ -147,8 +147,8 @@ purge_index(Db, Mod, IdxState) ->
             {ok, IdxState};
         DbPurgeSeq == IdxPurgeSeq + 1 ->
             couch_task_status:update(<<"Purging index entries.">>),
-            {ok, PurgedIdRevs} = couch_db:get_last_purge(Db),
-            Mod:purge_index(Db, DbPurgeSeq, PurgedIdRevs, IdxState);
+            {ok, PurgedIdRevs} = couch_db:get_last_purged(Db),
+            Mod:purge(Db, DbPurgeSeq, PurgedIdRevs, IdxState);
         true ->
             couch_task_status:update(<<"Resetting index due to purge state.">>),
             reset

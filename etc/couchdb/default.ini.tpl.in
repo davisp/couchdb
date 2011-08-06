@@ -4,7 +4,7 @@
 
 [couchdb]
 database_dir = %localstatelibdir%
-index_dir = %localstatelibdir%/mrviews
+index_dir = %localstatelibdir%
 view_index_dir = %localstatelibdir%
 util_driver_dir = %couchprivlibdir%
 max_document_size = 4294967296 ; 4 GB
@@ -72,7 +72,7 @@ reduce_limit = true
 os_process_limit = 25
 
 [daemons]
-view_manager={couch_view, start_link, []}
+; view_manager={couch_view, start_link, []}
 index_server={couch_index_server, start_link, []}
 external_manager={couch_external_manager, start_link, []}
 query_servers={couch_query_servers, start_link, []}

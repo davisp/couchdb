@@ -66,12 +66,13 @@ init({Mod, IdxState}) ->
                 ),
                 MsDelay = 1000 * list_to_integer(Delay),
                 proc_lib:init_ack({ok, self()}),
+                {ok, TRef} = timer:send_interval(MsDelay, commit),
                 State = #st{
                     mod=Mod,
                     idx_state=NewIdxState,
                     updater=UPid,
                     compactor=CPid,
-                    tref=timer:send_interval(MsDelay, commit)
+                    tref=TRef
                 },
                 gen_server:enter_loop(?MODULE, [], State);
             {error, Reason} ->
@@ -131,7 +132,7 @@ handle_call(reset, _From, State) ->
         mod=Mod,
         idx_state=IdxState
     } = State,
-    {ok, NewIdxState} = Mod:reset_index(IdxState),
+    {ok, NewIdxState} = Mod:reset(IdxState),
     {reply, {ok, NewIdxState}, State#st{idx_state=NewIdxState}};
 handle_call(compact, _From, State) ->
     couch_index_compactor:run(State#st.compactor, State#st.idx_state),
@@ -193,7 +194,7 @@ handle_info(commit, State) ->
             {noreply, State}
     end;
 handle_info({'DOWN', _, _, _Pid, _}, State) ->
-    send_all(State#st.waiters, shutdown),
+    catch send_all(State#st.waiters, shutdown),
     {stop, normal, State#st{waiters=[]}}.
 
 
