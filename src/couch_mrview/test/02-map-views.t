@@ -16,7 +16,7 @@
 main(_) ->
     test_util:init_code_path(),
 
-    etap:plan(unknown),
+    etap:plan(6),
     case (catch test()) of
         ok ->
             etap:end_tests();
@@ -37,6 +37,7 @@ test() ->
     test_rev_range(Db),
     test_limit_and_skip(Db),
     test_include_docs(Db),
+    test_empty_view(Db),
 
     ok.
 
@@ -44,7 +45,7 @@ test() ->
 test_basic(Db) ->
     Result = run_query(Db, []),
     Expect = {ok, [
-        {total_and_offset, 10, 0},
+        {meta, [{total, 10}, {offset, 0}]},
         {row, [{key, 1}, {id, <<"1">>}, {val, 1}]},
         {row, [{key, 2}, {id, <<"2">>}, {val, 2}]},
         {row, [{key, 3}, {id, <<"3">>}, {val, 3}]},
@@ -62,7 +63,7 @@ test_basic(Db) ->
 test_range(Db) ->
     Result = run_query(Db, [{start_key, 3}, {end_key, 5}]),
     Expect = {ok, [
-        {total_and_offset, 10, 2},
+        {meta, [{total, 10}, {offset, 2}]},
         {row, [{key, 3}, {id, <<"3">>}, {val, 3}]},
         {row, [{key, 4}, {id, <<"4">>}, {val, 4}]},
         {row, [{key, 5}, {id, <<"5">>}, {val, 5}]}
@@ -77,7 +78,7 @@ test_rev_range(Db) ->
         {inclusive_end, true}
     ]),
     Expect = {ok, [  
-        {total_and_offset, 10, 5},
+        {meta, [{total, 10}, {offset, 5}]},
         {row, [{key, 5}, {id, <<"5">>}, {val, 5}]},
         {row, [{key, 4}, {id, <<"4">>}, {val, 4}]},
         {row, [{key, 3}, {id, <<"3">>}, {val, 3}]}
@@ -92,7 +93,7 @@ test_limit_and_skip(Db) ->
         {skip, 3}
     ]),
     Expect = {ok, [
-        {total_and_offset, 10, 4},
+        {meta, [{total, 10}, {offset, 4}]},
         {row, [{key, 5}, {id, <<"5">>}, {val, 5}]},
         {row, [{key, 6}, {id, <<"6">>}, {val, 6}]},
         {row, [{key, 7}, {id, <<"7">>}, {val, 7}]}
@@ -112,10 +113,18 @@ test_include_docs(Db) ->
         {<<"val">>,8}
     ]},
     Expect = {ok, [
-        {total_and_offset, 10, 7},
+        {meta, [{total, 10}, {offset, 7}]},
         {row, [{key, 8}, {id, <<"8">>}, {val, 8}, {doc, Doc}]}
     ]},
     etap:is(Result, Expect, "Query with include docs works.").
+
+
+test_empty_view(Db) ->
+    Result = couch_mrview:query_view(Db, <<"_design/bar">>, <<"bing">>),
+    Expect = {ok, [
+        {meta, [{total, 0}, {offset, 0}]}
+    ]},
+    etap:is(Result, Expect, "Empty views are correct.").
 
 
 run_query(Db, Opts) ->

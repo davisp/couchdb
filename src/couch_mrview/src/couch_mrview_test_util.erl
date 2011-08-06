@@ -29,6 +29,9 @@ ddoc(map) ->
         {<<"views">>, {[
             {<<"baz">>, {[
                 {<<"map">>, <<"function(doc) {emit(doc.val, doc.val);}">>}
+            ]}},
+            {<<"bing">>, {[
+                {<<"map">>, <<"function(doc) {}">>}
             ]}}
         ]}}
     ]});

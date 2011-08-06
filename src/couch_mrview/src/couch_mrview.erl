@@ -6,6 +6,7 @@
 
 -record(mracc, {
     db,
+    meta_sent=false,
     total_rows,
     offset,
     limit,
@@ -28,14 +29,19 @@ query_view(Db, DDoc, ViewName, Args) ->
     query_view(Db, DDoc, ViewName, Args, fun default_callback/2, []).
 
 
-query_view(Db, DDoc, ViewName, Args0, Callback, Acc0) when is_list(Args0) ->
-    query_view(Db, DDoc, ViewName, to_mrargs(Args0), Callback, Acc0);
-query_view(Db, DDoc, ViewName, Args0, Callback, Acc0) ->
-    {Type, View, Args} = couch_mrview_util:get_view(Db, DDoc, ViewName, Args0),
+query_view(Db, DDoc, ViewName, Args, Callback, Acc) when is_list(Args) ->
+    query_view(Db, DDoc, ViewName, to_mrargs(Args), Callback, Acc);
+query_view(Db, DDoc, ViewName, Args, Callback, Acc) ->
+    ViewInfo = couch_mrview_util:get_view(Db, DDoc, ViewName, Args),
+    run_view(Db, ViewInfo, Callback, Acc).
+
+
+run_view(Db, {Type, View, Args}, Callback, Acc) ->
     case Type of
-        map -> map_fold(Db, View, Args, Callback, Acc0);
-        red -> red_fold(Db, View, Args, Callback, Acc0)
-    end.
+        map -> map_fold(Db, View, Args, Callback, Acc);
+        red -> red_fold(Db, View, Args, Callback, Acc)
+    end.    
+
 
 
 % API convenience.
@@ -56,12 +62,25 @@ map_fold(Db, View, Args, Callback, UAcc) ->
         include_docs=Args#mrargs.include_docs
     },
     OptList = couch_mrview_util:key_opts(Args),
-    Acc2 = lists:foldl(fun(Opts, Acc0) ->
-        {ok, _, Acc1} = couch_mrview_util:fold(View, fun map_fold/3, Acc0,Opts),
-        Acc1
-    end, Acc, OptList),
-    {_, UAcc1} = Callback(complete, Acc2#mracc.user_acc),
-    {ok, UAcc1}.
+    {Reds, Acc2} = lists:foldl(fun(Opts, {_, Acc0}) ->
+        {ok, R, A} = couch_mrview_util:fold(View, fun map_fold/3, Acc0, Opts),
+        {R, A}
+    end, {nil, Acc}, OptList),
+    
+    % Send meta info if we haven't already
+    Offset = couch_mrview_util:reduce_to_count(Reds),
+    Meta = [{total, Total}, {offset, Offset}],
+    {Go, UAcc1} = case Acc2#mracc.meta_sent of
+        false -> Callback({meta, Meta}, Acc2#mracc.user_acc);
+        _ -> {ok, Acc2#mracc.user_acc}
+    end,
+    
+    % Notify callback that the fold is complete.
+    {_, UAcc2} = case Go of
+        ok -> Callback(complete, UAcc1);
+        _ -> {ok, UAcc1}
+    end,
+    {ok, UAcc2}.
 
 
 map_fold(_KV, _Offset, #mracc{skip=N}=Acc) when N > 0 ->
@@ -74,8 +93,8 @@ map_fold(KV, OffsetReds, #mracc{offset=undefined}=Acc) ->
         reduce_fun=Reduce
     } = Acc,
     Offset = Reduce(OffsetReds),
-    {Go, UAcc1} = Callback({total_and_offset, Total, Offset}, UAcc0),
-    Acc1 = Acc#mracc{offset=Offset, user_acc=UAcc1},
+    {Go, UAcc1} = Callback({meta, [{total, Total}, {offset, Offset}]}, UAcc0),
+    Acc1 = Acc#mracc{meta_sent=true, offset=Offset, user_acc=UAcc1},
     case Go of
         ok -> map_fold(KV, OffsetReds, Acc1);
         stop -> {stop, Acc1}
@@ -174,6 +193,10 @@ group_rows_fun(GroupLevel) when is_integer(GroupLevel) ->
 
 default_callback(complete, Acc) ->
     {ok, lists:reverse(Acc)};
+default_callback({final, Info}, []) ->
+    {ok, [Info]};
+default_callback({final, _}, Acc) ->
+    {ok, Acc};
 default_callback(Row, Acc) ->
     {ok, [Row | Acc]}.
 

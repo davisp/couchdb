@@ -16,7 +16,7 @@
 main(_) ->
     test_util:init_code_path(),
 
-    etap:plan(unknown),
+    etap:plan(4),
     case (catch test()) of
         ok ->
             etap:end_tests();

@@ -6,6 +6,7 @@
 -export([get_row_count/1, reduce_to_count/1]).
 -export([key_opts/1, key_opts/2]).
 -export([fold/4, fold_reduce/4]).
+-export([temp_view_to_ddoc/1]).
 -export([calculate_data_size/2]).
 -export([maybe_load_doc/4]).
 -export([hexsig/1]).
@@ -341,6 +342,20 @@ make_header(State) ->
     }.
 
 
+view_etag(Db, Group, View, QueryArgs) ->
+    view_etag(Db, Group, View, QueryArgs, nil).
+
+view_etag(Db, Group, {reduce, _, _, View}, QueryArgs, Extra) ->
+    view_etag(Db, Group, View, QueryArgs, Extra);
+view_etag(Db, Group, {temp_reduce, View}, QueryArgs, Extra) ->
+    view_etag(Db, Group, View, QueryArgs, Extra);
+view_etag(_Db, #group{sig=Sig, current_seq=CurrentSeq}, _View, #view_query_args{include_docs=true}, Extra) ->
+    couch_httpd:make_etag({Sig, CurrentSeq, Extra});
+view_etag(_Db, #group{sig=Sig}, #view{update_seq=UpdateSeq, purge_seq=PurgeSeq}, _QueryArgs, Extra) ->
+    couch_httpd:make_etag({Sig, UpdateSeq, PurgeSeq, Extra}).
+
+
+
 open_index_file(RootDir, DbName, GroupSig) ->
     FName = design_root(RootDir, DbName) ++ hexsig(GroupSig) ++".view",
     case couch_file:open(FName) of
@@ -459,7 +474,7 @@ fold_reduce({NthRed, Lang, View}, Fun,  Acc, Options) ->
             {ok, Red} = couch_query_servers:reduce(Lang, [FunSrc], KVs1),
             {0, LPad ++ Red ++ RPad};
         (rereduce, Reds) ->
-            ExtractRed = fun({_, UReds0}) -> lists:nth(NthRed, UReds0) end,
+            ExtractRed = fun({_, UReds0}) -> [lists:nth(NthRed, UReds0)] end,
             UReds = lists:map(ExtractRed, Reds),
             {ok, Red} = couch_query_servers:rereduce(Lang, [FunSrc], UReds),
             {0, LPad ++ Red ++ RPad}
@@ -472,6 +487,25 @@ fold_reduce({NthRed, Lang, View}, Fun,  Acc, Options) ->
 
     couch_btree:fold_reduce(Bt, WrapperFun, Acc, Options).
 
+
+temp_view_to_ddoc({Props}) ->
+    Language = couch_util:get_value(<<"language">>, Props, <<"javascript">>),
+    Options = couch_util:get_value(<<"options">>, Props, {[]}),
+    View0 = [{<<"map">>, couch_util:get_value(<<"map">>, Props)}],
+    View1 = View0 ++ case couch_util:get_value(<<"reduce">>, Props) of
+        RedSrc when is_binary(RedSrc) -> [{<<"reduce">>, RedSrc}];
+        _ -> []
+    end,
+    DDoc = {[
+        {<<"_id">>, couch_uuids:random()},
+        {<<"language">>, Language},
+        {<<"options">>, Options},
+        {<<"views">>, {[
+            {<<"temp">>, {View1}}
+        ]}}
+    ]},
+    io:format("~p~n", [DDoc]),
+    couch_doc:from_json_obj(DDoc).
 
 
 reverse_key_default(<<>>) -> <<255>>;
@@ -554,4 +588,4 @@ index_of(Key, [_ | Rest], Idx) ->
 
 
 mrverror(Mesg) ->
-    throw({query_parse_error, Mesg}).
+    throw({bad_request, Mesg}).

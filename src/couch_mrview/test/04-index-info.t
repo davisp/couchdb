@@ -27,7 +27,7 @@ main(_) ->
     timer:sleep(300),
     ok.
 
-sig() -> <<"73d03aba26ae189c61c5d42cd6c59921">>.
+sig() -> <<"a5e8e94ca10d8f79c367c797e98ef9c1">>.
 
 test() ->
     couch_server_sup:start_link(test_util:config_files()),

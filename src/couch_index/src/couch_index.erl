@@ -15,7 +15,7 @@
 
 
 %% API
--export([start_link/1, get_state/2, get_info/1]).
+-export([start_link/1, stop/1, get_state/2, get_info/1]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -38,6 +38,10 @@ start_link({Module, IdxState}) ->
         {ok, Pid} -> {ok, Pid};
         {error, Reason} -> {error, Reason}
     end.
+
+
+stop(Pid) ->
+    gen_server:cast(Pid, stop).
 
 
 get_state(Pid, RequestSeq) ->
@@ -157,10 +161,12 @@ handle_call({compacted, NewIdxState}, _From, State) ->
     end.
 
 
+handle_cast(stop, State) ->
+    {stop, normal, State};
 handle_cast(delete, State) ->
     #st{mod=Mod, idx_state=IdxState} = State,
     ok = Mod:delete(IdxState),
-    {stop, normal, IdxState};
+    {stop, normal, State};
 handle_cast(_Mesg, State) ->
     {stop, unhandled_cast, State}.
 
@@ -186,7 +192,7 @@ handle_info(commit, State) ->
             % changes since last committal.
             {noreply, State}
     end;
-handle_info({'DOWN', _, _, Pid, _}, State) ->
+handle_info({'DOWN', _, _, _Pid, _}, State) ->
     send_all(State#st.waiters, shutdown),
     {stop, normal, State#st{waiters=[]}}.
 

@@ -90,6 +90,7 @@ purge(Db, PurgeSeq, PurgedIdRevs, State) ->
 
 
 update_options(#mrst{design_opts=Opts}) ->
+    io:format("Opts: ~p~n", [Opts]),
     Opts1 = case couch_util:get_value(<<"include_design">>, Opts, false) of
         true -> [include_design];
         _ -> []

@@ -27,10 +27,11 @@ process_doc(#doc{id=DocId, deleted=false}=Doc, Seq, State) ->
     #mrst{views=Views, query_server=QServer} = State,
     {ok, [Results]} = couch_query_servers:map_docs(QServer, [Doc]),
     {ViewKVs, DocIdKeys} = process_results(DocId, Views, Results, {[], []}),
-    couch_work_queue:queue(State#mrst.write_queue, {Seq, {ViewKVs, DocIdKeys}}),
+    couch_work_queue:queue(State#mrst.write_queue, {Seq, ViewKVs, DocIdKeys}),
     State;
 process_doc(#doc{id=Id, deleted=true}, Seq, State) ->
-    couch_work_queue:queue(State#mrst.write_queue, {Seq, {[], [{Id, []}]}}),
+    KVs = [{V#mrview.id_num, []} || V <- State#mrst.views],
+    couch_work_queue:queue(State#mrst.write_queue, {Seq, KVs, [{Id, []}]}),
     State.
 
 
@@ -65,8 +66,12 @@ purge_index(_Db, PurgeSeq, PurgedIdRevs, State) ->
     RemKeysFun = fun(#mrview{id_num=Num, btree=Btree}=View) ->
         case dict:find(Num, KeysToRemove) of
             {ok, RemKeys} ->
-                {ok, ViewBtree2} = couch_btree:add_remove(Btree, [], RemKeys),
-                View#mrview{btree=ViewBtree2};
+                {ok, Btree2} = couch_btree:add_remove(Btree, [], RemKeys),
+                NewPurgeSeq = case Btree2 /= Btree of
+                    true -> PurgeSeq;
+                    _ -> View#mrview.purge_seq
+                end,
+                View#mview{btree=Btree2, purge_seq=PurgeSeq};
             error ->
                 View
         end
@@ -126,9 +131,9 @@ write_results(Parent, State, Queue) ->
     end.
 
 
-merge_kvs({Seq, {ViewKVs, DocIdKeys}}, nil) ->
+merge_kvs({Seq, ViewKVs, DocIdKeys}, nil) ->
     {Seq, ViewKVs, DocIdKeys};
-merge_kvs({Seq, {ViewKVs, DocIdKeys}}, {SeqAcc, ViewKVsAcc, DocIdKeysAcc}) ->
+merge_kvs({Seq, ViewKVs, DocIdKeys}, {SeqAcc, ViewKVsAcc, DocIdKeysAcc}) ->
     KVCombine = fun({ViewNum, KVs}, {ViewNum, KVsAcc}) ->
         {ViewNum, KVs ++ KVsAcc}
     end,

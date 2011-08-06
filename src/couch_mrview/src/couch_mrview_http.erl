@@ -12,10 +12,22 @@
 
 -module(couch_mrview_http).
 
--export([handle_view_req/3, handle_info_req/3]).
+-export([handle_view_req/3, handle_temp_view_req/2, handle_info_req/3]).
 
 -include("couch_db.hrl").
 -include_lib("couch_mrview/include/couch_mrview.hrl").
+
+
+handle_temp_view_req(#httpd{method='POST'}=Req, Db) ->
+    couch_httpd:validate_ctype(Req, "application/json"),
+    ok = couch_db:check_is_admin(Db),
+    {Body} = couch_httpd:json_body_obj(Req),
+    DDoc = couch_mrview_util:temp_view_to_ddoc({Body}),
+    Keys = couch_util:get_value(<<"keys">>, Body, []),
+    design_doc_view(Req, Db, DDoc, <<"temp">>, Keys);
+handle_temp_view_req(Req, _Db) ->
+    couch_httpd:send_method_not_allowed(Req, "POST").
+
 
 handle_view_req(#httpd{method='GET'}=Req, Db, DDoc) ->
     [_, _, _, _, ViewName] = Req#httpd.path_parts,
@@ -24,12 +36,7 @@ handle_view_req(#httpd{method='POST'}=Req, Db, DDoc) ->
     [_, _, _, _, ViewName] = Req#httpd.path_parts,
     {Fields} = couch_httpd:json_body_obj(Req),
     Keys = couch_util:get_value(<<"keys">>, Fields),
-    case Keys of
-        _ when is_list(Keys) ->
-            design_doc_view(Req, Db, DDoc, ViewName, Keys);
-        _ ->
-            throw({bad_request, "`keys` body member must be an array"})
-    end;
+    design_doc_view(Req, Db, DDoc, ViewName, Keys);
 handle_view_req(Req, _Db, _DDoc) ->
     couch_httpd:send_method_not_allowed(Req, "GET,POST,HEAD").
 
@@ -59,20 +66,42 @@ design_doc_view(Req, Db, DDoc, ViewName, Keys) ->
     end).
 
 
-view_callback({total_and_offset, Total, Offset}, {nil, Resp}) ->
+view_callback({meta, Meta}, {nil, Resp}) ->
+    % Map function starting
+    Total = couch_util:get_value(total, Meta),
+    Offset = couch_util:get_value(offset, Meta),
     Chunk = "{\"total_rows\":~p,\"offset\":~p,\"rows\":[\r\n",
     couch_httpd:send_chunk(Resp, io_lib:format(Chunk, [Total, Offset])),
     {ok, {"", Resp}};
 view_callback({row, Row}, {nil, Resp}) ->
-    couch_httpd:send_chunk(Resp, ["{\"rows\":[\r\n", ?JSON_ENCODE({Row})]),
+    % Reduce function starting
+    couch_httpd:send_chunk(Resp, ["{\"rows\":[\r\n", row_to_json(Row)]),
     {ok, {",\r\n", Resp}};
 view_callback({row, Row}, {Prepend, Resp}) ->
-    couch_httpd:send_chunk(Resp, [Prepend, ?JSON_ENCODE({Row})]),
+    % Adding another row
+    couch_httpd:send_chunk(Resp, [Prepend, row_to_json(Row)]),
     {ok, {",\r\n", Resp}};
 view_callback(complete, {nil, Resp}) ->
+    % Nothing in view
     couch_httpd:send_chunk(Resp, "{\"rows\":[]}");
 view_callback(complete, {_, Resp}) ->
+    % Finish view output
     couch_httpd:send_chunk(Resp, "\r\n]}").
+
+
+row_to_json(Row) ->
+    Id = case couch_util:get_value(id, Row) of
+        undefined -> [];
+        Id0 -> [{id, Id0}]
+    end,
+    Key = couch_util:get_value(key, Row, null),
+    Val = couch_util:get_value(val, Row, null),
+    Doc = case couch_util:get_value(doc, Row) of
+        undefined -> [];
+        Doc0 -> [{doc, Doc0}]
+    end,
+    Obj = {Id ++ [{key, Key}, {value, Val}] ++ Doc},
+    ?JSON_ENCODE(Obj).
 
 
 parse_qs(Req) ->
@@ -93,10 +122,14 @@ parse_qs(Key, Val, Args) ->
             Args#mrargs{start_key=JsonKey, end_key=JsonKey};
         "keys" ->
             Args#mrargs{keys=?JSON_DECODE(Val)};
+        "startkey" ->
+            Args#mrargs{start_key=?JSON_DECODE(Val)};
         "start_key" ->
             Args#mrargs{start_key=?JSON_DECODE(Val)};
         "start_key_doc_id" ->
             Args#mrargs{start_key_docid=list_to_binary(Val)};
+        "endkey" ->
+            Args#mrargs{end_key=?JSON_DECODE(Val)};
         "end_key" ->
             Args#mrargs{end_key=?JSON_DECODE(Val)};
         "end_key_doc_id" ->
