@@ -1,6 +1,8 @@
 -module(couch_mrview).
 
--export([query_view/3, query_view/4, query_view/6, get_info/2]).
+-export([query_view/3, query_view/4, query_view/6]).
+-export([open_view/3, open_view/4, run_view/5]).
+-export([get_info/2]).
 
 -include_lib("couch_mrview/include/couch_mrview.hrl").
 
@@ -23,25 +25,31 @@ query_view(Db, DDoc, ViewName) ->
     query_view(Db, DDoc, ViewName, #mrargs{}).
 
 
-query_view(Db, DDoc, ViewName, Args) when is_list(Args) ->
-    query_view(Db, DDoc, ViewName, to_mrargs(Args));
 query_view(Db, DDoc, ViewName, Args) ->
     query_view(Db, DDoc, ViewName, Args, fun default_callback/2, []).
 
-
+    
 query_view(Db, DDoc, ViewName, Args, Callback, Acc) when is_list(Args) ->
     query_view(Db, DDoc, ViewName, to_mrargs(Args), Callback, Acc);
 query_view(Db, DDoc, ViewName, Args, Callback, Acc) ->
-    ViewInfo = couch_mrview_util:get_view(Db, DDoc, ViewName, Args),
+    {ok, ViewInfo, Args} = couch_mrview_util:get_view(Db, DDoc, ViewName, Args),
     run_view(Db, ViewInfo, Callback, Acc).
 
 
-run_view(Db, {Type, View, Args}, Callback, Acc) ->
-    case Type of
-        map -> map_fold(Db, View, Args, Callback, Acc);
-        red -> red_fold(Db, View, Args, Callback, Acc)
-    end.    
+open_view(Db, DDoc, ViewName) ->
+    open_view(Db, DDoc, ViewName, #mrargs{}).
 
+open_view(Db, DDoc, ViewName, Args) when is_list(Args) ->
+    open_view(Db, DDoc, ViewName, to_mrargs(Args));
+open_view(Db, DDoc, ViewName, Args0) ->
+    {Type, View, Args} = couch_mrutil:get_view(Db, DDOc, ViewName, Args0),
+    {ok, {Type, View}, Args}.
+
+
+run_view(Db, {map, View}, Args, Callback, Acc) ->
+    map_fold(Db, View, Args, Callback, Acc);
+run_view(Db, {red, View}, Args, Callback, Acc) ->
+    red_fold(Db, View, Args, Callback, Acc).
 
 
 % API convenience.
