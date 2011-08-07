@@ -117,11 +117,12 @@ _changes = {couch_httpd_db, handle_changes_req}
 
 [httpd_design_handlers]
 _view = {couch_mrview_http, handle_view_req}
-_show = {couch_httpd_show, handle_doc_show_req}
-_list = {couch_httpd_show, handle_view_list_req}
+_show = {couch_app, handle_doc_show_req}
+_list = {couch_app, handle_view_list_req}
 _info = {couch_mrview_http, handle_info_req}
+_compact = {couch_mrview_http, handle_compact_req}
 _rewrite = {couch_httpd_rewrite, handle_rewrite_req}
-_update = {couch_httpd_show, handle_doc_update_req}
+_update = {couch_app, handle_doc_update_req}
 
 ; enable external as an httpd handler, then link it with commands here.
 ; note, this api is still under consideration.

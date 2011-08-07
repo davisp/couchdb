@@ -24,6 +24,7 @@ run: ../bin/couchdb.tpl
 	    -e "s|%defaultini%|default_dev.ini|g" \
 	    -e "s|%localini%|local_dev.ini|g" \
 	    -e "s|%localerlanglibdir%|foo \
+	        -pa $(abs_top_builddir)\/src\/couch_app/ebin \
 	        -pa $(abs_top_builddir)\/src\/couch_index/ebin \
 	        -pa $(abs_top_builddir)\/src\/couch_mrview/ebin \
 			-pa $(abs_top_builddir)\/src\/couchdb \
