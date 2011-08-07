@@ -11,9 +11,9 @@
 ## the License.
 
 SUBDIRS = \
-	couch_app \
     couch_index \
     couch_mrview \
+	couch_show \
     couchdb \
     ejson \
     erlang-oauth \

@@ -16,7 +16,8 @@
     handle_view_req/3,
     handle_temp_view_req/2,
     handle_info_req/3,
-    handle_compact_req/3
+    handle_compact_req/3,
+    parse_qs/2
 ]).
 
 -include("couch_db.hrl").

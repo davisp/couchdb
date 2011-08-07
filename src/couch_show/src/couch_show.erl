@@ -10,9 +10,13 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
--module(couch_app).
+-module(couch_show).
 
--export([handle_doc_show_req/3, handle_doc_update_req/3, handle_view_list_req/3]).
+-export([
+    handle_doc_show_req/3,
+    handle_doc_update_req/3,
+    handle_view_list_req/3
+]).
 
 -include("couch_db.hrl").
 
@@ -31,11 +35,9 @@
 % then it sends the response from the query server to the http client.
 
 maybe_open_doc(Db, DocId) ->
-    case fabric:open_doc(Db, DocId, [conflicts]) of
-    {ok, Doc} ->
-        Doc;
-    {not_found, _} ->
-        nil
+    case couch_httpd_db:couch_doc_open(Db, DocId, nil, [conflicts]) of
+        #doc{} = Doc -> Doc;
+        {not_found, _} -> nil
     end.
 
 handle_doc_show_req(#httpd{
@@ -78,22 +80,22 @@ handle_doc_show(Req, Db, DDoc, ShowName, Doc) ->
 handle_doc_show(Req, Db, DDoc, ShowName, Doc, DocId) ->
     % get responder for ddoc/showname
     CurrentEtag = show_etag(Req, Doc, DDoc, []),
-    chttpd:etag_respond(Req, CurrentEtag, fun() ->
-        JsonReq = chttpd_external:json_req_obj(Req, Db, DocId),
+    couch_httpd:etag_respond(Req, CurrentEtag, fun() ->
+        JsonReq = couch_httpd_external:json_req_obj(Req, Db, DocId),
         JsonDoc = couch_query_servers:json_doc(Doc),
         [<<"resp">>, ExternalResp] = 
             couch_query_servers:ddoc_prompt(DDoc, [<<"shows">>, ShowName],
                 [JsonDoc, JsonReq]),
         JsonResp = apply_etag(ExternalResp, CurrentEtag),
-        chttpd_external:send_external_response(Req, JsonResp)
+        couch_httpd_external:send_external_response(Req, JsonResp)
     end).
 
 
 show_etag(#httpd{user_ctx=UserCtx}=Req, Doc, DDoc, More) ->
-    Accept = chttpd:header_value(Req, "Accept"),
+    Accept = couch_httpd:header_value(Req, "Accept"),
     DocPart = case Doc of
         nil -> nil;
-        Doc -> chttpd:doc_etag(Doc)
+        Doc -> couch_httpd:doc_etag(Doc)
     end,
     couch_httpd:make_etag({couch_httpd:doc_etag(DDoc), DocPart, Accept,
         UserCtx#user_ctx.roles, More}).
@@ -119,97 +121,94 @@ handle_doc_update_req(Req, _Db, _DDoc) ->
     couch_httpd:send_error(Req, 404, <<"update_error">>, <<"Invalid path.">>).
 
 send_doc_update_response(Req, Db, DDoc, UpdateName, Doc, DocId) ->
-    JsonReq = chttpd_external:json_req_obj(Req, Db, DocId),
+    JsonReq = couch_httpd_external:json_req_obj(Req, Db, DocId),
     JsonDoc = couch_query_servers:json_doc(Doc),
     Cmd = [<<"updates">>, UpdateName],
-    case couch_query_servers:ddoc_prompt(DDoc, Cmd, [JsonDoc, JsonReq]) of
-    [<<"up">>, {NewJsonDoc}, JsonResp] ->
-        case chttpd:header_value(Req, "X-Couch-Full-Commit", "false") of
-        "true" ->
-            Options = [full_commit, {user_ctx, Req#httpd.user_ctx}];
-        _ ->
-            Options = [{user_ctx, Req#httpd.user_ctx}]
-        end,
-        NewDoc = couch_doc:from_json_obj({NewJsonDoc}),
-        Code = 201,
-        {ok, _NewRev} = fabric:update_doc(Db, NewDoc, Options);
-    [<<"up">>, _Other, JsonResp] ->
-        Code = 200
+    UpdateResp = couch_query_servers:ddoc_prompt(DDoc, Cmd, [JsonDoc, JsonReq]),
+    {Code, JsonResp} = case UpdateResp of
+        [<<"up">>, {NewJsonDoc}, {JsonResp0}] ->
+            case couch_httpd:header_value(
+                    Req, "X-Couch-Full-Commit", "false") of
+                "true" ->
+                    Options = [full_commit, {user_ctx, Req#httpd.user_ctx}];
+                _ ->
+                    Options = [{user_ctx, Req#httpd.user_ctx}]
+            end,
+            NewDoc = couch_doc:from_json_obj({NewJsonDoc}),
+            {ok, NewRev} = couch_db:update_doc(Db, NewDoc, Options),
+            NewRevStr = couch_doc:rev_to_string(NewRev),
+            JsonHeaders = {[{<<"X-Couch-Update-NewRev">>, NewRevStr}]},
+            JsonRespWithRev = {[{<<"headers">>, JsonHeaders} | JsonResp0]},
+            {201, JsonRespWithRev};
+        [<<"up">>, _Other, JsonResp0] ->
+            {200, JsonResp0}
     end,
     JsonResp2 = json_apply_field({<<"code">>, Code}, JsonResp),
     % todo set location field
-    chttpd_external:send_external_response(Req, JsonResp2).
+    couch_httpd_external:send_external_response(Req, JsonResp2).
 
 
-% view-list request with view and list from same design doc.
-handle_view_list_req(#httpd{method='GET',
-        path_parts=[_, _, DesignName, _, ListName, ViewName]}=Req, Db, DDoc) ->
-    handle_view_list(Req, Db, DDoc, ListName, {DesignName, ViewName}, nil);
-
-% view-list request with view and list from different design docs.
-handle_view_list_req(#httpd{method='GET',
-        path_parts=[_, _, _, _, ListName, DesignName, ViewName]}=Req, Db, DDoc) ->
-    handle_view_list(Req, Db, DDoc, ListName, {DesignName, ViewName}, nil);
-
-handle_view_list_req(#httpd{method='GET'}=Req, _Db, _DDoc) ->
-    couch_httpd:send_error(Req, 404, <<"list_error">>, <<"Invalid path.">>);
-
-handle_view_list_req(#httpd{method='POST',
-        path_parts=[_, _, DesignName, _, ListName, ViewName]}=Req, Db, DDoc) ->
-    ReqBody = couch_httpd:body(Req),
-    {Props2} = ?JSON_DECODE(ReqBody),
-    Keys = proplists:get_value(<<"keys">>, Props2, nil),
-    handle_view_list(Req#httpd{req_body=ReqBody}, Db, DDoc, ListName,
-        {DesignName, ViewName}, Keys);
-
-handle_view_list_req(#httpd{method='POST',
-        path_parts=[_, _, _, _, ListName, DesignName, ViewName]}=Req, Db, DDoc) ->
-    ReqBody = couch_httpd:body(Req),
-    {Props2} = ?JSON_DECODE(ReqBody),
-    Keys = proplists:get_value(<<"keys">>, Props2, nil),
-    handle_view_list(Req#httpd{req_body=ReqBody}, Db, DDoc, ListName,
-        {DesignName, ViewName}, Keys);
-
-handle_view_list_req(#httpd{method='POST'}=Req, _Db, _DDoc) ->
-    couch_httpd:send_error(Req, 404, <<"list_error">>, <<"Invalid path.">>);
-
+handle_view_list_req(#httpd{method='GET'}=Req, Db, DDoc) ->
+    case Req#httpd.path_parts of
+        [_, _, DName, _, LName, VName] ->
+            % Same design doc for view and list
+            handle_view_list(Req, Db, DDoc, LName, DName, VName, undefined);
+        [_, _, _, _, LName, DName, VName] ->
+            % Different design docs for view and list
+            handle_view_list(Req, Db, DDoc, LName, DName, VName, undefined);
+        _ ->
+            couch_httpd:send_error(Req, 404, <<"list_error">>, <<"Bad path.">>)
+    end;
+handle_view_list_req(#httpd{method='POST'}=Req, Db, DDoc) ->
+    {Props} = couch_httpd:json_body_obj(Req),
+    Keys = proplists:get_value(<<"keys">>, Props),
+    case Req#httpd.path_parts of
+        [_, _, DName, _, LName, VName] ->
+            handle_view_list(Req, Db, DDoc, LName, DName, VName, Keys);
+        [_, _, _, _, LName, DName, VName] ->
+            % Different design docs for view and list
+            handle_view_list(Req, Db, DDoc, LName, DName, VName, Keys);
+        _ ->
+            couch_httpd:send_error(Req, 404, <<"list_error">>, <<"Bad path.">>)
+    end;
 handle_view_list_req(Req, _Db, _DDoc) ->
     couch_httpd:send_method_not_allowed(Req, "GET,POST,HEAD").
 
-handle_view_list(Req, Db, DDoc, LName, {ViewDesignName, ViewName}, Keys) ->
-    {ok, VDoc} = fabric:open_doc(Db, <<"_design/", ViewDesignName/binary>>, []),
-    Group = couch_view_group:design_doc_to_view_group(VDoc),
-    IsReduce = chttpd_view:get_reduce_type(Req),
-    ViewType = chttpd_view:extract_view_type(ViewName, Group#group.views,
-        IsReduce),
-    QueryArgs = chttpd_view:parse_view_params(Req, Keys, ViewType),
-    CB = fun list_callback/2,
-    Etag = couch_uuids:new(),
-    chttpd:etag_respond(Req, Etag, fun() ->
+
+handle_view_list(Req, Db, DDoc, LName, ViewDesignName, ViewName, Keys) ->
+    VDocId = <<"_design/", ViewDesignName/binary>>,
+    {ok, VDoc} = couch_db:open_doc(Db, VDocId, [ejson_body]),
+    Args0 = couch_mrview_http:parse_qs(Req, Keys),
+    {ok, ViewInfo, Args} = couch_mrview:open_view(Db, VDoc, ViewName, Args0),
+    %ETag = calculate_view_etag(Db, ViewInfo, Args),
+    ETag = couch_uuids:random(),
+    couch_httpd:etag_respond(Req, ETag, fun() ->
         couch_query_servers:with_ddoc_proc(DDoc, fun(QServer) ->
             Acc0 = #lacc{
                 lname = LName,
                 req = Req,
                 qserver = QServer,
                 db = Db,
-                etag = Etag
+                etag = ETag
             },
-            fabric:query_view(Db, VDoc, ViewName, CB, Acc0, QueryArgs)
+            couch_mrview:run_view(Db, ViewInfo, Args, fun list_cb/2, Acc0)
         end)
     end).
 
-list_callback({total_and_offset, Total, Offset}, #lacc{resp=nil} = Acc) ->
-    start_list_resp({[{<<"total_rows">>, Total}, {<<"offset">>, Offset}]}, Acc);
-list_callback({total_and_offset, _, _}, Acc) ->
-    % a sorted=false view where the message came in late.  Ignore.
+
+list_cb({meta, []}, Acc) ->
     {ok, Acc};
-list_callback({row, Row}, #lacc{resp=nil} = Acc) ->
+list_cb({meta, Meta}, #lacc{resp=nil} = Acc) ->
+    Total = couch_util:get_value(total, Meta),
+    Offset = couch_util:get_value(offset, Meta),
+    start_list_resp({[{<<"total_rows">>, Total}, {<<"offset">>, Offset}]}, Acc);
+list_cb({row, Row}, #lacc{resp=nil} = Acc) ->
     % first row of a reduce view, or a sorted=false view
     {ok, NewAcc} = start_list_resp({[]}, Acc),
     send_list_row(Row, NewAcc);
-list_callback({row, Row}, Acc) ->
+list_cb({row, Row}, Acc) ->
     send_list_row(Row, Acc);
-list_callback(complete, Acc) ->
+list_cb(complete, Acc) ->
     #lacc{qserver = {Proc, _}, resp = Resp0} = Acc,
     if Resp0 =:= nil ->
         {ok, #lacc{resp = Resp}} = start_list_resp({[]}, Acc);
@@ -219,13 +218,7 @@ list_callback(complete, Acc) ->
     [<<"end">>, Chunk] = couch_query_servers:proc_prompt(Proc, [<<"list_end">>]),            
     send_non_empty_chunk(Resp, Chunk),
     couch_httpd:last_chunk(Resp),
-    {ok, Resp};
-list_callback({error, Reason}, #lacc{req=Req, resp=Resp}) ->
-    case Resp of nil ->
-        coucht_httpd:send_error(Req, Reason);
-    _ ->
-        couch_httpd:send_chunked_error(Resp, {error, Reason})
-    end.
+    {ok, Resp}.
 
 start_list_resp(Head, Acc) ->
     #lacc{
@@ -238,7 +231,7 @@ start_list_resp(Head, Acc) ->
 
     % use a separate process because we're already in a receive loop, and
     % json_req_obj calls fabric:get_db_info()
-    spawn_monitor(fun() -> exit(chttpd_external:json_req_obj(Req, Db)) end),
+    spawn_monitor(fun() -> exit(couch_httpd_external:json_req_obj(Req, Db)) end),
     receive {'DOWN', _, _, _, JsonReq} -> ok end,
 
     [<<"start">>,Chunk,JsonResp] = couch_query_servers:ddoc_proc_prompt(QServer,
@@ -255,7 +248,20 @@ start_list_resp(Head, Acc) ->
     {ok, Acc#lacc{resp=Resp}}.
 
 send_list_row(Row, #lacc{qserver = {Proc, _}, resp = Resp} = Acc) ->
-    try couch_query_servers:proc_prompt(Proc, [<<"list_row">>, Row]) of
+    RowObj = case couch_util:get_value(id, Row) of
+        undefined -> [];
+        Id -> [{id, Id}]
+    end ++ case couch_util:get_value(key, Row) of
+        undefined -> [];
+        Key -> [{key, Key}]
+    end ++ case couch_util:get_value(val, Row) of
+        undefined -> [];
+        Val -> [{value, Val}]
+    end ++ case couch_util:get_value(doc, Row) of
+        undefined -> [];
+        Doc -> [{doc, Doc}]
+    end,
+    try couch_query_servers:proc_prompt(Proc, [<<"list_row">>, {RowObj}]) of
     [<<"chunks">>, Chunk] ->
         send_non_empty_chunk(Resp, Chunk),
         {ok, Acc};

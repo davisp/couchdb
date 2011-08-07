@@ -10,21 +10,21 @@
 ## License for the specific language governing permissions and limitations under
 ## the License.
 
-couch_applibdir = $(localerlanglibdir)/couch_mrview-0.1
-couch_appebindir = $(couch_mrviewlibdir)/ebin
+couch_showlibdir = $(localerlanglibdir)/couch_show-0.1
+couch_showebindir = $(couch_showlibdir)/ebin
 
-couch_appebin_DATA = $(compiled_files)
+couch_showebin_DATA = $(compiled_files)
 
 EXTRA_DIST = $(source_files)
 CLEANFILES = $(compiled_files)
 
 source_files = \
-	src/couch_app.app.src \
-	src/couch_app.erl
+	src/couch_show.app.src \
+	src/couch_show.erl
 
 compiled_files = \
-	ebin/couch_app.app \
-	ebin/couch_app.beam
+	ebin/couch_show.app \
+	ebin/couch_show.beam
 
 ebin/%.app: src/%.app.src
 	@mkdir -p ebin/

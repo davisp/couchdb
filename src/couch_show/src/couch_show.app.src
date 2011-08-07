@@ -1,8 +1,8 @@
 {application, couch_app, [
-    {description, "CouchApp Facilities"},
+    {description, "CouchApp Show Facilities"},
     {vsn, "%version%"},
     {modules, [
-        couch_app
+        couch_show
     ]},
     {registered, []},
     {applications, [kernel, stdlib, couch_mrview]},
