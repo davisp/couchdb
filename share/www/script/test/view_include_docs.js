@@ -72,7 +72,6 @@ couchTests.view_include_docs = function(debug) {
   // No reduce support
   try {
       resp = db.view('test/summate', {include_docs: true});
-      alert(JSON.stringify(resp));
       T(0==1);
   } catch (e) {
       T(e.error == 'query_parse_error');

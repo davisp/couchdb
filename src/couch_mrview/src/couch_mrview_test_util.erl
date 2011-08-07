@@ -7,9 +7,18 @@
 
 
 init_db(Name, Type) ->
+    {ok, Db} = new_db(Name, Type),
+    Docs = make_docs(10),
+    save_docs(Db, Docs).
+
+
+new_db(Name, Type) ->
     couch_server:delete(Name, [{user_ctx, ?ADMIN}]),
     {ok, Db} = couch_db:create(Name, [{user_ctx, ?ADMIN}]),
-    Docs = [ddoc(Type)] ++ make_docs(10),
+    save_docs(Db, [ddoc(Type)]).
+
+
+save_docs(Db, Docs) ->
     {ok, _} = couch_db:update_docs(Db, Docs, []),
     couch_db:reopen(Db).
 
@@ -32,6 +41,14 @@ ddoc(map) ->
             ]}},
             {<<"bing">>, {[
                 {<<"map">>, <<"function(doc) {}">>}
+            ]}},
+            {<<"zing">>, {[
+                {<<"map">>, <<
+                    "function(doc) {\n"
+                    "  if(doc.foo !== undefined)\n"
+                    "    emit(doc.foo, 0);\n"
+                    "}"
+                >>}
             ]}}
         ]}}
     ]});

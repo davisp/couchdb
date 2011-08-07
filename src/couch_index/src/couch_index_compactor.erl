@@ -15,7 +15,7 @@
 
 
 %% API
--export([start_link/2, run/2, is_running/1, swap/3]).
+-export([start_link/2, run/2, is_running/1]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -41,10 +41,6 @@ is_running(Pid) ->
     gen_server:call(Pid, is_running).
 
 
-swap(Pid, OldIdxState, NewIdxState) ->
-    gen_server:call(Pid, {swap, OldIdxState, NewIdxState}).
-
-
 init({Index, Module}) ->
     process_flag(trap_exit, true),
     {ok, #st{idx=Index, mod=Module}}.
@@ -57,32 +53,23 @@ terminate(_Reason, State) ->
 
 handle_call({compact, _}, _From, #st{pid=Pid}=State) when is_pid(Pid) ->
     {reply, ok, State};
-handle_call({compact, IdxState}, _From, State) ->
-    Pid = spawn_link(fun() -> compact(State#st.mod, IdxState) end),
+handle_call({compact, IdxState}, _From, #st{idx=Idx}=State) ->
+    Pid = spawn_link(fun() -> compact(Idx, State#st.mod, IdxState) end),
     {reply, ok, State#st{pid=Pid}};
 handle_call(is_running, _From, #st{pid=Pid}=State) when is_pid(Pid) ->
     {reply, true, State};
 handle_call(is_running, _From, State) ->
-    {reply, false, State};
-handle_call({swap, OldIdxState, NewIdxState}, _From, State) ->
-    #st{mod=Mod} = State,
-    {ok, NewIdxState1} = Mod:swap_compacted(OldIdxState, NewIdxState),
-    {reply, {ok, NewIdxState1}, State}.
+    {reply, false, State}.
 
 
 handle_cast(_Mesg, State) ->
     {stop, unknown_cast, State}.
 
 
-handle_info({'EXIT', Pid, {compacted, IdxState}}, #st{pid=Pid}=State) ->
-    case gen_server:call(State#st.idx, {compacted, IdxState}) of
-        recompact ->
-            Fun = fun() -> compact(State#st.mod, IdxState, [recompact]) end,
-            Pid2 = spawn_link(Fun),
-            {noreply, State#st{pid=Pid2}};
-        ok ->
-            {noreply, State#st{pid=nil}}
-    end;
+handle_info({'EXIT', Pid, normal}, #st{pid=Pid}=State) ->
+    {noreply, State#st{pid=undefined}};
+handle_info({'EXIT', _Pid, normal}, State) ->
+    {noreply, State};
 handle_info(_Mesg, State) ->
     {stop, unknown_info, State}.
 
@@ -91,12 +78,12 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 
-compact(Mod, IdxState) ->
-    compact(Mod, IdxState, []).
+compact(Parent, Mod, IdxState) ->
+    compact(Parent, Mod, IdxState, []).
 
-compact(Mod, IdxState, Opts) ->
+compact(Idx, Mod, IdxState, Opts) ->
     {ok, NewIdxState} = Mod:compact(IdxState, Opts),
-    exit({compacted, NewIdxState}).
-
-
-
+    case gen_server:call(Idx, {compacted, NewIdxState}) of
+        recompact -> compact(Idx, Mod, NewIdxState, [recompact]);
+        _ -> ok
+    end.

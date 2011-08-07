@@ -95,11 +95,11 @@ handle_cast({reset_indexes, DbName}, State) ->
 
 handle_info({'EXIT', Pid, Reason}, Server) ->
     case ets:lookup(?BY_PID, Pid) of
-        [{_, DbName, Sig}] ->
+        [{Pid, DbName, Sig}] ->
             rem_from_ets(DbName, Sig, Pid);
         [] when Reason /= normal ->
             exit(Reason);
-        _ ->
+        _Else ->
             ok
     end,
     {noreply, Server}.

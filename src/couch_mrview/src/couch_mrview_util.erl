@@ -1,8 +1,9 @@
 -module(couch_mrview_util).
 
--export([get_view/4, get_info/2, init_state/4, reset_index/3]).
+-export([get_view/4, get_info/2, compact/2]).
+-export([init_state/4, reset_index/3]).
 -export([make_header/1]).
--export([open_index_file/3, open_compaction_file/3]).
+-export([open_file/1, index_file/3, compaction_file/3]).
 -export([get_row_count/1, reduce_to_count/1]).
 -export([key_opts/1, key_opts/2]).
 -export([fold/4, fold_reduce/4]).
@@ -35,10 +36,23 @@ get_view(Db, DDoc, ViewName, Args0) ->
         _ -> couch_db:get_update_seq(Db)
     end,
     {ok, Pid} = couch_index_server:get_index(couch_mrview_index, InitState),
-    {ok, State} = couch_index:get_state(Pid, MinSeq),
+    {ok, State} = case couch_index:get_state(Pid, MinSeq) of
+        {ok, _} = Resp -> Resp;
+        Error -> throw(Error)
+    end,
+    UpdateAfterFun = fun() ->
+        io:format("Updating after request.~n", []),
+        LastSeq = couch_db:get_update_seq(Db),
+        catch couch_index:get_state(Pid, LastSeq)
+    end,
+    case Args#mrargs.stale of
+        update_after -> spawn(UpdateAfterFun);
+        _ -> ok
+    end,
     erlang:monitor(process, State#mrst.fd),
     #mrst{language=Lang, views=Views} = State,
     {Type, View, Args} = extract_view(Lang, Args, ViewName, Views),
+    check_range(Args, view_cmp(View)),
     {ok, {Type, View}, Args}.
 
 
@@ -54,6 +68,21 @@ get_info(Db, DDoc) ->
     {ok, Pid} = couch_index_server:get_index(couch_mrview_index, InitState),
     couch_index:get_info(Pid).
 
+
+compact(DbName, DDoc) when is_binary(DbName) ->
+    couch_util:with_db(DbName, fun(Db) ->
+        compact(Db, DDoc)
+    end);
+compact(Db, DDoc) when is_binary(DDoc) ->
+    case couch_db:open_doc(Db, DDoc, [ejson_body]) of
+        {ok, Doc} -> compact(Db, Doc);
+        Error -> Error
+    end;
+compact(Db, DDoc) ->
+    InitState = ddoc_to_mrst(couch_db:name(Db), DDoc),
+    {ok, Pid} = couch_index_server:get_index(couch_mrview_index, InitState),
+    couch_index:compact(Pid).
+    
 
 ddoc_to_mrst(DbName, #doc{id=Id, body={Fields}}) ->
     MakeDict = fun({Name, {MRFuns}}, DictBySrcAcc) ->
@@ -121,9 +150,9 @@ set_view_type(Args, ViewName, [View | Rest]) ->
     RedNames = [N || {N, _} <- View#mrview.reduce_funs],
     case lists:member(ViewName, RedNames) of
         true ->
-            case Args#mrargs.reduce of
-                true -> Args#mrargs{view_type=red};
-                false -> Args#mrargs{view_type=map}
+            case Args#mrargs.reduce of                
+                false -> Args#mrargs{view_type=map};
+                _ -> Args#mrargs{view_type=red}
             end;
         false ->
             case lists:member(ViewName, View#mrview.map_names) of
@@ -150,17 +179,33 @@ extract_view(Lang, #mrargs{view_type=red}=Args, Name, [View | Rest]) ->
 
 
 validate_args(Args) ->
-    case is_boolean(Args#mrargs.reduce) of
+    Reduce = Args#mrargs.reduce,
+    case Reduce == undefined orelse is_boolean(Reduce) of
         true -> ok;
         _ -> mrverror(<<"Invalid `reduce` value.">>)
     end,
 
+    case {Args#mrargs.view_type, Reduce} of
+        {map, true} -> mrverror(<<"Reduce is invalid for map-only views.">>);
+        _ -> ok
+    end,
+
+    case {Args#mrargs.view_type, Args#mrargs.group_level, Args#mrargs.keys} of
+        {red, exact, _} -> ok;
+        {red, _, KeyList} when is_list(KeyList) ->
+            Msg = <<"Multi-key fetchs for reduce views must use `group=true`">>,
+            mrverror(Msg);
+        _ -> ok
+    end,
+
     case Args#mrargs.keys of
         Keys when is_list(Keys) -> ok;
+        undefined -> ok;
         _ -> mrverror(<<"`keys` must be an array of strings.">>)
     end,
 
     case {Args#mrargs.keys, Args#mrargs.start_key} of
+        {undefined, _} -> ok;
         {[], _} -> ok;
         {[_|_], undefined} -> ok;
         _ -> mrverror(<<"`start_key` is incompatible with `keys`">>)
@@ -173,6 +218,7 @@ validate_args(Args) ->
     end,
 
     case {Args#mrargs.keys, Args#mrargs.end_key} of
+        {undefined, _} -> ok;
         {[], _} -> ok;
         {[_|_], undefined} -> ok;
         _ -> mrverror(<<"`end_key` is incompatible with `keys`">>)
@@ -202,7 +248,7 @@ validate_args(Args) ->
     end,
 
     case {Args#mrargs.view_type, Args#mrargs.group_level} of
-        {_, exact} -> ok;
+        {red, exact} -> ok;
         {_, 0} -> ok;
         {red, Int} when is_integer(Int), Int >= 0 -> ok;
         {red, _} -> mrverror(<<"`group_level` must be >= 0">>);
@@ -222,7 +268,7 @@ validate_args(Args) ->
     end,
 
     case {Args#mrargs.view_type, Args#mrargs.include_docs} of
-        {reduce, true} -> mrverror(<<"`include_docs` is invalid for reduce">>);
+        {red, true} -> mrverror(<<"`include_docs` is invalid for reduce">>);
         {_, ID} when is_boolean(ID) -> ok;
         _ -> mrverror(<<"Invalid value for `include_docs`">>)
     end,
@@ -230,9 +276,9 @@ validate_args(Args) ->
     case {Args#mrargs.view_type, Args#mrargs.conflicts} of
         {_, undefined} -> ok;
         {map, V} when is_boolean(V) -> ok;
-        {reduce, undefined} -> ok;
+        {red, undefined} -> ok;
         {map, _} -> mrverror(<<"Invalid value for `conflicts`.">>);
-        {reduce, _} -> mrverror(<<"`conflicts` is invalid for reduce views.">>)
+        {red, _} -> mrverror(<<"`conflicts` is invalid for reduce views.">>)
     end,
 
     SKDocId = case {Args#mrargs.direction, Args#mrargs.start_key_docid} of
@@ -253,6 +299,39 @@ validate_args(Args) ->
     }.
 
 
+check_range(#mrargs{start_key=undefined}, _Cmp) ->
+    ok;
+check_range(#mrargs{end_key=undefined}, _Cmp) ->
+    ok;
+check_range(#mrargs{start_key=K, end_key=K}, _Cmp) ->
+    ok;
+check_range(Args, Cmp) ->
+    #mrargs{
+        direction=Dir,
+        start_key=SK,
+        start_key_docid=SKD,
+        end_key=EK,
+        end_key_docid=EKD
+    } = Args,
+    case {Dir, Cmp({SK, SKD}, {EK, EKD})} of
+        {fwd, false} ->
+            throw({query_parse_error,
+                <<"No rows can match your key range, reverse your ",
+                    "start_key and end_key or set descending=true">>});
+        {rev, true} ->
+            throw({query_parse_error,
+                <<"No rows can match your key range, reverse your ",
+                    "start_key and end_key or set descending=false">>});
+        _ -> ok
+    end.    
+
+
+view_cmp({_Nth, _Lang, View}) ->
+    view_cmp(View);
+view_cmp(View) ->
+    fun(A, B) -> couch_btree:less(View#mrview.btree, A, B) end.
+
+
 init_state(Db, Fd, #mrst{views=Views}=State, nil) ->
     Header = #mrheader{
         seq=0,
@@ -262,7 +341,7 @@ init_state(Db, Fd, #mrst{views=Views}=State, nil) ->
     },
     init_state(Db, Fd, State, Header);
 init_state(Db, Fd, State, Header) ->
-    #mrst{language=Lang, design_opts=DOpts, views=Views} = State,
+    #mrst{language=Lang, views=Views} = State,
     #mrheader{
         seq=Seq,
         purge_seq=PurgeSeq,
@@ -276,11 +355,16 @@ init_state(Db, Fd, State, Header) ->
     end,
     ViewStates2 = lists:map(StateUpdate, ViewStates),
 
+    IdReduce = fun
+        (reduce, KVs) -> length(KVs);
+        (rereduce, Reds) -> lists:sum(Reds)
+    end,
+
     %IdBtOpts = [{compression, couch_db:compression(Db)}],
-    IdBtOpts = [],
+    IdBtOpts = [{reduce, IdReduce}],
     {ok, IdBtree} = couch_btree:open(IdBtreeState, Fd, IdBtOpts),
 
-    OpenViewFun = fun(St, View) -> open_view(Db, Fd, Lang, DOpts, St, View) end,
+    OpenViewFun = fun(St, View) -> open_view(Db, Fd, Lang, St, View) end,
     Views2 = lists:zipwith(OpenViewFun, ViewStates2, Views),
 
     State#mrst{
@@ -292,7 +376,7 @@ init_state(Db, Fd, State, Header) ->
     }.
 
 
-open_view(_Db, Fd, Lang, Opts, {BTState, USeq, PSeq}, View) ->
+open_view(_Db, Fd, Lang, {BTState, USeq, PSeq}, View) ->
     FunSrcs = [FunSrc || {_Name, FunSrc} <- View#mrview.reduce_funs],
     ReduceFun =
         fun(reduce, KVs) ->
@@ -306,11 +390,11 @@ open_view(_Db, Fd, Lang, Opts, {BTState, USeq, PSeq}, View) ->
             {Count, Result}
         end,
 
-    case couch_util:get_value(<<"collation">>, Opts, <<"default">>) of
-        <<"raw">> -> Less = fun(A,B) -> A < B end;
-        _ -> Less = fun couch_view:less_json_ids/2
+    Less = case couch_util:get_value(<<"collation">>, View#mrview.options) of
+        <<"raw">> -> fun(A, B) -> A < B end;
+        _ -> fun couch_view:less_json_ids/2
     end,
-
+    
     ViewBtOpts = [
         {less, Less},
         {reduce, ReduceFun}
@@ -344,17 +428,13 @@ make_header(State) ->
     }.
 
 
-open_index_file(RootDir, DbName, GroupSig) ->
-    FName = design_root(RootDir, DbName) ++ hexsig(GroupSig) ++".view",
-    case couch_file:open(FName) of
-        {ok, Fd} -> {ok, Fd};
-        {error, enoent} -> couch_file:open(FName, [create]);
-        Error -> Error
-    end.
+index_file(RootDir, DbName, Sig) ->
+    design_root(RootDir, DbName) ++ hexsig(Sig) ++".view".
 
+compaction_file(RootDir, DbName, Sig) ->
+    design_root(RootDir, DbName) ++ hexsig(Sig) ++ ".compact.view".
 
-open_compaction_file(RootDir, DbName, GroupSig) ->
-    FName = design_root(RootDir, DbName) ++ hexsig(GroupSig) ++ ".compact.view",
+open_file(FName) ->
     case couch_file:open(FName) of
         {ok, Fd} -> {ok, Fd};
         {error, enoent} -> couch_file:open(FName, [create]);
@@ -406,11 +486,16 @@ key_opts(Args) ->
     key_opts(Args, []).
 
 
+key_opts(#mrargs{keys=undefined}=Args, Extra) ->
+    key_opts(Args#mrargs{keys=[]}, Extra);
 key_opts(#mrargs{keys=[], direction=Dir}=Args, Extra) ->
     [[{dir, Dir}] ++ skey_opts(Args) ++ ekey_opts(Args) ++ Extra];
-key_opts(#mrargs{keys=Keys}, Extra) ->
+key_opts(#mrargs{keys=Keys, direction=Dir}=Args, Extra) ->
     lists:map(fun(K) ->
-        [{dir, fwd}, {start_key, {K, <<>>}}, {end_key, {K, <<255>>}}] ++ Extra
+        [{dir, Dir}]
+        ++ skey_opts(Args#mrargs{start_key=K})
+        ++ ekey_opts(Args#mrargs{end_key=K})
+        ++ Extra
     end, Keys).
 
 
@@ -427,7 +512,7 @@ ekey_opts(#mrargs{end_key=EKey, end_key_docid=EKeyDocId}=Args) ->
         true -> [{end_key, {EKey, EKeyDocId}}];
         false -> [{end_key_gt, {EKey, reverse_key_default(EKeyDocId)}}]
     end.
-    
+
 
 fold(#mrview{btree=Bt}, Fun, Acc, Opts) ->
     WrapperFun = fun(KV, Reds, Acc2) ->
@@ -516,17 +601,29 @@ sum_btree_sizes(Size1, Size2) ->
     Size1 + Size2.
     
 
-maybe_load_doc(_, _, _, false) ->
+maybe_load_doc(_, _, _, #mrargs{include_docs=false}) ->
     [];
-maybe_load_doc(Db, Id, Value, _IncludeDocs) ->
-    DocId = case Value of
-        {Props} -> couch_util:get_value(<<"_id">>, Props, Id);
-        _ -> Id
+maybe_load_doc(Db, Id, {Props}, Args) ->
+    DocId = couch_util:get_value(<<"_id">>, Props, Id),
+    Rev = case couch_util:get_value(<<"_rev">>, Props, undefined) of
+        Rev0 when is_binary(Rev0) -> couch_doc:parse_rev(Rev0);
+        _ -> nil
     end,
-    case couch_db:open_doc(Db, DocId, []) of
-        {not_found, missing} -> [];
-        {not_found, deleted} -> [{doc, null}];
-        {ok, Doc} -> [{doc, couch_doc:to_json_obj(Doc, [])}]
+    load_doc(Db, DocId, Rev, Args);
+maybe_load_doc(Db, Id, _Value, Args) ->
+    load_doc(Db, Id, nil, Args).
+    
+
+load_doc(Db, Id, Rev, Args) ->
+    Opts = case Args#mrargs.conflicts of
+        true -> [conflicts];
+        _ -> []
+    end,
+    case (catch couch_httpd_db:couch_doc_open(Db, Id, Rev, Opts)) of
+        #doc{} = Doc ->
+            [{doc, couch_doc:to_json_obj(Doc, [])}];
+        _Else ->
+            [{doc, null}]
     end.
 
 
@@ -575,4 +672,4 @@ index_of(Key, [_ | Rest], Idx) ->
 
 
 mrverror(Mesg) ->
-    throw({bad_request, Mesg}).
+    throw({query_parse_error, Mesg}).

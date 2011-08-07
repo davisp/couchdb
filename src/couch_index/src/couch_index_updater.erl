@@ -15,7 +15,7 @@
 
 
 %% API
--export([start_link/2, run/2, is_running/1, restart/2]).
+-export([start_link/2, run/2, is_running/1, update/2, restart/2]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -61,6 +61,13 @@ handle_call({update, _IdxState}, _From, #st{pid=Pid}=State) when is_pid(Pid) ->
 handle_call({update, IdxState}, _From, State) ->
     Pid = spawn_link(fun() -> update(State#st.mod, IdxState) end),
     {reply, ok, State#st{pid=Pid}};
+handle_call({restart, IdxState}, _From, State) ->
+    case is_pid(State#st.pid) of
+        true -> couch_util:shutdown_sync(State#st.pid);
+        _ -> ok
+    end,
+    Pid = spawn_link(fun() -> update(State#st.mod, IdxState) end),
+    {reply, ok, State#st{pid=Pid}};
 handle_call(is_running, _From, #st{pid=Pid}=State) when is_pid(Pid) ->
     {reply, true, State};
 handle_call(is_running, _From, State) ->
@@ -72,12 +79,21 @@ handle_cast(_Mesg, State) ->
 
 
 handle_info({'EXIT', Pid, {updated, IdxState}}, #st{pid=Pid}=State) ->
-    ok = gen_server:call(State#st.idx, {new_state, IdxState}),
+    ok = gen_server:cast(State#st.idx, {new_state, IdxState}),
     {noreply, State#st{pid=undefined}};
 handle_info({'EXIT', Pid, reset}, #st{pid=Pid}=State) ->
     {ok, NewIdxState} = gen_server:call(State#st.idx, reset),
     Pid2 = spawn_link(fun() -> update(State#st.mod, NewIdxState) end),
     {noreply, State#st{pid=Pid2}};
+handle_info({'EXIT', Pid, normal}, #st{pid=Pid}=State) ->
+    {noreply, State#st{pid=undefined}};
+handle_info({'EXIT', Pid, {{nocatch, Error}, _Trace}}, State) ->
+    handle_info({'EXIT', Pid, Error}, State);
+handle_info({'EXIT', Pid, Error}, #st{pid=Pid}=State) ->
+    ok = gen_server:cast(State#st.idx, {update_error, Error}),
+    {noreply, State#st{pid=undefined}};
+handle_info({'EXIT', _Pid, normal}, State) ->
+    {noreply, State};
 handle_info(_Mesg, State) ->
     {stop, unknown_info, State}.
 

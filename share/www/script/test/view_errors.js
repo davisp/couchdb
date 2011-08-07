@@ -168,8 +168,8 @@ couchTests.view_errors = function(debug) {
       xhr = CouchDB.request("POST", path, {body:data});
       T(xhr.status == 400);
       result = JSON.parse(xhr.responseText);
-      T(result.error == "bad_request");
-      T(result.reason == "`keys` member must be a array.");
+      T(result.error == "query_parse_error");
+      T(result.reason == "`keys` must be an array of strings.");
 
       // if the reduce grows to fast, throw an overflow error
       var path = "/test_suite_db/_design/testbig/_view/reduce_too_big";

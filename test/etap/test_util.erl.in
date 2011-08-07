@@ -49,3 +49,17 @@ config_files() ->
         source_file("test/etap/random_port.ini"),
         build_file("etc/couchdb/local_dev.ini")
     ].
+
+
+run_tests(Plan, Fun) ->
+    test_util:init_code_path(),
+    etap:plan(9),
+    case (catch Fun()) of
+        ok ->
+            etap:end_tests();
+        Other ->
+            etap:diag(io_lib:format("Test died abnormally:~n~p", [Other])),
+            timer:sleep(500),
+            etap:bail(Other)
+    end,
+    ok.

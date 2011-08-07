@@ -74,6 +74,7 @@ couchTests.purge = function(debug) {
     T(rows[2*(i-2)].key == i+1);
     T(rows[(2*(i-2))+1].key == i+1);
   }
+  var resp = db.view("test/single_doc");
   T(db.view("test/single_doc").total_rows == 0);
 
   // purge sequences are preserved after compaction (COUCHDB-1021)

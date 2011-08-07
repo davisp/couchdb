@@ -7,7 +7,7 @@
 -export([open/2, close/1]).
 -export([update_options/1]).
 -export([start_update/3, process_doc/3, finish_update/1, purge/4, commit/1]).
--export([compact/3, swap_compacted/2]).
+-export([compact/2, swap_compacted/2]).
 -export([reset/1]).
 
 
@@ -66,7 +66,8 @@ open(Db, State) ->
         sig=Sig,
         root_dir=RootDir
     } = State,
-    case couch_mrview_util:open_index_file(RootDir, DbName, Sig) of
+    IndexFName = couch_mrview_util:index_file(RootDir, DbName, Sig),
+    case couch_mrview_util:open_file(IndexFName) of
         {ok, Fd} ->
             case (catch couch_file:read_header(Fd)) of
                 {ok, {Sig, Header}} ->
@@ -118,12 +119,12 @@ commit(State) ->
     couch_file:write_header(State#mrst.fd, Header).
 
 
-compact(Parent, State, Opts) ->
-    couch_mrview_compactor:compact(Parent, State, Opts).
+compact(State, Opts) ->
+    couch_mrview_compactor:compact(State, Opts).
 
 
 swap_compacted(OldState, NewState) ->
-    couch_mrview_compactor:swap(OldState, NewState).
+    couch_mrview_compactor:swap_compacted(OldState, NewState).
 
 
 reset(State) ->

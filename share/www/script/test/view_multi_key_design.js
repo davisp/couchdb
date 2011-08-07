@@ -42,7 +42,7 @@ couchTests.view_multi_key_design = function(debug) {
   var reduce = db.view("test/summate",{group:true},keys).rows;
   T(reduce.length == keys.length-1); // 101 is missing
   for(var i=0; i<reduce.length; i++) {
-    T(keys.indexOf(reduce[i].key) != -1);
+    T(keys.indexOf(reduce[i].key) != -1, "missing key is fine");
     T(reduce[i].key == reduce[i].value);
   }
 
@@ -50,14 +50,14 @@ couchTests.view_multi_key_design = function(debug) {
   var keys = [10,15,30,37,50];
   var rows = db.view("test/all_docs",{},keys).rows;
   for(var i=0; i<rows.length; i++) {
-    T(keys.indexOf(rows[i].key) != -1);
+    T(keys.indexOf(rows[i].key) != -1, "ok with posted keys");
     T(rows[i].key == rows[i].value);
   }
 
   // with GET keys
   rows = db.view("test/all_docs",{keys:keys},null).rows;
   for(var i=0;i<rows.length; i++) {
-    T(keys.indexOf(rows[i].key) != -1);
+    T(keys.indexOf(rows[i].key) != -1, "ok with GET keys");
     T(rows[i].key == rows[i].value);
   }
 

@@ -26,7 +26,7 @@ process_doc(Doc, Seq, #mrst{query_server=nil}=State) ->
 process_doc(#doc{id=DocId, deleted=false}=Doc, Seq, State) ->
     #mrst{views=Views, query_server=QServer} = State,
     {ok, [Results]} = couch_query_servers:map_docs(QServer, [Doc]),
-    {ViewKVs, DocIdKeys} = process_results(DocId, Views, Results, {[], []}),
+    {ViewKVs, DocIdKeys} = process_results(DocId, Views, Results),
     couch_work_queue:queue(State#mrst.write_queue, {Seq, ViewKVs, DocIdKeys}),
     State;
 process_doc(#doc{id=Id, deleted=true}, Seq, State) ->
@@ -36,6 +36,7 @@ process_doc(#doc{id=Id, deleted=true}, Seq, State) ->
 
 
 finish_update(State) ->
+    couch_query_servers:stop_doc_map(State#mrst.query_server),
     couch_work_queue:close(State#mrst.write_queue),
     receive
         {new_state, State} ->
@@ -100,8 +101,11 @@ start_query_server(State) ->
     }.
 
 
+process_results(DocId, Views, Results) ->
+    process_results(DocId, Views, Results, {[], dict:new()}).
+
 process_results(_, [], [], {KVAcc, ByIdAcc}) ->
-    {lists:reverse(KVAcc), ByIdAcc};
+    {lists:reverse(KVAcc), dict:to_list(ByIdAcc)};
 process_results(DocId, [V | RViews], [KVs | RKVs], {KVAcc, ByIdAcc}) ->
     CombineDupesFun = fun
         ({Key, Val}, [{Key, {dups, Vals}} | Rest]) ->
@@ -115,8 +119,11 @@ process_results(DocId, [V | RViews], [KVs | RKVs], {KVAcc, ByIdAcc}) ->
 
     ViewKVs0 = {V#mrview.id_num, [{{Key, DocId}, Val} || {Key, Val} <- Duped]},
     ViewKVs = [ViewKVs0 | KVAcc],
-    DocIdKeys = [{DocId, [{V#mrview.id_num, Key} || {Key, _} <- Duped]}],
-    process_results(DocId, RViews, RKVs, {ViewKVs, DocIdKeys ++ ByIdAcc}).
+    AddDocIdKeys = fun({Key, _}, ByIdAcc0) ->
+        dict:append(DocId, {V#mrview.id_num, Key}, ByIdAcc0)
+    end,
+    ByIdAcc1 = lists:foldl(AddDocIdKeys, ByIdAcc, Duped),
+    process_results(DocId, RViews, RKVs, {ViewKVs, ByIdAcc1}).
 
 
 write_results(Parent, State, Queue) ->
@@ -153,10 +160,11 @@ write_kvs(State, UpdateSeq, ViewKVs, DocIdKeys) ->
     UpdateView = fun(#mrview{id_num=ViewId}=View, {ViewId, KVs}) ->
         ToRem = couch_util:dict_find(ViewId, ToRemByView, []),
         {ok, VBtree2} = couch_btree:add_remove(View#mrview.btree, KVs, ToRem),
-        case VBtree2 =/= View#mrview.btree of
-            true -> View#mrview{btree=VBtree2, update_seq=UpdateSeq};
-            _ -> View
-        end
+        NewUpdateSeq = case VBtree2 =/= View#mrview.btree of
+            true -> UpdateSeq;
+            _ -> View#mrview.update_seq
+        end,
+        View#mrview{btree=VBtree2, update_seq=NewUpdateSeq}
     end,
 
     State#mrst{

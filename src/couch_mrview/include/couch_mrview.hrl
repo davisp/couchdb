@@ -44,7 +44,7 @@
 
 -record(mrargs, {
     view_type,
-    reduce=true,
+    reduce,
     
     start_key,
     start_key_docid,
@@ -59,6 +59,7 @@
     stale = false,
     inclusive_end = true,
     include_docs = false,
+    update_seq=false,
     conflicts,
     callback,
     list,

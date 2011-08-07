@@ -15,7 +15,7 @@
 
 
 %% API
--export([start_link/1, stop/1, get_state/2, get_info/1]).
+-export([start_link/1, stop/1, get_state/2, get_info/1, compact/1]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -50,6 +50,10 @@ get_state(Pid, RequestSeq) ->
 
 get_info(Pid) ->
     gen_server:call(Pid, get_info).
+
+
+compact(Pid) ->
+    gen_server:call(Pid, compact).
 
 
 init({Mod, IdxState}) ->
@@ -118,15 +122,6 @@ handle_call(get_info, _From, State) ->
         {waiting_clients, length(State#st.waiters)}
     ],
     {reply, {ok, Info}, State};
-handle_call({new_state, NewIdxState}, _From, State) ->
-    #st{mod=Mod} = State,
-    CurrSeq = Mod:update_seq(NewIdxState),
-    Rest = send_replies(State#st.waiters, CurrSeq, NewIdxState),
-    {reply, ok, State#st{
-        idx_state=NewIdxState,
-        waiters=Rest,
-        committed=false
-    }};
 handle_call(reset, _From, State) ->
     #st{
         mod=Mod,
@@ -150,10 +145,12 @@ handle_call({compacted, NewIdxState}, _From, State) ->
     % (perhaps considerably) to previous points in history.
     case NewSeq >= OldSeq of
         true ->
-            {ok, NewIdxState2} = couch_index_compactor:swap(OldIdxState, NewIdxState),
-            ok = couch_index_updater:restart(Updater, NewIdxState),
+            {ok, NewIdxState1} = Mod:swap_compacted(
+                OldIdxState, NewIdxState
+            ),
+            ok = couch_index_updater:restart(Updater, NewIdxState1),
             {reply, ok, State#st{
-                idx_state=NewIdxState2,
+                idx_state=NewIdxState1,
                 updater=Updater,
                 committed=false
             }};
@@ -162,6 +159,18 @@ handle_call({compacted, NewIdxState}, _From, State) ->
     end.
 
 
+handle_cast({new_state, NewIdxState}, State) ->
+    #st{mod=Mod} = State,
+    CurrSeq = Mod:update_seq(NewIdxState),
+    Rest = send_replies(State#st.waiters, CurrSeq, NewIdxState),
+    {noreply, State#st{
+        idx_state=NewIdxState,
+        waiters=Rest,
+        committed=false
+    }};
+handle_cast({update_error, Error}, State) ->
+    send_all(State#st.waiters, Error),
+    {noreply, State#st{waiters=[]}};
 handle_cast(stop, State) ->
     {stop, normal, State};
 handle_cast(delete, State) ->
