@@ -18,6 +18,7 @@
     group_level,
     callback,
     user_acc,
+    last_go=ok,
     reduce_fun,
     update_seq,
     args
@@ -82,27 +83,12 @@ map_fold(Db, View, Args, Callback, UAcc) ->
         {ok, R, A} = couch_mrview_util:fold(View, fun map_fold/3, Acc0, Opts),
         {R, A}
     end, {nil, Acc}, OptList),
-    
-    % Send meta info if we haven't already
     Offset = couch_mrview_util:reduce_to_count(Reds),
-    Meta = make_meta(Args, View, [{total, Total}, {offset, Offset}]),
-    {Go, UAcc1} = case Acc2#mracc.meta_sent of
-        false -> Callback(Meta, Acc2#mracc.user_acc);
-        _ -> {ok, Acc2#mracc.user_acc}
-    end,
-    
-    io:format("GO: ~p~n", [Go]),
-    
-    % Notify callback that the fold is complete.
-    {_, UAcc2} = case Go of
-        ok -> Callback(complete, UAcc1);
-        _ -> {ok, UAcc1}
-    end,
-    {ok, UAcc2}.
+    finish_fold(Acc2, View, [{total, Total}, {offset, Offset}]).
 
 
 map_fold(_KV, _Offset, #mracc{skip=N}=Acc) when N > 0 ->
-    {ok, Acc#mracc{skip=N-1}};
+    {ok, Acc#mracc{skip=N-1, last_go=ok}};
 map_fold(KV, OffsetReds, #mracc{offset=undefined}=Acc) ->
     #mracc{
         view=View,
@@ -115,13 +101,13 @@ map_fold(KV, OffsetReds, #mracc{offset=undefined}=Acc) ->
     Offset = Reduce(OffsetReds),
     Meta = make_meta(Args, View, [{total, Total}, {offset, Offset}]),
     {Go, UAcc1} = Callback(Meta, UAcc0),
-    Acc1 = Acc#mracc{meta_sent=true, offset=Offset, user_acc=UAcc1},
+    Acc1 = Acc#mracc{meta_sent=true, offset=Offset, user_acc=UAcc1, last_go=Go},
     case Go of
         ok -> map_fold(KV, OffsetReds, Acc1);
         stop -> {stop, Acc1}
     end;
 map_fold(_KV, _Offset, #mracc{limit=0}=Acc) ->
-    {stop, Acc};
+    {stop, Acc#mracc{last_go=stop}};
 map_fold({{Key, Id}, Val}, _Offset, Acc) ->
     #mracc{
         db=Db,
@@ -133,7 +119,7 @@ map_fold({{Key, Id}, Val}, _Offset, Acc) ->
     Doc = couch_mrview_util:maybe_load_doc(Db, Id, Val, Args),
     Row = [{id, Id}, {key, Key}, {val, Val}] ++ Doc,
     {Go, UAcc1} = Callback({row, Row}, UAcc0),
-    {Go, Acc#mracc{limit=Limit-1, user_acc=UAcc1}}.
+    {Go, Acc#mracc{limit=Limit-1, user_acc=UAcc1, last_go=Go}}.
 
 
 red_fold(Db, {_Nth, _Lang, View}=RedView, Args, Callback, UAcc) ->
@@ -155,23 +141,10 @@ red_fold(Db, {_Nth, _Lang, View}=RedView, Args, Callback, UAcc) ->
             couch_mrview_util:fold_reduce(RedView, fun red_fold/3,  Acc0, Opts),
         Acc1
     end, Acc, OptList),
-    
-    Meta = make_meta(Args, View, []),
-    {Go, UAcc1} = case Acc2#mracc.meta_sent of
-        false -> Callback(Meta, Acc2#mracc.user_acc);
-        _ -> {ok, Acc2#mracc.user_acc}
-    end,
-    
-    % Notify callback that the fold is complete.
-    {_, UAcc2} = case Go of
-        ok -> Callback(complete, UAcc1);
-        _ -> {ok, UAcc1}
-    end,
-    {ok, UAcc2}.
-
+    finish_fold(Acc2, View, []). 
 
 red_fold(_Key, _Red, #mracc{skip=N}=Acc) when N > 0 ->
-    {ok, Acc#mracc{skip=N-1}};
+    {ok, Acc#mracc{skip=N-1, last_go=ok}};
 red_fold(Key, Red, #mracc{meta_sent=false}=Acc) ->
     #mracc{
         view=View,
@@ -181,13 +154,13 @@ red_fold(Key, Red, #mracc{meta_sent=false}=Acc) ->
     } = Acc,
     Meta = make_meta(Args, View, []),
     {Go, UAcc1} = Callback(Meta, UAcc0),
-    Acc1 = Acc#mracc{user_acc=UAcc1, meta_sent=true},
+    Acc1 = Acc#mracc{user_acc=UAcc1, meta_sent=true, last_go=Go},
     case Go of
         ok -> red_fold(Key, Red, Acc1);
         _ -> {Go, Acc1}
     end;
 red_fold(_Key, _Red, #mracc{limit=0} = Acc) ->
-    {stop, Acc};
+    {stop, Acc#mracc{last_go=stop}};
 red_fold(_Key, Red, #mracc{group_level=0} = Acc) ->
     #mracc{
         limit=Limit,
@@ -196,7 +169,7 @@ red_fold(_Key, Red, #mracc{group_level=0} = Acc) ->
     } = Acc,
     Row = [{key, null}, {val, Red}],
     {Go, UAcc1} = Callback({row, Row}, UAcc0),
-    {Go, Acc#mracc{user_acc=UAcc1, limit=Limit-1}};
+    {Go, Acc#mracc{user_acc=UAcc1, limit=Limit-1, last_go=Go}};
 red_fold(Key, Red, #mracc{group_level=exact} = Acc) ->
     #mracc{
         limit=Limit,
@@ -205,7 +178,7 @@ red_fold(Key, Red, #mracc{group_level=exact} = Acc) ->
     } = Acc,
     Row = [{key, Key}, {val, Red}],
     {Go, UAcc1} = Callback({row, Row}, UAcc0),
-    {Go, Acc#mracc{user_acc=UAcc1, limit=Limit-1}};
+    {Go, Acc#mracc{user_acc=UAcc1, limit=Limit-1, last_go=Go}};
 red_fold(K, Red, #mracc{group_level=I} = Acc) when I > 0, is_list(K) ->
     #mracc{
         limit=Limit,
@@ -214,7 +187,7 @@ red_fold(K, Red, #mracc{group_level=I} = Acc) when I > 0, is_list(K) ->
     } = Acc,
     Row = [{key, lists:sublist(K, I)}, {val, Red}],
     {Go, UAcc1} = Callback({row, Row}, UAcc0),
-    {Go, Acc#mracc{user_acc=UAcc1, limit=Limit-1}};
+    {Go, Acc#mracc{user_acc=UAcc1, limit=Limit-1, last_go=Go}};
 red_fold(K, Red, #mracc{group_level=I} = Acc) when I > 0 ->
     #mracc{
         limit=Limit,
@@ -223,7 +196,25 @@ red_fold(K, Red, #mracc{group_level=I} = Acc) when I > 0 ->
     } = Acc,
     Row = [{key, K}, {val, Red}],
     {Go, UAcc1} = Callback({row, Row}, UAcc0),
-    {Go, Acc#mracc{user_acc=UAcc1, limit=Limit-1}}.
+    {Go, Acc#mracc{user_acc=UAcc1, limit=Limit-1, last_go=Go}}.
+
+
+finish_fold(#mracc{last_go=ok}=Acc, View, ExtraMeta) ->
+    #mracc{callback=Callback, user_acc=UAcc, args=Args}=Acc,
+    % Possible send meta info
+    Meta = make_meta(Args, View, ExtraMeta),
+    {Go, UAcc1} = case Acc#mracc.meta_sent of
+        false -> Callback(Meta, UAcc);
+        _ -> {ok, Acc#mracc.user_acc}
+    end,
+    % Notify callback that the fold is complete.
+    {_, UAcc2} = case Go of
+        ok -> Callback(complete, UAcc1);
+        _ -> {ok, UAcc1}
+    end,
+    {ok, UAcc2};
+finish_fold(#mracc{user_acc=UAcc}, _View, _ExtraMeta) ->
+    {ok, UAcc}.
 
 
 make_meta(Args, View, Base) ->

@@ -41,7 +41,6 @@ get_view(Db, DDoc, ViewName, Args0) ->
         Error -> throw(Error)
     end,
     UpdateAfterFun = fun() ->
-        io:format("Updating after request.~n", []),
         LastSeq = couch_db:get_update_seq(Db),
         catch couch_index:get_state(Pid, LastSeq)
     end,
@@ -49,7 +48,6 @@ get_view(Db, DDoc, ViewName, Args0) ->
         update_after -> spawn(UpdateAfterFun);
         _ -> ok
     end,
-    erlang:monitor(process, State#mrst.fd),
     #mrst{language=Lang, views=Views} = State,
     {Type, View, Args} = extract_view(Lang, Args, ViewName, Views),
     check_range(Args, view_cmp(View)),

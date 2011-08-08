@@ -180,7 +180,7 @@ handle_view_list(Req, Db, DDoc, LName, ViewDesignName, ViewName, Keys) ->
     {ok, VDoc} = couch_db:open_doc(Db, VDocId, [ejson_body]),
     Args0 = couch_mrview_http:parse_qs(Req, Keys),
     {ok, ViewInfo, Args} = couch_mrview:open_view(Db, VDoc, ViewName, Args0),
-    ETag = couch_mrview_http:calculate_view_etag(Db, ViewInfo, Args),
+    ETag = list_etag(Req, Db, DDoc, ViewInfo, Args),
     couch_httpd:etag_respond(Req, ETag, fun() ->
         couch_query_servers:with_ddoc_proc(DDoc, fun(QServer) ->
             Acc0 = #lacc{
@@ -213,15 +213,14 @@ list_cb({row, Row}, #lacc{resp=nil} = Acc) ->
 list_cb({row, Row}, Acc) ->
     send_list_row(Row, Acc);
 list_cb(complete, Acc) ->
-    io:format("PLEASE STOP~n", []),
     #lacc{qserver = {Proc, _}, resp = Resp0} = Acc,
     if Resp0 =:= nil ->
         {ok, #lacc{resp = Resp}} = start_list_resp({[]}, Acc);
     true ->
         Resp = Resp0
     end,
-    [<<"end">>, Chunk] = couch_query_servers:proc_prompt(Proc, [<<"list_end">>]),
-    send_non_empty_chunk(Resp, Chunk),
+    [<<"end">>, Data] = couch_query_servers:proc_prompt(Proc, [<<"list_end">>]),
+    send_non_empty_chunk(Resp, Data),
     couch_httpd:last_chunk(Resp),
     {ok, Resp}.
 
@@ -238,6 +237,7 @@ start_list_resp(Head, Acc) ->
 
     [<<"start">>,Chunk,JsonResp] = couch_query_servers:ddoc_proc_prompt(QServer,
         [<<"lists">>, LName], [Head, JsonReq]),
+    io:format("RESP: ~p~n", [JsonResp]),
     JsonResp2 = apply_etag(JsonResp, Etag),
     #extern_resp_args{
         code = Code,
@@ -245,6 +245,7 @@ start_list_resp(Head, Acc) ->
         headers = ExtHeaders
     } = couch_httpd_external:parse_external_response(JsonResp2),
     JsonHeaders = couch_httpd_external:default_or_content_type(CType, ExtHeaders),
+    io:format("HERE:~n~p~n~p~n", [JsonHeaders, ExtHeaders]),
     {ok, Resp} = couch_httpd:start_chunked_response(Req, Code, JsonHeaders),
     send_non_empty_chunk(Resp, Chunk),
     {ok, Acc#lacc{resp=Resp}}.
@@ -268,7 +269,6 @@ send_list_row(Row, #lacc{qserver = {Proc, _}, resp = Resp} = Acc) ->
         send_non_empty_chunk(Resp, Chunk),
         {ok, Acc};
     [<<"end">>, Chunk] ->
-        io:format("LIST ENDED~n", []),
         send_non_empty_chunk(Resp, Chunk),
         couch_httpd:last_chunk(Resp),
         {stop, Acc}
@@ -281,6 +281,7 @@ send_non_empty_chunk(_, []) ->
     ok;
 send_non_empty_chunk(Resp, Chunk) ->
     couch_httpd:send_chunk(Resp, Chunk).
+
 
 apply_etag({ExternalResponse}, CurrentEtag) ->
     % Here we embark on the delicate task of replacing or creating the
@@ -308,6 +309,8 @@ apply_etag({ExternalResponse}, CurrentEtag) ->
 % todo move to couch_util
 json_apply_field(H, {L}) ->
     json_apply_field(H, L, []).
+
+
 json_apply_field({Key, NewValue}, [{Key, _OldVal} | Headers], Acc) ->
     % drop matching keys
     json_apply_field({Key, NewValue}, Headers, Acc);
