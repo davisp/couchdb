@@ -17,7 +17,8 @@
     handle_temp_view_req/2,
     handle_info_req/3,
     handle_compact_req/3,
-    parse_qs/2
+    parse_qs/2,
+    calculate_view_etag/3
 ]).
 
 -include("couch_db.hrl").
@@ -96,7 +97,6 @@ view_cb({meta, Meta}, {nil, Resp}) ->
         UpdateSeq -> [io_lib:format("\"update_seq\":~p", [UpdateSeq])]
     end ++ ["\"rows\":["],
     Chunk = lists:flatten("{" ++ string:join(Parts, ",")),
-    io:format("CHUNK:~p~n", [Chunk]),
     couch_httpd:send_chunk(Resp, Chunk),
     {ok, {"", Resp}};
 view_cb({row, Row}, {nil, Resp}) ->

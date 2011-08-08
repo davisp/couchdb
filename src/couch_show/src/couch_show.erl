@@ -180,8 +180,7 @@ handle_view_list(Req, Db, DDoc, LName, ViewDesignName, ViewName, Keys) ->
     {ok, VDoc} = couch_db:open_doc(Db, VDocId, [ejson_body]),
     Args0 = couch_mrview_http:parse_qs(Req, Keys),
     {ok, ViewInfo, Args} = couch_mrview:open_view(Db, VDoc, ViewName, Args0),
-    %ETag = calculate_view_etag(Db, ViewInfo, Args),
-    ETag = couch_uuids:random(),
+    ETag = couch_mrview_http:calculate_view_etag(Db, ViewInfo, Args),
     couch_httpd:etag_respond(Req, ETag, fun() ->
         couch_query_servers:with_ddoc_proc(DDoc, fun(QServer) ->
             Acc0 = #lacc{
@@ -196,26 +195,32 @@ handle_view_list(Req, Db, DDoc, LName, ViewDesignName, ViewName, Keys) ->
     end).
 
 
-list_cb({meta, []}, Acc) ->
-    {ok, Acc};
 list_cb({meta, Meta}, #lacc{resp=nil} = Acc) ->
-    Total = couch_util:get_value(total, Meta),
-    Offset = couch_util:get_value(offset, Meta),
-    start_list_resp({[{<<"total_rows">>, Total}, {<<"offset">>, Offset}]}, Acc);
+    MetaProps = case couch_util:get_value(total, Meta) of
+        undefined -> [];
+        Total -> [{total_rows, Total}]
+    end ++ case couch_util:get_value(offset, Meta) of
+        undefined -> [];
+        Offset -> [{offset, Offset}]
+    end ++ case couch_util:get_value(update_seq, Meta) of
+        undefined -> [];
+        UpdateSeq -> [{update_seq, UpdateSeq}]
+    end,
+    start_list_resp({MetaProps}, Acc);
 list_cb({row, Row}, #lacc{resp=nil} = Acc) ->
-    % first row of a reduce view, or a sorted=false view
     {ok, NewAcc} = start_list_resp({[]}, Acc),
     send_list_row(Row, NewAcc);
 list_cb({row, Row}, Acc) ->
     send_list_row(Row, Acc);
 list_cb(complete, Acc) ->
+    io:format("PLEASE STOP~n", []),
     #lacc{qserver = {Proc, _}, resp = Resp0} = Acc,
     if Resp0 =:= nil ->
         {ok, #lacc{resp = Resp}} = start_list_resp({[]}, Acc);
     true ->
         Resp = Resp0
     end,
-    [<<"end">>, Chunk] = couch_query_servers:proc_prompt(Proc, [<<"list_end">>]),            
+    [<<"end">>, Chunk] = couch_query_servers:proc_prompt(Proc, [<<"list_end">>]),
     send_non_empty_chunk(Resp, Chunk),
     couch_httpd:last_chunk(Resp),
     {ok, Resp}.
@@ -229,10 +234,7 @@ start_list_resp(Head, Acc) ->
         etag = Etag
     } = Acc,
 
-    % use a separate process because we're already in a receive loop, and
-    % json_req_obj calls fabric:get_db_info()
-    spawn_monitor(fun() -> exit(couch_httpd_external:json_req_obj(Req, Db)) end),
-    receive {'DOWN', _, _, _, JsonReq} -> ok end,
+    JsonReq = couch_httpd_external:json_req_obj(Req, Db),
 
     [<<"start">>,Chunk,JsonResp] = couch_query_servers:ddoc_proc_prompt(QServer,
         [<<"lists">>, LName], [Head, JsonReq]),
@@ -266,32 +268,19 @@ send_list_row(Row, #lacc{qserver = {Proc, _}, resp = Resp} = Acc) ->
         send_non_empty_chunk(Resp, Chunk),
         {ok, Acc};
     [<<"end">>, Chunk] ->
+        io:format("LIST ENDED~n", []),
         send_non_empty_chunk(Resp, Chunk),
         couch_httpd:last_chunk(Resp),
-        {stop, Resp}
+        {stop, Acc}
     catch Error ->
         couch_httpd:send_chunked_error(Resp, Error),
-        {stop, Resp}
+        {stop, Acc}
     end.
 
 send_non_empty_chunk(_, []) ->
     ok;
 send_non_empty_chunk(Resp, Chunk) ->
     couch_httpd:send_chunk(Resp, Chunk).
-
-% Maybe this is in the proplists API
-% todo move to couch_util
-json_apply_field(H, {L}) ->
-    json_apply_field(H, L, []).
-json_apply_field({Key, NewValue}, [{Key, _OldVal} | Headers], Acc) ->
-    % drop matching keys
-    json_apply_field({Key, NewValue}, Headers, Acc);
-json_apply_field({Key, NewValue}, [{OtherKey, OtherVal} | Headers], Acc) ->
-    % something else is next, leave it alone.
-    json_apply_field({Key, NewValue}, Headers, [{OtherKey, OtherVal} | Acc]);
-json_apply_field({Key, NewValue}, [], Acc) ->
-    % end of list, add ours
-    {[{Key, NewValue}|Acc]}.
 
 apply_etag({ExternalResponse}, CurrentEtag) ->
     % Here we embark on the delicate task of replacing or creating the
@@ -313,4 +302,19 @@ apply_etag({ExternalResponse}, CurrentEtag) ->
             Field
         end || Field <- ExternalResponse]}
     end.
+
+
+% Maybe this is in the proplists API
+% todo move to couch_util
+json_apply_field(H, {L}) ->
+    json_apply_field(H, L, []).
+json_apply_field({Key, NewValue}, [{Key, _OldVal} | Headers], Acc) ->
+    % drop matching keys
+    json_apply_field({Key, NewValue}, Headers, Acc);
+json_apply_field({Key, NewValue}, [{OtherKey, OtherVal} | Headers], Acc) ->
+    % something else is next, leave it alone.
+    json_apply_field({Key, NewValue}, Headers, [{OtherKey, OtherVal} | Acc]);
+json_apply_field({Key, NewValue}, [], Acc) ->
+    % end of list, add ours
+    {[{Key, NewValue}|Acc]}.
 

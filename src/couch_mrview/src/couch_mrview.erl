@@ -91,6 +91,8 @@ map_fold(Db, View, Args, Callback, UAcc) ->
         _ -> {ok, Acc2#mracc.user_acc}
     end,
     
+    io:format("GO: ~p~n", [Go]),
+    
     % Notify callback that the fold is complete.
     {_, UAcc2} = case Go of
         ok -> Callback(complete, UAcc1);
