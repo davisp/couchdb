@@ -1,9 +1,9 @@
 -module(couch_mrview).
 
 -export([query_view/3, query_view/4, query_view/6]).
--export([open_view/3, open_view/4, run_view/5]).
 -export([get_info/2]).
 -export([compact/2]).
+-export([cleanup/1]).
 
 -include_lib("couch_mrview/include/couch_mrview.hrl").
 
@@ -25,34 +25,32 @@
 }).
 
 
-query_view(Db, DDoc, ViewName) ->
-    query_view(Db, DDoc, ViewName, #mrargs{}).
+query_view(Db, DDoc, VName) ->
+    query_view(Db, DDoc, VName, #mrargs{}).
 
 
-query_view(Db, DDoc, ViewName, Args) ->
-    query_view(Db, DDoc, ViewName, Args, fun default_callback/2, []).
+query_view(Db, DDoc, VName, Args) when is_list(Args) ->
+    query_view(Db, DDoc, VName, to_mrargs(Args), fun default_cb/2, []);
+query_view(Db, DDoc, VName, Args) ->
+    query_view(Db, DDoc, VName, Args, fun default_cb/2, []).
 
     
-query_view(Db, DDoc, ViewName, Args, Callback, Acc) when is_list(Args) ->
-    query_view(Db, DDoc, ViewName, to_mrargs(Args), Callback, Acc);
-query_view(Db, DDoc, ViewName, Args0, Callback, Acc) ->
-    {ok, VInfo, Args} = couch_mrview_util:get_view(Db, DDoc, ViewName, Args0),
-    run_view(Db, VInfo, Args, Callback, Acc).
+query_view(Db, DDoc, VName, Args, Callback, Acc) when is_list(Args) ->
+    query_view(Db, DDoc, VName, to_mrargs(Args), Callback, Acc);
+query_view(Db, DDoc, VName, Args0, Callback, Acc0) ->
+    {ok, VInfo, Sig, Args} = couch_mrview_util:get_view(Db, DDoc, VName, Args0),
+    {ok, Acc1} = case Args#mrargs.preflight_fun of
+        PFFun when is_function(PFFun, 2) -> PFFun(Sig, Acc0);
+        _ -> {ok, Acc0}
+    end,
+    query_view(Db, VInfo, Args, Callback, Acc1).
 
 
-open_view(Db, DDoc, ViewName) ->
-    open_view(Db, DDoc, ViewName, #mrargs{}).
-
-open_view(Db, DDoc, ViewName, Args) when is_list(Args) ->
-    open_view(Db, DDoc, ViewName, to_mrargs(Args));
-open_view(Db, DDoc, ViewName, Args0) ->
-    couch_mrview_util:get_view(Db, DDoc, ViewName, Args0).
-
-
-run_view(Db, {map, View}, Args, Callback, Acc) ->
-    map_fold(Db, View, Args, Callback, Acc);
-run_view(Db, {red, View}, Args, Callback, Acc) ->
-    red_fold(Db, View, Args, Callback, Acc).
+query_view(Db, {Type, View}, Args, Callback, Acc) ->
+    case Type of
+        map -> map_fold(Db, View, Args, Callback, Acc);
+        red -> red_fold(Db, View, Args, Callback, Acc)
+    end.
 
 
 % API convenience.
@@ -62,6 +60,10 @@ get_info(Db, DDoc) ->
 
 compact(Db, DDoc) ->
     couch_mrview_util:compact(Db, DDoc).
+
+
+cleanup(Db) ->
+    couch_mrview_cleanup:run(Db).
 
 
 map_fold(Db, View, Args, Callback, UAcc) ->
@@ -107,7 +109,7 @@ map_fold(KV, OffsetReds, #mracc{offset=undefined}=Acc) ->
         stop -> {stop, Acc1}
     end;
 map_fold(_KV, _Offset, #mracc{limit=0}=Acc) ->
-    {stop, Acc#mracc{last_go=stop}};
+    {stop, Acc};
 map_fold({{Key, Id}, Val}, _Offset, Acc) ->
     #mracc{
         db=Db,
@@ -160,7 +162,7 @@ red_fold(Key, Red, #mracc{meta_sent=false}=Acc) ->
         _ -> {Go, Acc1}
     end;
 red_fold(_Key, _Red, #mracc{limit=0} = Acc) ->
-    {stop, Acc#mracc{last_go=stop}};
+    {stop, Acc};
 red_fold(_Key, Red, #mracc{group_level=0} = Acc) ->
     #mracc{
         limit=Limit,
@@ -236,13 +238,13 @@ group_rows_fun(GroupLevel) when is_integer(GroupLevel) ->
     end.
 
 
-default_callback(complete, Acc) ->
+default_cb(complete, Acc) ->
     {ok, lists:reverse(Acc)};
-default_callback({final, Info}, []) ->
+default_cb({final, Info}, []) ->
     {ok, [Info]};
-default_callback({final, _}, Acc) ->
+default_cb({final, _}, Acc) ->
     {ok, Acc};
-default_callback(Row, Acc) ->
+default_cb(Row, Acc) ->
     {ok, [Row | Acc]}.
 
 

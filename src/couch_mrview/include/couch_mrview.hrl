@@ -45,12 +45,14 @@
 -record(mrargs, {
     view_type,
     reduce,
-    
+
+    preflight_fun,
+
     start_key,
     start_key_docid,
     end_key,
     end_key_docid,
-    keys = [],
+    keys,
 
     direction = fwd,
     limit = 16#10000000,

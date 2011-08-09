@@ -14,18 +14,7 @@
 % the License.
 
 main(_) ->
-    test_util:init_code_path(),
-
-    etap:plan(4),
-    case (catch test()) of
-        ok ->
-            etap:end_tests();
-        Other ->
-            etap:diag(io_lib:format("Test died abnormally: ~p", [Other])),
-            etap:bail(Other)
-    end,
-    timer:sleep(300),
-    ok.
+    test_util:run(4, fun() -> test() end).
 
 test() ->
     couch_server_sup:start_link(test_util:config_files()),
@@ -43,6 +32,7 @@ test() ->
 test_basic(Db) ->
     Result = run_query(Db, []),
     Expect = {ok, [
+        {meta, []},
         {row, [{key, null}, {val, 55}]}
     ]},
     etap:is(Result, Expect, "Simple reduce view works.").
@@ -51,6 +41,7 @@ test_basic(Db) ->
 test_key_range(Db) ->
     Result = run_query(Db, [{start_key, [0, 2]}, {end_key, [0, 4]}]),
     Expect = {ok, [
+        {meta, []},
         {row, [{key, null}, {val, 6}]}
     ]},
     etap:is(Result, Expect, "Reduce with key range works.").
@@ -59,6 +50,7 @@ test_key_range(Db) ->
 test_group_level(Db) ->
     Result = run_query(Db, [{group_level, 1}]),
     Expect = {ok, [
+        {meta, []},
         {row, [{key, [0]}, {val, 30}]},
         {row, [{key, [1]}, {val, 25}]}
     ]},
@@ -67,6 +59,7 @@ test_group_level(Db) ->
 test_group_exact(Db) ->
     Result = run_query(Db, [{group_level, exact}]),
     Expect = {ok, [
+        {meta, []},
         {row, [{key, [0, 2]}, {val, 2}]},
         {row, [{key, [0, 4]}, {val, 4}]},
         {row, [{key, [0, 6]}, {val, 6}]},

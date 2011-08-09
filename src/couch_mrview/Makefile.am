@@ -24,7 +24,9 @@ include_files = \
     include/couch_mrview.hrl
 
 source_files = \
+    src/couch_mrview.app.src \
     src/couch_mrview.erl \
+	src/couch_mrview_cleanup.erl \
     src/couch_mrview_compactor.erl \
     src/couch_mrview_http.erl \
     src/couch_mrview_index.erl \
@@ -35,6 +37,7 @@ source_files = \
 compiled_files = \
     ebin/couch_mrview.app \
     ebin/couch_mrview.beam \
+	ebin/couch_mrview_cleanup.beam \
     ebin/couch_mrview_compactor.beam \
     ebin/couch_mrview_http.beam \
     ebin/couch_mrview_index.beam \

@@ -33,5 +33,5 @@ ebin/%.app: src/%.app.src
 
 ebin/%.beam: src/%.erl $(include_files)
 	@mkdir -p ebin/
-	$(ERLC) -Wall -I../couchdb -o ebin/ $(ERLC_FLAGS) ${TEST} $<;
+	$(ERLC) -Wall -I../ -I../couchdb -o ebin/ $(ERLC_FLAGS) ${TEST} $<;
 

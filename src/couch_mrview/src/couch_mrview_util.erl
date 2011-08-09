@@ -1,7 +1,7 @@
 -module(couch_mrview_util).
 
 -export([get_view/4, get_info/2, compact/2]).
--export([init_state/4, reset_index/3]).
+-export([ddoc_to_mrst/2, init_state/4, reset_index/3]).
 -export([make_header/1]).
 -export([open_file/1, index_file/3, compaction_file/3]).
 -export([get_row_count/1, reduce_to_count/1]).
@@ -29,8 +29,8 @@ get_view(Db, DDoc, ViewName, Args) when is_binary(DDoc) ->
 get_view(Db, DDoc, ViewName, Args0) ->
     InitState = ddoc_to_mrst(couch_db:name(Db), DDoc),
     Args1 = set_view_type(Args0, ViewName, InitState#mrst.views),
-    Args = validate_args(Args1),
-    MinSeq = case Args#mrargs.stale of
+    Args2 = validate_args(Args1),
+    MinSeq = case Args2#mrargs.stale of
         ok -> 0;
         update_after -> 0;
         _ -> couch_db:get_update_seq(Db)
@@ -44,14 +44,15 @@ get_view(Db, DDoc, ViewName, Args0) ->
         LastSeq = couch_db:get_update_seq(Db),
         catch couch_index:get_state(Pid, LastSeq)
     end,
-    case Args#mrargs.stale of
+    case Args2#mrargs.stale of
         update_after -> spawn(UpdateAfterFun);
         _ -> ok
     end,
     #mrst{language=Lang, views=Views} = State,
-    {Type, View, Args} = extract_view(Lang, Args, ViewName, Views),
-    check_range(Args, view_cmp(View)),
-    {ok, {Type, View}, Args}.
+    {Type, View, Args3} = extract_view(Lang, Args2, ViewName, Views),
+    check_range(Args3, view_cmp(View)),
+    Sig = view_sig(Db, State, View, Args3),
+    {ok, {Type, View}, Sig, Args3}.
 
 
 get_info(DbName, DDoc) when is_binary(DbName) ->
@@ -128,10 +129,10 @@ ddoc_to_mrst(DbName, #doc{id=Id, body={Fields}}) ->
         design_opts=DesignOpts,
         root_dir=RootDir
     },
-    set_view_sig(IdxState).
+    set_index_sig(IdxState).
 
 
-set_view_sig(State) ->
+set_index_sig(State) ->
     #mrst{
         views=Views,
         lib=Lib,
@@ -140,6 +141,26 @@ set_view_sig(State) ->
     } = State,
     SigInfo = {Views, Language, DesignOptions, sort_lib(Lib)},
     State#mrst{sig=couch_util:md5(term_to_binary(SigInfo))}.
+
+
+view_sig(Db, State, View, #mrargs{include_docs=true}=Args) ->
+    BaseSig = view_sig(Db, State, View, Args#mrargs{include_docs=false}),
+    UpdateSeq = couch_db:get_update_seq(Db),
+    PurgeSeq = couch_db:get_purge_seq(Db),
+    Bin = term_to_binary({BaseSig, UpdateSeq, PurgeSeq}),
+    hexsig(couch_util:md5(Bin));
+view_sig(Db, State, {_Nth, _Lang, View}, Args) ->
+    view_sig(Db, State, View, Args);
+view_sig(_Db, State, View, Args0) ->
+    Sig = State#mrst.sig,
+    UpdateSeq = View#mrview.update_seq,
+    PurgeSeq = View#mrview.purge_seq,
+    Args = Args0#mrargs{
+        preflight_fun=undefined,
+        extra=[]
+    },
+    Bin = term_to_binary({Sig, UpdateSeq, PurgeSeq, Args}),
+    hexsig(couch_util:md5(Bin)).
 
 
 set_view_type(_Args, _ViewName, []) ->
@@ -429,8 +450,10 @@ make_header(State) ->
 index_file(RootDir, DbName, Sig) ->
     design_root(RootDir, DbName) ++ hexsig(Sig) ++".view".
 
+
 compaction_file(RootDir, DbName, Sig) ->
     design_root(RootDir, DbName) ++ hexsig(Sig) ++ ".compact.view".
+
 
 open_file(FName) ->
     case couch_file:open(FName) of

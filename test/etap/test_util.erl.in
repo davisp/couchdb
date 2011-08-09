@@ -14,6 +14,7 @@
 
 -export([init_code_path/0]).
 -export([source_file/1, build_file/1, config_files/0]).
+-export([run/2]).
 
 srcdir() ->
     "@abs_top_srcdir@".
@@ -51,9 +52,9 @@ config_files() ->
     ].
 
 
-run_tests(Plan, Fun) ->
+run(Plan, Fun) ->
     test_util:init_code_path(),
-    etap:plan(9),
+    etap:plan(Plan),
     case (catch Fun()) of
         ok ->
             etap:end_tests();

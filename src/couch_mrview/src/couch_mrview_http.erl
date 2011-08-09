@@ -14,15 +14,26 @@
 
 -export([
     handle_view_req/3,
-    handle_temp_view_req/2,
     handle_info_req/3,
     handle_compact_req/3,
+    handle_temp_view_req/2,
+    handle_cleanup_req/2,
     parse_qs/2,
     calculate_view_etag/3
 ]).
 
+
 -include("couch_db.hrl").
 -include_lib("couch_mrview/include/couch_mrview.hrl").
+
+
+-record(vacc, {
+    db,
+    req,
+    resp,
+    prepend,
+    etag
+}).
 
 
 handle_temp_view_req(#httpd{method='POST'}=Req, Db) ->
@@ -71,20 +82,38 @@ handle_compact_req(Req, _Db, _DDoc) ->
     couch_httpd:send_method_not_allowd(Req, "POST").
 
 
+handle_cleanup_req(#httpd{method='POST'}=Req, Db) ->
+    ok = couch_db:check_is_admin(Db),
+    couch_httpd:validate_ctype(Req, "application/json"),
+    ok = couch_mrview_cleanup:run(Db),
+    couch_httpd:send_json(Req, 202, {[{ok, true}]});
+handle_cleanup_req(Req, _Db) ->
+    couch_httpd:send_method_not_allowed(Req, "POST").
+
+
 design_doc_view(Req, Db, DDoc, ViewName, Keys) ->
     Args0 = parse_qs(Req, Keys),
-    {ok, ViewInfo, Args} = couch_mrview:open_view(Db, DDoc, ViewName, Args0),
-    %ETag = calculate_view_etag(Db, ViewInfo, Args),
-    ETag = couch_uuids:random(),
-    couch_httpd:etag_respond(Req, ETag, fun() ->
-        Hdrs = [{"ETag", ETag}],
-        {ok, Resp} = couch_httpd:start_json_response(Req, 200, Hdrs),
-        couch_mrview:run_view(Db, ViewInfo, Args, fun view_cb/2, {nil, Resp}),
-        couch_httpd:end_json_response(Resp)
-    end).
+    ETagFun = fun(Sig, Acc0) ->
+        ETag = couch_httpd:make_etag(Sig),
+        case couch_httpd:etag_match(Req, ETag) of
+            true -> throw({etag_match, ETag});
+            false -> {ok, Acc0#vacc{etag=ETag}}
+        end
+    end,
+    Args = Args0#mrargs{preflight_fun=ETagFun},
+    {ok, Resp} = couch_httpd:etag_maybe(Req, fun() ->
+        VAcc0 = #vacc{db=Db, req=Req},
+        couch_mrview:query_view(Db, DDoc, ViewName, Args, fun view_cb/2, VAcc0)
+    end),
+    case is_record(Resp, vacc) of
+        true -> {ok, Resp#vacc.resp};
+        _ -> {ok, Resp}
+    end.
 
 
-view_cb({meta, Meta}, {nil, Resp}) ->
+view_cb({meta, Meta}, #vacc{resp=undefined}=Acc) ->
+    Headers = [{"ETag", Acc#vacc.etag}],
+    {ok, Resp} = couch_httpd:start_json_response(Acc#vacc.req, 200, Headers),
     % Map function starting
     Parts = case couch_util:get_value(total, Meta) of
         undefined -> [];
@@ -96,23 +125,28 @@ view_cb({meta, Meta}, {nil, Resp}) ->
         undefined -> [];
         UpdateSeq -> [io_lib:format("\"update_seq\":~p", [UpdateSeq])]
     end ++ ["\"rows\":["],
-    Chunk = lists:flatten("{" ++ string:join(Parts, ",")),
+    Chunk = lists:flatten("{" ++ string:join(Parts, ",") ++ "\r\n"),
     couch_httpd:send_chunk(Resp, Chunk),
-    {ok, {"", Resp}};
-view_cb({row, Row}, {nil, Resp}) ->
+    {ok, Acc#vacc{resp=Resp, prepend=""}};
+view_cb({row, Row}, #vacc{resp=undefined}=Acc) ->
     % Reduce function starting
+    Headers = [{"ETag", Acc#vacc.etag}],
+    {ok, Resp} = couch_httpd:start_json_response(Acc#vacc.req, 200, Headers),
     couch_httpd:send_chunk(Resp, ["{\"rows\":[\r\n", row_to_json(Row)]),
-    {ok, {",\r\n", Resp}};
-view_cb({row, Row}, {Prepend, Resp}) ->
+    {ok, #vacc{resp=Resp, prepend=",\r\n"}};
+view_cb({row, Row}, Acc) ->
     % Adding another row
-    couch_httpd:send_chunk(Resp, [Prepend, row_to_json(Row)]),
-    {ok, {",\r\n", Resp}};
-view_cb(complete, {nil, Resp}) ->
+    couch_httpd:send_chunk(Acc#vacc.resp, [Acc#vacc.prepend, row_to_json(Row)]),
+    {ok, Acc#vacc{prepend=",\r\n"}};
+view_cb(complete, #vacc{resp=undefined}=Acc) ->
     % Nothing in view
-    couch_httpd:send_chunk(Resp, "{\"rows\":[]}");
-view_cb(complete, {_, Resp}) ->
+    {ok, Resp} = couch_httpd:send_json(Acc#vacc.req, 200, {[{rows, []}]}),
+    {ok, Acc#vacc{resp=Resp}};
+view_cb(complete, Acc) ->
     % Finish view output
-    couch_httpd:send_chunk(Resp, "\r\n]}").
+    couch_httpd:send_chunk(Acc#vacc.resp, "\r\n]}"),
+    couch_httpd:end_json_response(Acc#vacc.resp),
+    {ok, Acc}.
 
 
 row_to_json(Row) ->

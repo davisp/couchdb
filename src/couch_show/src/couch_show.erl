@@ -19,13 +19,14 @@
 ]).
 
 -include("couch_db.hrl").
+-include_lib("couch_mrview/include/couch_mrview.hrl").
 
 -record(lacc, {
+    db,
     req,
-    resp = nil,
+    resp,
     qserver,
     lname,
-    db,
     etag
 }).
 
@@ -35,7 +36,7 @@
 % then it sends the response from the query server to the http client.
 
 maybe_open_doc(Db, DocId) ->
-    case couch_httpd_db:couch_doc_open(Db, DocId, nil, [conflicts]) of
+    case catch couch_httpd_db:couch_doc_open(Db, DocId, nil, [conflicts]) of
         #doc{} = Doc -> Doc;
         {not_found, _} -> nil
     end.
@@ -60,7 +61,7 @@ handle_doc_show_req(#httpd{
 
     % open the doc
     Doc = maybe_open_doc(Db, DocId1),
-
+    
     % we don't handle revs here b/c they are an internal api
     % pass 404 docs to the show function
     handle_doc_show(Req, Db, DDoc, ShowName, Doc, DocId1);
@@ -136,7 +137,7 @@ send_doc_update_response(Req, Db, DDoc, UpdateName, Doc, DocId) ->
             end,
             NewDoc = couch_doc:from_json_obj({NewJsonDoc}),
             {ok, NewRev} = couch_db:update_doc(Db, NewDoc, Options),
-            NewRevStr = couch_doc:rev_to_string(NewRev),
+            NewRevStr = couch_doc:rev_to_str(NewRev),
             JsonHeaders = {[{<<"X-Couch-Update-NewRev">>, NewRevStr}]},
             JsonRespWithRev = {[{<<"headers">>, JsonHeaders} | JsonResp0]},
             {201, JsonRespWithRev};
@@ -150,12 +151,14 @@ send_doc_update_response(Req, Db, DDoc, UpdateName, Doc, DocId) ->
 
 handle_view_list_req(#httpd{method='GET'}=Req, Db, DDoc) ->
     case Req#httpd.path_parts of
-        [_, _, DName, _, LName, VName] ->
+        [_, _, _DName, _, LName, VName] ->
             % Same design doc for view and list
-            handle_view_list(Req, Db, DDoc, LName, DName, VName, undefined);
+            handle_view_list(Req, Db, DDoc, LName, DDoc, VName, undefined);
         [_, _, _, _, LName, DName, VName] ->
             % Different design docs for view and list
-            handle_view_list(Req, Db, DDoc, LName, DName, VName, undefined);
+            VDocId = <<"_design/", DName/binary>>,
+            {ok, VDDoc} = couch_db:open_doc(Db, VDocId, [ejson_body]),
+            handle_view_list(Req, Db, DDoc, LName, VDDoc, VName, undefined);
         _ ->
             couch_httpd:send_error(Req, 404, <<"list_error">>, <<"Bad path.">>)
     end;
@@ -163,11 +166,13 @@ handle_view_list_req(#httpd{method='POST'}=Req, Db, DDoc) ->
     {Props} = couch_httpd:json_body_obj(Req),
     Keys = proplists:get_value(<<"keys">>, Props),
     case Req#httpd.path_parts of
-        [_, _, DName, _, LName, VName] ->
-            handle_view_list(Req, Db, DDoc, LName, DName, VName, Keys);
+        [_, _, _DName, _, LName, VName] ->
+            handle_view_list(Req, Db, DDoc, LName, DDoc, VName, Keys);
         [_, _, _, _, LName, DName, VName] ->
             % Different design docs for view and list
-            handle_view_list(Req, Db, DDoc, LName, DName, VName, Keys);
+            VDocId = <<"_design/", DName/binary>>,
+            {ok, VDDoc} = couch_db:open_doc(Db, VDocId, [ejson_body]),
+            handle_view_list(Req, Db, DDoc, LName, VDDoc, VName, Keys);
         _ ->
             couch_httpd:send_error(Req, 404, <<"list_error">>, <<"Bad path.">>)
     end;
@@ -175,27 +180,29 @@ handle_view_list_req(Req, _Db, _DDoc) ->
     couch_httpd:send_method_not_allowed(Req, "GET,POST,HEAD").
 
 
-handle_view_list(Req, Db, DDoc, LName, ViewDesignName, ViewName, Keys) ->
-    VDocId = <<"_design/", ViewDesignName/binary>>,
-    {ok, VDoc} = couch_db:open_doc(Db, VDocId, [ejson_body]),
+handle_view_list(Req, Db, DDoc, LName, VDDoc, VName, Keys) ->
     Args0 = couch_mrview_http:parse_qs(Req, Keys),
-    {ok, ViewInfo, Args} = couch_mrview:open_view(Db, VDoc, ViewName, Args0),
-    ETag = list_etag(Req, Db, DDoc, ViewInfo, Args),
-    couch_httpd:etag_respond(Req, ETag, fun() ->
+    ETagFun = fun(BaseSig, Acc0) ->
+        UserCtx = Req#httpd.user_ctx,
+        Roles = UserCtx#user_ctx.roles,
+        Accept = couch_httpd:header_value(Req, "Accept"),
+        Parts = {couch_httpd:doc_etag(DDoc), Accept, Roles},
+        ETag = couch_httpd:make_etag({BaseSig, Parts}),
+        case couch_httpd:etag_match(Req, ETag) of
+            true -> throw({etag_match, ETag});
+            false -> {ok, Acc0#lacc{etag=ETag}}
+        end
+    end,
+    Args = Args0#mrargs{preflight_fun=ETagFun},
+    couch_httpd:etag_maybe(Req, fun() ->
         couch_query_servers:with_ddoc_proc(DDoc, fun(QServer) ->
-            Acc0 = #lacc{
-                lname = LName,
-                req = Req,
-                qserver = QServer,
-                db = Db,
-                etag = ETag
-            },
-            couch_mrview:run_view(Db, ViewInfo, Args, fun list_cb/2, Acc0)
+            Acc = #lacc{db=Db, req=Req, qserver=QServer, lname=LName},
+            couch_mrview:query_view(Db, VDDoc, VName, Args, fun list_cb/2, Acc)
         end)
     end).
 
 
-list_cb({meta, Meta}, #lacc{resp=nil} = Acc) ->
+list_cb({meta, Meta}, #lacc{resp=undefined} = Acc) ->
     MetaProps = case couch_util:get_value(total, Meta) of
         undefined -> [];
         Total -> [{total_rows, Total}]
@@ -207,7 +214,7 @@ list_cb({meta, Meta}, #lacc{resp=nil} = Acc) ->
         UpdateSeq -> [{update_seq, UpdateSeq}]
     end,
     start_list_resp({MetaProps}, Acc);
-list_cb({row, Row}, #lacc{resp=nil} = Acc) ->
+list_cb({row, Row}, #lacc{resp=undefined} = Acc) ->
     {ok, NewAcc} = start_list_resp({[]}, Acc),
     send_list_row(Row, NewAcc);
 list_cb({row, Row}, Acc) ->
@@ -225,27 +232,18 @@ list_cb(complete, Acc) ->
     {ok, Resp}.
 
 start_list_resp(Head, Acc) ->
-    #lacc{
-        req = Req,
-        db = Db,
-        qserver = QServer,
-        lname = LName,
-        etag = Etag
-    } = Acc,
-
+    #lacc{db=Db, req=Req, qserver=QServer, lname=LName, etag=ETag} = Acc,
     JsonReq = couch_httpd_external:json_req_obj(Req, Db),
 
     [<<"start">>,Chunk,JsonResp] = couch_query_servers:ddoc_proc_prompt(QServer,
         [<<"lists">>, LName], [Head, JsonReq]),
-    io:format("RESP: ~p~n", [JsonResp]),
-    JsonResp2 = apply_etag(JsonResp, Etag),
+    JsonResp2 = apply_etag(JsonResp, ETag),
     #extern_resp_args{
         code = Code,
         ctype = CType,
         headers = ExtHeaders
     } = couch_httpd_external:parse_external_response(JsonResp2),
     JsonHeaders = couch_httpd_external:default_or_content_type(CType, ExtHeaders),
-    io:format("HERE:~n~p~n~p~n", [JsonHeaders, ExtHeaders]),
     {ok, Resp} = couch_httpd:start_chunked_response(Req, Code, JsonHeaders),
     send_non_empty_chunk(Resp, Chunk),
     {ok, Acc#lacc{resp=Resp}}.
