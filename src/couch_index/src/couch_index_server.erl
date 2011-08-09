@@ -14,6 +14,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0, get_index/2]).
+-export([config_change/2, update_notify/1]).
 
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
@@ -44,8 +45,8 @@ get_index(Module, IdxState) ->
 
 init([]) ->
     process_flag(trap_exit, true),
-    couch_config:register(fun config_change/2),
-    couch_db_update_notifier:start_link(fun update_notify/1),
+    couch_config:register(fun ?MODULE:config_change/2),
+    couch_db_update_notifier:start_link(fun ?MODULE:update_notify/1),
     ets:new(?BY_SIG, [protected, set, named_table]),
     ets:new(?BY_PID, [private, set, named_table]),
     ets:new(?BY_DB, [private, bag, named_table]),
