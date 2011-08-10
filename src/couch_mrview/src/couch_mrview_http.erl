@@ -85,7 +85,7 @@ handle_compact_req(Req, _Db, _DDoc) ->
 handle_cleanup_req(#httpd{method='POST'}=Req, Db) ->
     ok = couch_db:check_is_admin(Db),
     couch_httpd:validate_ctype(Req, "application/json"),
-    ok = couch_mrview_cleanup:run(Db),
+    ok = couch_mrview:cleanup(Db),
     couch_httpd:send_json(Req, 202, {[{ok, true}]});
 handle_cleanup_req(Req, _Db) ->
     couch_httpd:send_method_not_allowed(Req, "POST").

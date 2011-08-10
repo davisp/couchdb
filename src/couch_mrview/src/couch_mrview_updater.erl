@@ -39,8 +39,8 @@ finish_update(State) ->
     couch_query_servers:stop_doc_map(State#mrst.query_server),
     couch_work_queue:close(State#mrst.write_queue),
     receive
-        {new_state, State} ->
-            State
+        {new_state, NewState} ->
+            NewState
     end.
 
 
