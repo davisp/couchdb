@@ -45,7 +45,7 @@ stop(Pid) ->
 
 
 get_state(Pid, RequestSeq) ->
-    gen_server:call(Pid, {get_state, RequestSeq}).
+    gen_server:call(Pid, {get_state, RequestSeq}, infinity).
 
 
 get_info(Pid) ->
