@@ -4,7 +4,7 @@
 
 
 -include("couch_db.hrl").
--include("couch_mrview/include/couch_mrview.hrl").
+-include_lib("couch_mrview/include/couch_mrview.hrl").
 
 
 run(Db) ->
@@ -21,7 +21,7 @@ run(Db) ->
         [IFName, CFName | SFAcc]
     end, [], [DD || DD <- DesignDocs, DD#doc.deleted == false]),
     
-    DiskFiles = filelib:wildcard(IdxDir ++ "/." ++ DbNameL ++ "_design"++"/*"),
+    DiskFiles = filelib:wildcard(IdxDir ++ "/." ++ DbNameL ++ "_design/*"),
 
     % We need to delete files that have no ddoc.
     ToDelete = DiskFiles -- SigFiles,
