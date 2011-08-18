@@ -18,8 +18,7 @@
     handle_compact_req/3,
     handle_temp_view_req/2,
     handle_cleanup_req/2,
-    parse_qs/2,
-    calculate_view_etag/3
+    parse_qs/2
 ]).
 
 
@@ -162,34 +161,6 @@ row_to_json(Row) ->
     end,
     Obj = {Id ++ [{key, Key}, {value, Val}] ++ Doc},
     ?JSON_ENCODE(Obj).
-
-
-calculate_view_etag(Db, {map, View}, Args0) ->
-    #mrview{
-        update_seq=UpdateSeq,
-        purge_seq=PurgeSeq,
-        def=MapSrc,
-        options=Opts
-    } = View,
-    Args = Args0#mrargs{extra=[]},
-    DbSeq = case Args#mrargs.include_docs of
-        true -> [couch_db:get_update_seq(Db)];
-        _ -> []
-    end,
-    Parts = [map, UpdateSeq, PurgeSeq, MapSrc, Opts, Args] ++ DbSeq,
-    couch_httpd:make_etag(Parts);
-calculate_view_etag(_Db, {red, {Nth, _Lang, View}}, Args0) ->
-    #mrview{
-        update_seq=UpdateSeq,
-        purge_seq=PurgeSeq,
-        def=MapSrc,
-        reduce_funs=RedFuns,
-        options=Opts
-    } = View,
-    RedSrc = lists:nth(Nth, RedFuns),
-    Args = Args0#mrargs{extra=[]},
-    Parts = [red, UpdateSeq, PurgeSeq, MapSrc, RedSrc, Opts, Args],
-    couch_httpd:make_etag(Parts).
 
 
 parse_qs(Req, Keys) ->

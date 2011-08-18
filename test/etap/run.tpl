@@ -13,8 +13,9 @@
 # the License.
 
 SRCDIR="%abs_top_srcdir%"
-BUILDIR="%abs_top_builddir%"
-export ERL_FLAGS="$ERL_FLAGS -pa $BUILDIR/test/etap/"
+BUILDDIR="%abs_top_builddir%"
+export ERL_LIBS="$BUILDDIR/src/:$ERL_LIBS"
+export ERL_FLAGS="$ERL_FLAGS -pa $BUILDDIR/test/etap/"
 
 if test $# -eq 1; then
     prove $1/*.t

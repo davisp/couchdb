@@ -1,6 +1,6 @@
 -module(couch_mrview_updater).
 
--export([start_update/3, process_doc/3, finish_update/1, purge_index/4]).
+-export([start_update/3, process_docs/2, finish_update/1, purge_index/4]).
 
 -include("couch_db.hrl").
 -include_lib("couch_mrview/include/couch_mrview.hrl").
@@ -10,28 +10,36 @@ start_update(Parent, Partial, State) ->
     QueueOpts = [{max_size, 100000}, {max_items, 500}],
     {ok, Queue} = couch_work_queue:new(QueueOpts),
 
-    Self = self(),
-    WriteFun = fun() -> write_results(Self, State, Queue) end,
-    spawn_link(WriteFun),
-
-    State#mrst{
+    UpdaterState = State#mrst{
         updater_pid=Parent,
         partial_resp_pid=Partial,
         write_queue=Queue
-    }.
+    },
+
+    Self = self(),
+    WriteFun = fun() -> write_results(Self, UpdaterState, Queue) end,
+    spawn_link(WriteFun),
+    
+    UpdaterState.
 
 
-process_doc(Doc, Seq, #mrst{query_server=nil}=State) ->
-    process_doc(Doc, Seq, start_query_server(State));
-process_doc(#doc{id=DocId, deleted=false}=Doc, Seq, State) ->
-    #mrst{views=Views, query_server=QServer} = State,
-    {ok, [Results]} = couch_query_servers:map_docs(QServer, [Doc]),
-    {ViewKVs, DocIdKeys} = process_results(DocId, Views, Results),
-    couch_work_queue:queue(State#mrst.write_queue, {Seq, ViewKVs, DocIdKeys}),
-    State;
-process_doc(#doc{id=Id, deleted=true}, Seq, State) ->
-    KVs = [{V#mrview.id_num, []} || V <- State#mrst.views],
-    couch_work_queue:queue(State#mrst.write_queue, {Seq, KVs, [{Id, []}]}),
+
+process_docs(Docs, #mrst{query_server=nil}=State) ->
+    process_docs(Docs, start_query_server(State));
+process_docs(Docs, #mrst{query_server=QServer}=State) ->
+    % Run all the non deleted docs through the view engine and
+    % then pass the results on to the writer process.
+    MapFun = fun({Seq, #doc{id=Id, deleted=Deleted}=Doc}, {SeqAcc, Results}) ->
+        case Deleted of
+            true ->
+                {max(Seq, SeqAcc), [{Id, []} | Results]};
+            false ->
+                {ok, Result} = couch_query_servers:map_doc_raw(QServer, Doc),
+                {max(Seq, SeqAcc), [{Id, Result} | Results]}
+        end
+    end,
+    {Seq, MapResults} = lists:foldl(MapFun, {0, []}, Docs),
+    ok = couch_work_queue:queue(State#mrst.write_queue, {Seq, MapResults}),
     State.
 
 
@@ -101,51 +109,53 @@ start_query_server(State) ->
     }.
 
 
-process_results(DocId, Views, Results) ->
-    process_results(DocId, Views, Results, {[], dict:new()}).
-
-process_results(_, [], [], {KVAcc, ByIdAcc}) ->
-    {lists:reverse(KVAcc), dict:to_list(ByIdAcc)};
-process_results(DocId, [V | RViews], [KVs | RKVs], {KVAcc, ByIdAcc}) ->
-    CombineDupesFun = fun
-        ({Key, Val}, [{Key, {dups, Vals}} | Rest]) ->
-            [{Key, {dups, [Val | Vals]}} | Rest];
-        ({Key, Val1}, [{Key, Val2} | Rest]) ->
-            [{Key, {dups, [Val1, Val2]}} | Rest];
-        (KV, Rest) ->
-            [KV | Rest]
-    end,
-    Duped = lists:foldl(CombineDupesFun, [], lists:sort(KVs)),
-
-    ViewKVs0 = {V#mrview.id_num, [{{Key, DocId}, Val} || {Key, Val} <- Duped]},
-    ViewKVs = [ViewKVs0 | KVAcc],
-    AddDocIdKeys = fun({Key, _}, ByIdAcc0) ->
-        dict:append(DocId, {V#mrview.id_num, Key}, ByIdAcc0)
-    end,
-    ByIdAcc1 = lists:foldl(AddDocIdKeys, ByIdAcc, Duped),
-    process_results(DocId, RViews, RKVs, {ViewKVs, ByIdAcc1}).
-
-
 write_results(Parent, State, Queue) ->
     case couch_work_queue:dequeue(Queue) of
         closed ->
             Parent ! {new_state, State};
         {ok, Info} ->
-            {Seq, ViewKVs, DocIdKeys} = lists:foldl(fun merge_kvs/2, nil, Info),
+            EmptyKVs = [{V#mrview.id_num, []} || V <- State#mrst.views],
+            {Seq, ViewKVs, DocIdKeys} = merge_results(Info, 0, EmptyKVs, []),
             NewState = write_kvs(State, Seq, ViewKVs, DocIdKeys),
             send_partial(NewState#mrst.partial_resp_pid, NewState),
             write_results(Parent, NewState, Queue)
     end.
 
 
-merge_kvs({Seq, ViewKVs, DocIdKeys}, nil) ->
-    {Seq, ViewKVs, DocIdKeys};
-merge_kvs({Seq, ViewKVs, DocIdKeys}, {SeqAcc, ViewKVsAcc, DocIdKeysAcc}) ->
-    KVCombine = fun({ViewNum, KVs}, {ViewNum, KVsAcc}) ->
-        {ViewNum, KVs ++ KVsAcc}
+merge_results([], SeqAcc, ViewKVs, DocIdKeys) ->
+    {SeqAcc, ViewKVs, DocIdKeys};
+merge_results([{Seq, Results} | Rest], SeqAcc, ViewKVs, DocIdKeys) ->
+    Fun = fun(RawResults, {VKV, DIK}) ->
+        merge_results(RawResults, VKV, DIK)
     end,
-    ViewKVs2 = lists:zipwith(KVCombine, ViewKVs, ViewKVsAcc),
-    {lists:max([Seq, SeqAcc]), ViewKVs2, DocIdKeys ++ DocIdKeysAcc}.
+    {ViewKVs1, DocIdKeys1} = lists:foldl(Fun, {ViewKVs, DocIdKeys}, Results),
+    merge_results(Rest, max(Seq, SeqAcc), ViewKVs1, DocIdKeys1).
+
+
+merge_results({DocId, []}, ViewKVs, DocIdKeys) ->
+    {ViewKVs, [{DocId, []} | DocIdKeys]};
+merge_results({DocId, RawResults}, ViewKVs, DocIdKeys) ->
+    JsonResults = couch_query_servers:raw_to_ejson(RawResults),
+    Results = [[list_to_tuple(Res) || Res <- FunRs] || FunRs <- JsonResults],
+    {ViewKVs1, ViewIdKeys} = insert_results(DocId, Results, ViewKVs, [], []),
+    {ViewKVs1, [ViewIdKeys | DocIdKeys]}.
+
+
+insert_results(DocId, [], [], ViewKVs, ViewIdKeys) ->
+    {lists:reverse(ViewKVs), {DocId, ViewIdKeys}};
+insert_results(DocId, [KVs | RKVs], [{Id, VKVs} | RVKVs], VKVAcc, VIdKeys) ->
+    CombineDupesFun = fun
+        ({Key, Val}, {[{Key, {dups, Vals}} | Rest], IdKeys}) ->
+            {[{Key, {dups, [Val | Vals]}} | Rest], IdKeys};
+        ({Key, Val1}, {[{Key, Val2} | Rest], IdKeys}) ->
+            {[{Key, {dups, [Val1, Val2]}} | Rest], IdKeys};
+        ({Key, _}=KV, {Rest, IdKeys}) ->
+            {[KV | Rest], [{Id, Key} | IdKeys]}
+    end,
+    InitAcc = {[], VIdKeys},
+    {Duped, VIdKeys0} = lists:foldl(CombineDupesFun, InitAcc, lists:sort(KVs)),
+    FinalKVs = [{{Key, DocId}, Val} || {Key, Val} <- Duped] ++ VKVs,
+    insert_results(DocId, RKVs, RVKVs, [{Id, FinalKVs} | VKVAcc], VIdKeys0).
 
 
 write_kvs(State, UpdateSeq, ViewKVs, DocIdKeys) ->
@@ -196,7 +206,7 @@ collapse_rem_keys([{not_found, _} | Rest], Acc) ->
 
 
 send_partial(Pid, State) when is_pid(Pid) ->
-    Pid ! {parital_update, State};
+    gen_server:cast(Pid, {new_state, State});
 send_partial(_, _) ->
     ok.
     

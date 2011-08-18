@@ -6,7 +6,7 @@
 -export([get_info/1]).
 -export([open/2, close/1]).
 -export([update_options/1]).
--export([start_update/3, process_doc/3, finish_update/1, purge/4, commit/1]).
+-export([start_update/3, process_docs/2, finish_update/1, purge/4, commit/1]).
 -export([compact/2, swap_compacted/2]).
 -export([reset/1]).
 
@@ -106,8 +106,8 @@ start_update(Parent, PartialDest, State) ->
     couch_mrview_updater:start_update(Parent, PartialDest, State).
 
 
-process_doc(Doc, Seq, State) ->
-    couch_mrview_updater:process_doc(Doc, Seq, State).
+process_docs(Docs, State) ->
+    couch_mrview_updater:process_docs(Docs, State).
 
 
 finish_update(State) ->

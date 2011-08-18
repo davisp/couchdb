@@ -15,7 +15,7 @@
 
 
 %% API
--export([start_link/2, run/2, is_running/1, update/2, restart/2]).
+-export([start_link/2, run/2, is_running/1, update/3, restart/2]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -58,15 +58,15 @@ terminate(_Reason, State) ->
 
 handle_call({update, _IdxState}, _From, #st{pid=Pid}=State) when is_pid(Pid) ->
     {reply, ok, State};
-handle_call({update, IdxState}, _From, State) ->
-    Pid = spawn_link(fun() -> update(State#st.mod, IdxState) end),
+handle_call({update, IdxState}, _From, #st{idx=Idx, mod=Mod}=State) ->
+    Pid = spawn_link(fun() -> update(Idx, Mod, IdxState) end),
     {reply, ok, State#st{pid=Pid}};
-handle_call({restart, IdxState}, _From, State) ->
+handle_call({restart, IdxState}, _From, #st{idx=Idx}=State) ->
     case is_pid(State#st.pid) of
         true -> couch_util:shutdown_sync(State#st.pid);
         _ -> ok
     end,
-    Pid = spawn_link(fun() -> update(State#st.mod, IdxState) end),
+    Pid = spawn_link(fun() -> update(Idx, State#st.mod, IdxState) end),
     {reply, ok, State#st{pid=Pid}};
 handle_call(is_running, _From, #st{pid=Pid}=State) when is_pid(Pid) ->
     {reply, true, State};
@@ -81,9 +81,9 @@ handle_cast(_Mesg, State) ->
 handle_info({'EXIT', Pid, {updated, IdxState}}, #st{pid=Pid}=State) ->
     ok = gen_server:cast(State#st.idx, {new_state, IdxState}),
     {noreply, State#st{pid=undefined}};
-handle_info({'EXIT', Pid, reset}, #st{pid=Pid}=State) ->
+handle_info({'EXIT', Pid, reset}, #st{idx=Idx, pid=Pid}=State) ->
     {ok, NewIdxState} = gen_server:call(State#st.idx, reset),
-    Pid2 = spawn_link(fun() -> update(State#st.mod, NewIdxState) end),
+    Pid2 = spawn_link(fun() -> update(Idx, State#st.mod, NewIdxState) end),
     {noreply, State#st{pid=Pid2}};
 handle_info({'EXIT', Pid, normal}, #st{pid=Pid}=State) ->
     {noreply, State#st{pid=undefined}};
@@ -102,7 +102,7 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 
-update(Mod, IdxState) ->
+update(Idx, Mod, IdxState) ->
     Self = self(),
     DbName = Mod:db_name(IdxState),
     CurrSeq = Mod:update_seq(IdxState),
@@ -127,7 +127,7 @@ update(Mod, IdxState) ->
         QueueOpts = [{max_size, 100000}, {max_items, 500}],
         {ok, Queue} = couch_work_queue:new(QueueOpts),
         
-        ProcIdxState = Mod:start_update(self(), self(), PurgedIdxState),
+        ProcIdxState = Mod:start_update(self(), Idx, PurgedIdxState),
 
         ProcDocFun = fun() -> process_docs(Self, Mod, ProcIdxState, Queue) end,
         spawn_link(ProcDocFun),
@@ -194,10 +194,7 @@ process_docs(Parent, Mod, IdxState, Queue) ->
         closed ->
             Mod:finish_update(IdxState);
         {ok, Docs} ->
-            FoldFun = fun({Seq, Doc}, IdxStAcc) ->
-                Mod:process_doc(Doc, Seq, IdxStAcc)
-            end,
-            NewIdxState = lists:foldl(FoldFun, IdxState, Docs),
+            NewIdxState = Mod:process_docs(Docs, IdxState),
             process_docs(Parent, Mod, NewIdxState, Queue)
     end.
 

@@ -34,7 +34,7 @@ compact(State) ->
         views = EmptyViews
     } = EmptyState,
 
-    Count = couch_btree:full_reduce(IdBtree),
+    {ok, Count} = couch_btree:full_reduce(IdBtree),
     TaskName = <<DbName/binary, ":", IdxName/binary>>,
     couch_task_status:add_task(<<"View Group Compaction">>, TaskName, <<"">>),
 
