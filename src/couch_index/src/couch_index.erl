@@ -159,6 +159,10 @@ handle_call({compacted, NewIdxState}, _From, State) ->
     end.
 
 
+handle_cast({updated, NewIdxState}, State) ->
+    {noreply, NewState} = handle_cast({new_state, NewIdxState}, State),
+    maybe_restart_updater(NewState),
+    {noreply, NewState};
 handle_cast({new_state, NewIdxState}, State) ->
     #st{mod=Mod} = State,
     CurrSeq = Mod:update_seq(NewIdxState),
@@ -209,6 +213,20 @@ handle_info({'DOWN', _, _, _Pid, _}, State) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+
+maybe_restart_updater(#st{waiters=[]}) ->
+    ok;
+maybe_restart_updater(#st{mod=Mod, idx_state=IdxState}=State) ->
+    couch_util:with_db(Mod:db_name(IdxState), fun(Db) ->
+        UpdateSeq = Mod:update_seq(IdxState),
+        CommitedSeq = couch_db:get_commited_update_seq(Db),
+        case Mod:committed_only(IdxState) and (CommitedSeq =< UpdateSeq) of
+            true -> couch_db:ensure_full_commit(Db);
+            false -> ok
+        end
+    end),
+    couch_index_updater:run(State#st.updater, IdxState).
 
 
 send_all(Waiters, Reply) ->

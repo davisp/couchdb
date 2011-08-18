@@ -79,7 +79,7 @@ handle_cast(_Mesg, State) ->
 
 
 handle_info({'EXIT', Pid, {updated, IdxState}}, #st{pid=Pid}=State) ->
-    ok = gen_server:cast(State#st.idx, {new_state, IdxState}),
+    ok = gen_server:cast(State#st.idx, {updated, IdxState}),
     {noreply, State#st{pid=undefined}};
 handle_info({'EXIT', Pid, reset}, #st{idx=Idx, pid=Pid}=State) ->
     {ok, NewIdxState} = gen_server:call(State#st.idx, reset),
@@ -106,6 +106,7 @@ update(Idx, Mod, IdxState) ->
     Self = self(),
     DbName = Mod:db_name(IdxState),
     CurrSeq = Mod:update_seq(IdxState),
+    CommittedOnly = Mod:committed_only(IdxState),
    
     TaskType = <<"Indexer">>,
     Starting = <<"Starting index update.">>,
@@ -135,10 +136,16 @@ update(Idx, Mod, IdxState) ->
         couch_task_status:set_update_frequency(500),
         NumChanges = couch_db:count_changes_since(Db, CurrSeq),
 
+        CommittedSeq = couch_db:get_committed_update_seq(Db),
         LoadProc = fun(DocInfo, _, Count) ->
-            update_task_status(NumChanges, Count),
-            queue_doc(Db, DocInfo, DocOpts, IncludeDesign, Queue),
-            {ok, Count+1}
+            case CommittedOnly and (DocInfo#doc_info.high_seq > CommittedSeq) of
+                true ->
+                    {stop, Count};
+                false ->
+                    update_task_status(NumChanges, Count),
+                    queue_doc(Db, DocInfo, DocOpts, IncludeDesign, Queue),
+                    {ok, Count+1}
+            end
         end,
         {ok, _, _} = couch_db:enum_docs_since(Db, CurrSeq, LoadProc, 0, []),
 

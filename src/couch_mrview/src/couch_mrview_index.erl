@@ -2,7 +2,7 @@
 
 
 -export([db_name/1, index_name/1, signature/1]).
--export([update_seq/1, set_update_seq/2, purge_seq/1]).
+-export([update_seq/1, set_update_seq/2, purge_seq/1, committed_only/1]).
 -export([get_info/1]).
 -export([open/2, close/1]).
 -export([update_options/1]).
@@ -36,6 +36,10 @@ set_update_seq(Seq, State) ->
 
 purge_seq(#mrst{purge_seq=PurgeSeq}) ->
     PurgeSeq.
+
+
+committed_only(_State) ->
+    false.
 
 
 get_info(State) ->
