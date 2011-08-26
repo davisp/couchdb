@@ -8,25 +8,33 @@
 
 start_update(Parent, Partial, State) ->
     QueueOpts = [{max_size, 100000}, {max_items, 500}],
-    {ok, Queue} = couch_work_queue:new(QueueOpts),
+    {ok, DocQueue} = couch_work_queue:new(QueueOpts),
+    {ok, WriteQueue} = couch_work_queue:new(QueueOpts),
 
-    UpdaterState = State#mrst{
-        updater_pid=Parent,
-        partial_resp_pid=Partial,
+    InitState = State#mrst{
+        doc_queue=Queue,
         write_queue=Queue
     },
 
     Self = self(),
-    WriteFun = fun() -> write_results(Self, UpdaterState, Queue) end,
+    MapFun = fun() -> map_docs(Self, InitState) end,
+    WriteFun = fun() -> write_results(Self, InitState) end,
+    
+    spawn_link(MapFun),
     spawn_link(WriteFun),
     
     UpdaterState.
 
 
 
-process_docs(Docs, #mrst{query_server=nil}=State) ->
-    process_docs(Docs, start_query_server(State));
-process_docs(Docs, #mrst{query_server=QServer}=State) ->
+process_doc(nil, Seq, State) ->
+    couch_work_queue:queue(State#mrst.doc_queue, {nil, Seq}),
+    State;
+process_doc(#doc{id=Id, deleted=true}, Seq, State) ->
+    couch_work_queue:queue(State#mrst.doc_queue, {Id, Seq, []}),
+    State;
+process_doc(Doc, Seq, State) ->
+process_doc(Doc, #mrst{query_server=QServer}=State) ->
     % Run all the non deleted docs through the view engine and
     % then pass the results on to the writer process.
     MapFun = fun({Seq, #doc{id=Id, deleted=Deleted}=Doc}, {SeqAcc, Results}) ->

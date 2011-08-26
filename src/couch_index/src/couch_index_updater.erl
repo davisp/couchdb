@@ -106,8 +106,16 @@ update(Idx, Mod, IdxState) ->
     Self = self(),
     DbName = Mod:db_name(IdxState),
     CurrSeq = Mod:update_seq(IdxState),
+    CommittedSeq = couch_db:get_committed_update_seq(Db),
     CommittedOnly = Mod:committed_only(IdxState),
-   
+        
+    UpdateOpts = Mod:update_options(PurgedIdxState),
+    IncludeDesign = lists:member(include_design, UpdateOpts),
+    DocOpts = case lists:member(local_seq, UpdateOpts) of
+        true -> [conflicts, deleted_conflicts, local_seq];
+        _ -> [conflicts, deleted_conflicts]
+    end,
+
     TaskType = <<"Indexer">>,
     Starting = <<"Starting index update.">>,
     couch_task_status:add_task(TaskType, Mod:index_name(IdxState), Starting),
@@ -118,47 +126,50 @@ update(Idx, Mod, IdxState) ->
             reset -> exit(reset)
         end,
         
-        UpdateOpts = Mod:update_options(PurgedIdxState),
-        IncludeDesign = lists:member(include_design, UpdateOpts),
-        DocOpts = case lists:member(local_seq, UpdateOpts) of
-            true -> [conflicts, deleted_conflicts, local_seq];
-            _ -> [conflicts, deleted_conflicts]
-        end,
-
-        QueueOpts = [{max_size, 100000}, {max_items, 500}],
-        {ok, Queue} = couch_work_queue:new(QueueOpts),
-        
-        ProcIdxState = Mod:start_update(self(), Idx, PurgedIdxState),
-
-        ProcDocFun = fun() -> process_docs(Self, Mod, ProcIdxState, Queue) end,
-        spawn_link(ProcDocFun),
-                        
         couch_task_status:set_update_frequency(500),
         NumChanges = couch_db:count_changes_since(Db, CurrSeq),
 
-        CommittedSeq = couch_db:get_committed_update_seq(Db),
-        LoadProc = fun(DocInfo, _, Count) ->
-            case CommittedOnly and (DocInfo#doc_info.high_seq > CommittedSeq) of
-                true ->
-                    {stop, Count};
-                false ->
-                    update_task_status(NumChanges, Count),
-                    queue_doc(Db, DocInfo, DocOpts, IncludeDesign, Queue),
-                    {ok, Count+1}
+        LoadDoc = fun(DocInfo) ->
+            #doc_info{
+                id=DocId,
+                high_seq=Seq,
+                revs=[#rev_info{deleted=Deleted} | _]
+            } = DocInfo,
+            
+            case {IncludeDesign, DocId} of
+                {false, <<"_design/", _/binary>>} ->
+                    {nil, Seq};
+                _ when Deleted ->
+                    {#doc{id=DocId, deleted=true}, Seq};
+                _ ->
+                    {ok, Doc} = couch_db:open_doc_int(Db, DocInfo, DocOpts),
+                    {Doc, Seq}
             end
         end,
-        {ok, _, _} = couch_db:enum_docs_since(Db, CurrSeq, LoadProc, 0, []),
-
-        couch_work_queue:close(Queue),
+        
+        Proc = fun(DocInfo, _, {IdxStateAcc, Count) ->
+            case CommittedOnly and (DocInfo#doc_info.high_seq > CommittedSeq) of
+                true ->
+                    {stop, {NewSt, Count}};
+                false ->
+                    update_task_status(NumChanges, Count),
+                    {Doc, Seq} = LoadDoc(DocInfo),
+                    NewSt = Mod:process_doc(Doc, Seq, StAcc),
+                    {ok, {NewSt, Count+1}}
+            end
+        end,
+        
+        
+        InitIdxState = Mod:start_update(self(), Idx, PurgedIdxState),
+        Acc0 = {InitIdxSt, 0},
+        {ok, _, Acc} = couch_db:enum_docs_since(Db, CurrSeq, Proc, Acc0, []),
+        {ProcIdxSt, _} = Acc,
+        
         couch_task_status:set_update_frequency(0),
         couch_task_status:update("Waiting for index writer to finish."),
 
-        receive
-            {new_state, NewIdxState} ->
-                NewSeq = couch_db:get_update_seq(Db),
-                NewIdxState2 = Mod:set_update_seq(NewSeq, NewIdxState),
-                exit({updated, NewIdxState2})
-        end
+        FinalState = Mod:finish_update(ProcIdxSt),
+        exit({updated, NewIdxState2})
     end).
 
 
@@ -175,34 +186,6 @@ purge_index(Db, Mod, IdxState) ->
         true ->
             couch_task_status:update(<<"Resetting index due to purge state.">>),
             reset
-    end.
-
-
-queue_doc(Db, DocInfo, DocOpts, IncludeDesign, DocQueue) ->
-    #doc_info{
-        id=DocId,
-        high_seq=Seq,
-        revs=[#rev_info{deleted=Deleted}|_]
-    } = DocInfo,
-    case {IncludeDesign, DocId} of
-        {false, <<"_design/", _/binary>>} ->
-            ok;
-        _ when Deleted ->
-            Doc = #doc{id=DocId, deleted=true},
-            couch_work_queue:queue(DocQueue, {Seq, Doc});
-        _ ->
-            {ok, Doc} = couch_db:open_doc_int(Db, DocInfo, DocOpts),
-            couch_work_queue:queue(DocQueue, {Seq, Doc})
-    end.
-
-
-process_docs(Parent, Mod, IdxState, Queue) ->
-    case couch_work_queue:dequeue(Queue) of
-        closed ->
-            Mod:finish_update(IdxState);
-        {ok, Docs} ->
-            NewIdxState = Mod:process_docs(Docs, IdxState),
-            process_docs(Parent, Mod, NewIdxState, Queue)
     end.
 
 

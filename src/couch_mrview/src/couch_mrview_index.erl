@@ -1,48 +1,31 @@
 -module(couch_mrview_index).
 
 
--export([db_name/1, index_name/1, signature/1]).
--export([update_seq/1, set_update_seq/2, purge_seq/1, committed_only/1]).
--export([get_info/1]).
--export([open/2, close/1]).
--export([update_options/1]).
--export([start_update/3, process_docs/2, finish_update/1, purge/4, commit/1]).
+-export([get/2]).
+-export([open/2, close/1, reset/1]).
+-export([start_update/2, purge/4, process_doc/3, finish_update/1, commit/1]).
 -export([compact/2, swap_compacted/2]).
--export([reset/1]).
 
 
 -include_lib("couch_mrview/include/couch_mrview.hrl").
 
 
-db_name(#mrst{db_name=DbName}) ->
-    DbName.
-
-
-index_name(#mrst{idx_name=IdxName}) ->
-    IdxName.
-
-
-signature(#mrst{sig=Sig}) ->
-    Sig.
-
-
-update_seq(#mrst{update_seq=UpdateSeq}) ->
-    UpdateSeq.
-
-
-set_update_seq(Seq, State) ->
-    State#mrst{update_seq=Seq}.
-
-
-purge_seq(#mrst{purge_seq=PurgeSeq}) ->
-    PurgeSeq.
-
-
-committed_only(_State) ->
-    false.
-
-
-get_info(State) ->
+get(db_name, #mrst{db_name=DbName}) -> DbName;
+get(idx_name, #mrst{idx_name=IdxName}) -> IdxName;
+get(signature, #mrst{sig=Sig}) -> Sig;
+get(update_seq, #mrst{update_seq=Seq}) -> Seq;
+get(purge_seq, #mrst{purge_seq=Seq}) -> Seq;
+get(update_opts, #mrst{opts=Opts}) ->
+    Opts1 = case couch_util:get_value(<<"include_design">>, Opts, false) of
+        true -> [include_design];
+        _ -> []
+    end,
+    Opts2 = case couch_util:get_value(<<"local_seq">>, Opts, false) of
+        true -> [local_seq];
+        _ -> []
+    end,
+    Opts1 ++ Opts2;
+get(info, State) ->
     #mrst{
         fd = Fd,
         sig = Sig,
@@ -61,7 +44,9 @@ get_info(State) ->
         {data_size, DataSize},
         {update_seq, UpdateSeq},
         {purge_seq, PurgeSeq}
-    ]}.
+    ]};
+get(Other, _) ->
+    exit({invalid_item, Other}).
 
 
 open(Db, State) ->
@@ -90,27 +75,22 @@ close(State) ->
     couch_file:close(State#mrst.fd).
 
 
-purge(Db, PurgeSeq, PurgedIdRevs, State) ->
-    couch_mrview_updater:purge_index(Db, PurgeSeq, PurgedIdRevs, State).
-
-
-update_options(#mrst{design_opts=Opts}) ->
-    Opts1 = case couch_util:get_value(<<"include_design">>, Opts, false) of
-        true -> [include_design];
-        _ -> []
-    end,
-    Opts2 = case couch_util:get_value(<<"local_seq">>, Opts, false) of
-        true -> [local_seq];
-        _ -> []
-    end,
-    Opts1 ++ Opts2.
+reset(State) ->
+    couch_util:with_db(State#mrst.db_name, fun(Db) ->
+        NewState = couch_mrview_util:reset_index(Db, State#mrst.fd, State),
+        {ok, NewState}
+    end).
 
 
 start_update(Parent, PartialDest, State) ->
     couch_mrview_updater:start_update(Parent, PartialDest, State).
 
 
-process_docs(Docs, State) ->
+purge(Db, PurgeSeq, PurgedIdRevs, State) ->
+    couch_mrview_updater:purge_index(Db, PurgeSeq, PurgedIdRevs, State).
+
+
+process_doc(Doc, Seq, State) ->
     couch_mrview_updater:process_docs(Docs, State).
 
 
@@ -130,9 +110,3 @@ compact(State, Opts) ->
 swap_compacted(OldState, NewState) ->
     couch_mrview_compactor:swap_compacted(OldState, NewState).
 
-
-reset(State) ->
-    couch_util:with_db(State#mrst.db_name, fun(Db) ->
-        NewState = couch_mrview_util:reset_index(Db, State#mrst.fd, State),
-        {ok, NewState}
-    end).
