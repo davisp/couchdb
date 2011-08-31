@@ -2,7 +2,7 @@
 
 
 -export([get/2]).
--export([open/2, close/1, reset/1]).
+-export([init/2, open/2, close/1, reset/1, delete/1]).
 -export([start_update/2, purge/4, process_doc/3, finish_update/1, commit/1]).
 -export([compact/2, swap_compacted/2]).
 
@@ -11,7 +11,7 @@
 
 
 get(Property, State) ->
-    case Propert of
+    case Property of
         db_name ->
             State#mrst.db_name;
         idx_name ->
@@ -22,7 +22,8 @@ get(Property, State) ->
             State#mrst.update_seq;
         purge_seq ->
             State#mrst.purge_seq;
-        update_opts ->
+        update_options ->
+            Opts = State#mrst.design_opts,
             IncDesign = couch_util:get_value(<<"include_design">>, Opts, false),
             LocalSeq = couch_util:get_value(<<"local_seq">>, Opts, false),
             if IncDesign -> [include_design]; true -> [] end
@@ -40,7 +41,7 @@ get(Property, State) ->
             {ok, Size} = couch_file:bytes(Fd),
             {ok, DataSize} = couch_mrview_util:calculate_data_size(Btree,Views),
             {ok, [
-                {signature, list_to_binary(couch_mrview_util:hexsig(Sig))},
+                {signature, list_to_binary(couch_index_util:hexsig(Sig))},
                 {language, Lang},
                 {disk_size, Size},
                 {data_size, DataSize},
@@ -52,8 +53,8 @@ get(Property, State) ->
     end.
 
 
-init(Db, Id, Val, Args) ->
-    couch_mrview_util:ddoc_to_mrst(couch_db:db_name(Db), DDoc).
+init(Db, DDoc) ->
+    couch_mrview_util:ddoc_to_mrst(couch_db:name(Db), DDoc).
 
 
 open(Db, State) ->
@@ -96,7 +97,7 @@ reset(State) ->
 
 
 start_update(PartialDest, State) ->
-    couch_mrview_updater:start_update(Parent, PartialDest, State).
+    couch_mrview_updater:start_update(PartialDest, State).
 
 
 purge(Db, PurgeSeq, PurgedIdRevs, State) ->
@@ -104,7 +105,7 @@ purge(Db, PurgeSeq, PurgedIdRevs, State) ->
 
 
 process_doc(Doc, Seq, State) ->
-    couch_mrview_updater:process_docs(Docs, State).
+    couch_mrview_updater:process_doc(Doc, Seq, State).
 
 
 finish_update(State) ->

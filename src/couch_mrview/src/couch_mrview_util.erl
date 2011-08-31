@@ -20,12 +20,12 @@
 get_view(Db, DDoc, ViewName, Args0) ->
     ArgCheck = fun(InitState) ->
         Args1 = set_view_type(Args0, ViewName, InitState#mrst.views),
-        validate_args(Args1),
+        {ok, validate_args(Args1)}
     end,
     {ok, Pid, Args2} = couch_index_server:get_index(?MOD, Db, DDoc, ArgCheck),
     DbUpdateSeq = couch_util:with_db(Db, fun(WDb) ->
         couch_db:get_update_seq(WDb)
-    end,
+    end),
     MinSeq = case Args2#mrargs.stale of
         ok -> 0; update_after -> 0; _ -> DbUpdateSeq
     end,
@@ -133,7 +133,7 @@ view_sig(Db, State, View, #mrargs{include_docs=true}=Args) ->
     UpdateSeq = couch_db:get_update_seq(Db),
     PurgeSeq = couch_db:get_purge_seq(Db),
     Bin = term_to_binary({BaseSig, UpdateSeq, PurgeSeq}),
-    hexsig(couch_util:md5(Bin));
+    couch_index_util:hexsig(couch_util:md5(Bin));
 view_sig(Db, State, {_Nth, _Lang, View}, Args) ->
     view_sig(Db, State, View, Args);
 view_sig(_Db, State, View, Args0) ->
@@ -145,7 +145,7 @@ view_sig(_Db, State, View, Args0) ->
         extra=[]
     },
     Bin = term_to_binary({Sig, UpdateSeq, PurgeSeq, Args}),
-    hexsig(couch_util:md5(Bin)).
+    couch_index_util:hexsig(couch_util:md5(Bin)).
 
 
 init_state(Db, Fd, #mrst{views=Views}=State, nil) ->
@@ -485,11 +485,13 @@ make_header(State) ->
 
 
 index_file(RootDir, DbName, Sig) ->
-    design_root(RootDir, DbName) ++ hexsig(Sig) ++".view".
+    HexSig = couch_index_util:hexsig(Sig),
+    design_root(RootDir, DbName) ++ HexSig ++".view".
 
 
 compaction_file(RootDir, DbName, Sig) ->
-    design_root(RootDir, DbName) ++ hexsig(Sig) ++ ".compact.view".
+    HexSig = couch_index_util:hexsig(Sig),
+    design_root(RootDir, DbName) ++ HexSig ++ ".compact.view".
 
 
 design_root(RootDir, DbName) ->
@@ -513,7 +515,7 @@ reset_index(Db, Fd, #mrst{sig=Sig}=State) ->
 reset_state(State) ->
     State#mrst{
         fd=nil,
-        query_server=nil,
+        qserver=nil,
         update_seq=0,
         id_btree=nil,
         views=[View#mrview{btree=nil} || View <- State#mrst.views]

@@ -1,19 +1,20 @@
 -module(couch_mrview_updater).
 
--export([start_update/3, process_docs/2, finish_update/1, purge_index/4]).
+-export([start_update/2, purge/4, process_doc/3, finish_update/1]).
 
 -include("couch_db.hrl").
 -include_lib("couch_mrview/include/couch_mrview.hrl").
 
 
-start_update(Parent, Partial, State) ->
+start_update(Partial, State) ->
     QueueOpts = [{max_size, 100000}, {max_items, 500}],
     {ok, DocQueue} = couch_work_queue:new(QueueOpts),
     {ok, WriteQueue} = couch_work_queue:new(QueueOpts),
 
     InitState = State#mrst{
-        doc_queue=Queue,
-        write_queue=Queue
+        partial_resp_pid=Partial,
+        doc_queue=DocQueue,
+        write_queue=WriteQueue
     },
 
     Self = self(),
@@ -23,10 +24,10 @@ start_update(Parent, Partial, State) ->
     spawn_link(MapFun),
     spawn_link(WriteFun),
     
-    {ok, UpdaterState}.
+    {ok, InitState}.
 
 
-purge_index(_Db, PurgeSeq, PurgedIdRevs, State) ->
+purge(_Db, PurgeSeq, PurgedIdRevs, State) ->
     #mrst{
         id_btree=IdBtree,
         views=Views
@@ -74,13 +75,13 @@ process_doc(nil, Seq, State) ->
 process_doc(#doc{id=Id, deleted=true}, Seq, State) ->
     couch_work_queue:queue(State#mrst.doc_queue, {Id, Seq, deleted}),
     {ok, State};
-process_doc(Doc, Seq, #mrst{query_server=QServer}=State) ->
+process_doc(#doc{id=Id}=Doc, Seq, State) ->
     couch_work_queue:queue(State#mrst.doc_queue, {Id, Seq, Doc}),
     {ok, State}.
 
 
 finish_update(State) ->
-    couch_work_queue:close(State#mrst.write_queue),
+    couch_work_queue:close(State#mrst.doc_queue),
     receive
         {new_state, NewState} ->
             {ok, NewState#mrst{
@@ -89,7 +90,7 @@ finish_update(State) ->
                 partial_resp_pid=undefined,
                 doc_queue=undefined,
                 write_queue=undefined,
-                query_server=nil
+                qserver=nil
             }}
     end.
 
@@ -97,7 +98,7 @@ finish_update(State) ->
 map_docs(Parent, State0) ->
     case couch_work_queue:dequeue(State0#mrst.doc_queue) of
         closed ->
-            couch_query_servers:stop_doc_map(State0#mrst.query_server),
+            couch_query_servers:stop_doc_map(State0#mrst.qserver),
             couch_work_queue:close(State0#mrst.write_queue);
         {ok, Docs} ->
             % Run all the non deleted docs through the view engine and
@@ -131,7 +132,7 @@ write_results(Parent, State) ->
             {Seq, ViewKVs, DocIdKeys} = merge_results(Info, 0, EmptyKVs, []),
             NewState = write_kvs(State, Seq, ViewKVs, DocIdKeys),
             send_partial(NewState#mrst.partial_resp_pid, NewState),
-            write_results(Parent, NewState, Queue)
+            write_results(Parent, NewState)
     end.
 
 
@@ -145,7 +146,7 @@ start_query_server(State) ->
     {ok, QServer} = couch_query_servers:start_doc_map(Language, Defs, Lib),
 
     State#mrst{
-        query_server=QServer,
+        qserver=QServer,
         first_build=State#mrst.update_seq==0
     }.
 

@@ -54,8 +54,8 @@ query_view(Db, {Type, View}, Args, Callback, Acc) ->
 
 
 get_info(Db, DDoc) ->
-    {ok, Pid} = couch_index_server:get_index(couch_mrview_idnex, Db, DDoc),
-    couch_inded:get_info(Pid).
+    {ok, Pid} = couch_index_server:get_index(couch_mrview_index, Db, DDoc),
+    couch_index:get_info(Pid).
 
 
 compact(Db, DDoc) ->

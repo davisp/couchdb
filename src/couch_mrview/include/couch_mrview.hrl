@@ -19,7 +19,7 @@
     partial_resp_pid,
     doc_queue,
     write_queue,
-    query_server=nil
+    qserver=nil
 }).
 
 
