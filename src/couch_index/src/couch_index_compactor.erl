@@ -56,6 +56,12 @@ handle_call({compact, _}, _From, #st{pid=Pid}=State) when is_pid(Pid) ->
 handle_call({compact, IdxState}, _From, #st{idx=Idx}=State) ->
     Pid = spawn_link(fun() -> compact(Idx, State#st.mod, IdxState) end),
     {reply, ok, State#st{pid=Pid}};
+handle_call(cancel_compact, _From, #st{pid=undefined}=State) ->
+    {reply, ok, State};
+handle_call(cancel_compact, _From, #st{pid=Pid}=State) ->
+    unlink(Pid),
+    exit(Pid, kill),
+    {reply, ok, State#st{pid=undefined}};
 handle_call(is_running, _From, #st{pid=Pid}=State) when is_pid(Pid) ->
     {reply, true, State};
 handle_call(is_running, _From, State) ->

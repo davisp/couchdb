@@ -63,6 +63,11 @@ compact(Db, DDoc) ->
     couch_index:compact(Pid).
 
 
+cancel_comapct(Db, DDoc) ->
+    {ok, Pid} = couch_index_server:get_index(couch_mrview_index, Db, DDoc),
+    couch_index:cancel_compact(Pid).
+
+
 cleanup(Db) ->
     couch_mrview_cleanup:run(Db).
 

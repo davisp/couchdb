@@ -15,7 +15,8 @@
 
 
 %% API
--export([start_link/1, stop/1, get_state/2, get_info/1, compact/1]).
+-export([start_link/1, stop/1, get_state/2, get_info/1])
+-export([compact/1, cancel_compact/1]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -54,6 +55,10 @@ get_info(Pid) ->
 
 compact(Pid) ->
     gen_server:call(Pid, compact).
+
+
+cancel_compact(Pid) ->
+    gen_server:call(Pid, cancel_compact).
 
 
 init({Mod, IdxState}) ->
@@ -131,6 +136,9 @@ handle_call(reset, _From, State) ->
 handle_call(compact, _From, State) ->
     couch_index_compactor:run(State#st.compactor, State#st.idx_state),
     {reply, ok, State};
+handle_call(cancel_compact, _From, State) ->
+    Resp = couch_index_compactor:cancel(State#st.compactor),
+    {reply, Resp, State);
 handle_call({compacted, NewIdxState}, _From, State) ->
     #st{
         mod=Mod,
