@@ -431,6 +431,9 @@ encode_doc_id(<<"_local/", Rest/binary>>) ->
 encode_doc_id(Id) ->
     url_encode(Id).
 
+
+with_db(Db, Fun) when is_record(Db, db) ->
+    Fun(Db);
 with_db(DbName, Fun) ->
     case couch_db:open_int(DbName, []) of
         {ok, Db} ->
