@@ -14,6 +14,7 @@ start_update(Partial, State) ->
 
     InitState = State#mrst{
         partial_resp_pid=Partial,
+        doc_acc=[],
         doc_queue=DocQueue,
         write_queue=WriteQueue
     },
@@ -71,18 +72,22 @@ purge(_Db, PurgeSeq, PurgedIdRevs, State) ->
     }}.
 
 
-process_doc(nil, Seq, State) ->
-    couch_work_queue:queue(State#mrst.doc_queue, {nil, Seq, nil}),
-    {ok, State};
-process_doc(#doc{id=Id, deleted=true}, Seq, State) ->
-    couch_work_queue:queue(State#mrst.doc_queue, {Id, Seq, deleted}),
-    {ok, State};
-process_doc(#doc{id=Id}=Doc, Seq, State) ->
-    couch_work_queue:queue(State#mrst.doc_queue, {Id, Seq, Doc}),
-    {ok, State}.
+process_doc(Doc, Seq, #mrst{doc_acc=Acc}=State) when length(Acc) > 100 ->
+    couch_work_queue:queue(State#mrst.doc_queue, lists:reverse(Acc)),
+    process_doc(Doc, Seq, State#mrst{doc_acc=[]});
+process_doc(nil, Seq, #mrst{doc_acc=Acc}=State) ->
+    {ok, State#mrst{doc_acc=[{nil, Seq, nil} | Acc]}};
+process_doc(#doc{id=Id, deleted=true}, Seq, #mrst{doc_acc=Acc}=State) ->
+    {ok, State#mrst{doc_acc=[{Id, Seq, deleted} | Acc]}};
+process_doc(#doc{id=Id}=Doc, Seq, #mrst{doc_acc=Acc}=State) ->
+    {ok, State#mrst{doc_acc=[{Id, Seq, Doc} | Acc]}}.
 
 
-finish_update(State) ->
+finish_update(#mrst{doc_acc=Acc}=State) ->
+    if Acc /= [] ->
+        couch_work_queue:queue(State#mrst.doc_queue, Acc);
+        true -> ok
+    end,
     io:format("Finishing update~n", []),
     couch_work_queue:close(State#mrst.doc_queue),
     receive
@@ -91,6 +96,7 @@ finish_update(State) ->
                 first_build=undefined,
                 updater_pid=undefined,
                 partial_resp_pid=undefined,
+                doc_acc=undefined,
                 doc_queue=undefined,
                 write_queue=undefined,
                 qserver=nil
@@ -103,7 +109,7 @@ map_docs(Parent, State0) ->
         closed ->
             couch_query_servers:stop_doc_map(State0#mrst.qserver),
             couch_work_queue:close(State0#mrst.write_queue);
-        {ok, Docs} ->
+        {ok, Dequeued} ->
             % Run all the non deleted docs through the view engine and
             % then pass the results on to the writer process.
             State1 = case State0#mrst.qserver of
@@ -111,7 +117,7 @@ map_docs(Parent, State0) ->
                 _ -> State0
             end,
             QServer = State1#mrst.qserver,
-            MapFun = fun
+            DocFun = fun
                 ({nil, Seq, _}, {SeqAcc, Results}) ->
                     {erlang:max(Seq, SeqAcc), Results};
                 ({Id, Seq, deleted}, {SeqAcc, Results}) ->
@@ -120,7 +126,10 @@ map_docs(Parent, State0) ->
                     {ok, Res} = couch_query_servers:map_doc_raw(QServer, Doc),
                     {erlang:max(Seq, SeqAcc), [{Id, Res} | Results]}
             end,
-            Results = lists:foldl(MapFun, {0, []}, Docs),
+            FoldFun = fun(Docs, Acc) ->
+                lists:foldl(DocFun, Acc, Docs)
+            end,
+            Results = lists:foldl(FoldFun, {0, []}, Dequeued),
             couch_work_queue:queue(State1#mrst.write_queue, Results),
             map_docs(Parent, State1)
     end.

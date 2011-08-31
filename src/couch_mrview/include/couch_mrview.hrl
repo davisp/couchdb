@@ -17,6 +17,7 @@
     first_build,
     updater_pid,
     partial_resp_pid,
+    doc_acc,
     doc_queue,
     write_queue,
     qserver=nil
