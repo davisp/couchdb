@@ -495,7 +495,7 @@ compaction_file(RootDir, DbName, Sig) ->
 
 
 design_root(RootDir, DbName) ->
-    RootDir ++ "/." ++ binary_to_list(DbName) ++ "_design/mrviews".
+    RootDir ++ "/." ++ binary_to_list(DbName) ++ "_design/mrviews/".
 
 
 open_file(FName) ->

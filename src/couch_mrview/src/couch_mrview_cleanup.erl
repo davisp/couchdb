@@ -21,7 +21,7 @@ run(Db) ->
         [IFName, CFName | SFAcc]
     end, [], [DD || DD <- DesignDocs, DD#doc.deleted == false]),
    
-    BaseDir = IdxDir ++ "/." ++ DbNameL ++ "_design/mrview/*",
+    BaseDir = IdxDir ++ "/." ++ DbNameL ++ "_design/mrviews/*",
     DiskFiles = filelib:wildcard(BaseDir),
 
     % We need to delete files that have no ddoc.

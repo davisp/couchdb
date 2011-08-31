@@ -12,6 +12,7 @@ start_update(Partial, State) ->
     {ok, WriteQueue} = couch_work_queue:new(QueueOpts),
 
     InitState = State#mrst{
+        first_build=State#mrst.update_seq==0,
         partial_resp_pid=Partial,
         doc_acc=[],
         doc_queue=DocQueue,
@@ -91,7 +92,6 @@ finish_update(#mrst{doc_acc=Acc}=State) ->
         {new_state, NewState} ->
             {ok, NewState#mrst{
                 first_build=undefined,
-                updater_pid=undefined,
                 partial_resp_pid=undefined,
                 doc_acc=undefined,
                 doc_queue=undefined,
@@ -153,11 +153,7 @@ start_query_server(State) ->
     } = State,
     Defs = [View#mrview.def || View <- Views],
     {ok, QServer} = couch_query_servers:start_doc_map(Language, Defs, Lib),
-
-    State#mrst{
-        qserver=QServer,
-        first_build=State#mrst.update_seq==0
-    }.
+    State#mrst{qserver=QServer}.
 
 
 merge_results([], SeqAcc, ViewKVs, DocIdKeys) ->
