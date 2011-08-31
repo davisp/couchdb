@@ -7,6 +7,7 @@
 
 
 start_update(Partial, State) ->
+    io:format("Starting update~n", []),
     QueueOpts = [{max_size, 100000}, {max_items, 500}],
     {ok, DocQueue} = couch_work_queue:new(QueueOpts),
     {ok, WriteQueue} = couch_work_queue:new(QueueOpts),
@@ -28,6 +29,7 @@ start_update(Partial, State) ->
 
 
 purge(_Db, PurgeSeq, PurgedIdRevs, State) ->
+    io:format("Purgin~n", []),
     #mrst{
         id_btree=IdBtree,
         views=Views
@@ -81,6 +83,7 @@ process_doc(#doc{id=Id}=Doc, Seq, State) ->
 
 
 finish_update(State) ->
+    io:format("Finishing update~n", []),
     couch_work_queue:close(State#mrst.doc_queue),
     receive
         {new_state, NewState} ->

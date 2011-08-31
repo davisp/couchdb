@@ -70,6 +70,8 @@ handle_info({'EXIT', Pid, normal}, #st{pid=Pid}=State) ->
     {noreply, State#st{pid=undefined}};
 handle_info({'EXIT', _Pid, normal}, State) ->
     {noreply, State};
+handle_info({'EXIT', Pid, _Reason}, #st{idx=Pid}=State) ->
+    {stop, normal, State};
 handle_info(_Mesg, State) ->
     {stop, unknown_info, State}.
 

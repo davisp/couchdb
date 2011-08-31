@@ -57,7 +57,6 @@ compact(Pid) ->
 
 
 init({Mod, IdxState}) ->
-    process_flag(trap_exit, true),
     DbName = Mod:get(db_name, IdxState),
     couch_util:with_db(DbName, fun(Db) ->
         case Mod:open(Db, IdxState) of

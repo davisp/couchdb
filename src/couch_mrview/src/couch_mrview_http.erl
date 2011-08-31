@@ -63,7 +63,7 @@ handle_view_req(Req, _Db, _DDoc) ->
 
 handle_info_req(#httpd{method='GET'}=Req, Db, DDoc) ->
     [_, _, Name, _] = Req#httpd.path_parts,
-    {ok, Info} = couch_mrview_util:get_info(Db, DDoc),
+    {ok, Info} = couch_mrview:get_info(Db, DDoc),
     couch_httpd:send_json(Req, 200, {[
         {name, Name},
         {view_index, {Info}}

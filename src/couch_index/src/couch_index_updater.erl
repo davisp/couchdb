@@ -92,6 +92,8 @@ handle_info({'EXIT', Pid, {{nocatch, Error}, _Trace}}, State) ->
 handle_info({'EXIT', Pid, Error}, #st{pid=Pid}=State) ->
     ok = gen_server:cast(State#st.idx, {update_error, Error}),
     {noreply, State#st{pid=undefined}};
+handle_info({'EXIT', Pid, _Reason}, #st{idx=Pid}=State) ->
+    {stop, normal, State};
 handle_info({'EXIT', _Pid, normal}, State) ->
     {noreply, State};
 handle_info(_Mesg, State) ->
@@ -118,7 +120,8 @@ update(Idx, Mod, IdxState) ->
     couch_task_status:add_task(TaskType, Mod:get(idx_name, IdxState), Starting),
 
     couch_util:with_db(DbName, fun(Db) ->
-        CommittedSeq = couch_db:get_committed_update_seq(Db),        
+        DbUpdateSeq = couch_db:get_update_seq(Db),
+        DbCommittedSeq = couch_db:get_committed_update_seq(Db),        
         
         PurgedIdxState = case purge_index(Db, Mod, IdxState) of
             {ok, IdxState0} -> IdxState0;
@@ -146,27 +149,37 @@ update(Idx, Mod, IdxState) ->
             end
         end,
         
-        Proc = fun(DocInfo, _, {IdxStateAcc, Count}) ->
-            case CommittedOnly and (DocInfo#doc_info.high_seq > CommittedSeq) of
+        Proc = fun(DocInfo, _, {IdxStateAcc, Count, _}) ->
+            HighSeq = DocInfo#doc_info.high_seq,
+            case CommittedOnly and (HighSeq > DbCommittedSeq) of
                 true ->
-                    {stop, {IdxStateAcc, Count}};
+                    {stop, {IdxStateAcc, Count, false}};
                 false ->
                     update_task_status(NumChanges, Count),
                     {Doc, Seq} = LoadDoc(DocInfo),
                     {ok, NewSt} = Mod:process_doc(Doc, Seq, IdxStateAcc),
-                    {ok, {NewSt, Count+1}}
+                    {ok, {NewSt, Count+1, true}}
             end
         end,
         
         {ok, InitIdxState} = Mod:start_update(Idx, PurgedIdxState),
-        Acc0 = {InitIdxState, 0},
+        Acc0 = {InitIdxState, 0, true},
         {ok, _, Acc} = couch_db:enum_docs_since(Db, CurrSeq, Proc, Acc0, []),
-        {ProcIdxSt, _} = Acc,
+        {ProcIdxSt, _, SendLast} = Acc,
+        
+        % If we didn't bail due to hitting the last committed seq we need
+        % to send our last update_seq through.
+        {ok, LastIdxSt} = case SendLast of
+            true ->
+                Mod:process_doc(nil, DbUpdateSeq, ProcIdxSt);
+            _ ->
+                {ok, ProcIdxSt}
+        end,
         
         couch_task_status:set_update_frequency(0),
         couch_task_status:update("Waiting for index writer to finish."),
 
-        {ok, FinalIdxState} = Mod:finish_update(ProcIdxSt),
+        {ok, FinalIdxState} = Mod:finish_update(LastIdxSt),
         exit({updated, FinalIdxState})
     end).
 

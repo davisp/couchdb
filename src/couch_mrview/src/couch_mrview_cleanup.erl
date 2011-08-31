@@ -14,7 +14,7 @@ run(Db) ->
 
     {ok, DesignDocs} = couch_db:get_design_docs(Db),
     SigFiles = lists:foldl(fun(DDoc, SFAcc) ->
-        InitState = couch_mrview_util:ddoc_to_mrst(DbName, DDoc),
+        {ok, InitState} = couch_mrview_util:ddoc_to_mrst(DbName, DDoc),
         Sig = InitState#mrst.sig,
         IFName = couch_mrview_util:index_file(IdxDir, DbName, Sig),
         CFName = couch_mrview_util:compaction_file(IdxDir, DbName, Sig),
