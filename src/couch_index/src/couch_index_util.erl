@@ -2,6 +2,8 @@
 
 -export([load_doc/4, sort_lib/1, hexsig/1]).
 
+-include("couch_db.hrl").
+
 
 load_doc(Db, Id, {Props}, Opts) ->
     DocId = couch_util:get_value(<<"_id">>, Props, Id),
@@ -17,9 +19,9 @@ load_doc(Db, Id, _Value, Opts) ->
 load_doc_int(Db, Id, Rev, Opts) ->
     case (catch couch_httpd_db:couch_doc_open(Db, Id, Rev, Opts)) of
         #doc{} = Doc ->
-            [{doc, couch_doc:to_json_obj(Doc, [])}];
+            {doc, couch_doc:to_json_obj(Doc, [])};
         _Else ->
-            [{doc, null}]
+            {doc, null}
     end.
 
 

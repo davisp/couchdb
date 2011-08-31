@@ -103,12 +103,9 @@ code_change(_OldVsn, State, _Extra) ->
 
 
 update(Idx, Mod, IdxState) ->
-    Self = self(),
     DbName = Mod:get(db_name, IdxState),
     CurrSeq = Mod:get(update_seq, IdxState),
-    CommittedSeq = couch_db:get_committed_update_seq(Db),        
-    UpdateOpts = Mod:get(update_options, PurgedIdxState),
-    
+    UpdateOpts = Mod:get(update_options, IdxState),
     CommittedOnly = lists:member(committed_only, UpdateOpts),
     IncludeDesign = lists:member(include_design, UpdateOpts),
     DocOpts = case lists:member(local_seq, UpdateOpts) of
@@ -121,6 +118,8 @@ update(Idx, Mod, IdxState) ->
     couch_task_status:add_task(TaskType, Mod:get(idx_name, IdxState), Starting),
 
     couch_util:with_db(DbName, fun(Db) ->
+        CommittedSeq = couch_db:get_committed_update_seq(Db),        
+        
         PurgedIdxState = case purge_index(Db, Mod, IdxState) of
             {ok, IdxState0} -> IdxState0;
             reset -> exit(reset)
@@ -147,28 +146,28 @@ update(Idx, Mod, IdxState) ->
             end
         end,
         
-        Proc = fun(DocInfo, _, {IdxStateAcc, Count) ->
+        Proc = fun(DocInfo, _, {IdxStateAcc, Count}) ->
             case CommittedOnly and (DocInfo#doc_info.high_seq > CommittedSeq) of
                 true ->
-                    {stop, {NewSt, Count}};
+                    {stop, {IdxStateAcc, Count}};
                 false ->
                     update_task_status(NumChanges, Count),
                     {Doc, Seq} = LoadDoc(DocInfo),
-                    {ok, NewSt} = Mod:process_doc(Doc, Seq, StAcc),
+                    {ok, NewSt} = Mod:process_doc(Doc, Seq, IdxStateAcc),
                     {ok, {NewSt, Count+1}}
             end
         end,
         
         {ok, InitIdxState} = Mod:start_update(Idx, PurgedIdxState),
-        Acc0 = {InitIdxSt, 0},
+        Acc0 = {InitIdxState, 0},
         {ok, _, Acc} = couch_db:enum_docs_since(Db, CurrSeq, Proc, Acc0, []),
         {ProcIdxSt, _} = Acc,
         
         couch_task_status:set_update_frequency(0),
         couch_task_status:update("Waiting for index writer to finish."),
 
-        {ok, FinalState} = Mod:finish_update(ProcIdxSt),
-        exit({updated, NewIdxState2})
+        {ok, FinalIdxState} = Mod:finish_update(ProcIdxSt),
+        exit({updated, FinalIdxState})
     end).
 
 

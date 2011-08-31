@@ -13,7 +13,7 @@
 -module(couch_index_server).
 -behaviour(gen_server).
 
--export([start_link/0, get_index/3, get_index/2]).
+-export([start_link/0, get_index/4, get_index/3, get_index/2]).
 -export([config_change/2, update_notify/1]).
 
 -export([init/1, terminate/2, code_change/3]).
@@ -44,12 +44,12 @@ get_index(Module, Db, DDoc, Fun) when is_binary(DDoc) ->
         {ok, Doc} -> get_index(Module, Db, Doc, Fun);
         Error -> Error
     end;
-get_view(Module, Db, DDoc, Fun) when is_function(Fun, 1) ->
+get_index(Module, Db, DDoc, Fun) when is_function(Fun, 1) ->
     {ok, InitState} = Module:init(Db, DDoc),
     {ok, FunResp} = Fun(InitState),
     {ok, Pid} = get_index(Module, InitState),
     {ok, Pid, FunResp};
-get_view(Module, Db, DDoc, _Fun) ->
+get_index(Module, Db, DDoc, _Fun) ->
     {ok, InitState} = Module:init(Db, DDoc),
     get_index(Module, InitState).
 
