@@ -65,7 +65,9 @@ default_dev.ini: default.ini.tpl
 # Noah said to not specify local.ini but it borks
 # VPATH builds that make distcheck uses.
 local_dev.ini: local.ini
-	if test ! -f "$@"; then cp $< $@; fi
+	if test ! -f "$@"; then \
+		cp $< $@; \
+	fi
 
 install-data-hook:
 	if test ! -f "$(DESTDIR)$(localconfdir)/local.ini"; then \
