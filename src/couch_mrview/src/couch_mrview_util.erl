@@ -1,6 +1,6 @@
 -module(couch_mrview_util).
 
--export([get_view/4, get_info/2, compact/2]).
+-export([get_view/4]).
 -export([ddoc_to_mrst/2, init_state/4, reset_index/3]).
 -export([make_header/1]).
 -export([open_file/1, index_file/3, compaction_file/3]).
@@ -10,77 +10,38 @@
 -export([temp_view_to_ddoc/1]).
 -export([calculate_data_size/2]).
 -export([maybe_load_doc/4]).
--export([hexsig/1]).
 
+-define(MOD, couch_mrview_index).
 
 -include("couch_db.hrl").
 -include_lib("couch_mrview/include/couch_mrview.hrl").
 
 
-get_view(DbName, DDoc, ViewName, Args) when is_binary(DbName) ->
-    couch_util:with_db(DbName, fun(Db) ->
-        get_view(Db, DDoc, ViewName, Args)
-    end);
-get_view(Db, DDoc, ViewName, Args) when is_binary(DDoc) ->
-    case couch_db:open_doc(Db, DDoc, [ejson_body]) of
-        {ok, Doc} -> get_view(Db, Doc, ViewName, Args);
-        Error -> Error
-    end;
 get_view(Db, DDoc, ViewName, Args0) ->
-    InitState = ddoc_to_mrst(couch_db:name(Db), DDoc),
-    Args1 = set_view_type(Args0, ViewName, InitState#mrst.views),
-    Args2 = validate_args(Args1),
-    MinSeq = case Args2#mrargs.stale of
-        ok -> 0;
-        update_after -> 0;
-        _ -> couch_db:get_update_seq(Db)
+    ArgCheck = fun(InitState) ->
+        Args1 = set_view_type(Args0, ViewName, InitState#mrst.views),
+        validate_args(Args1),
     end,
-    {ok, Pid} = couch_index_server:get_index(couch_mrview_index, InitState),
+    {ok, Pid, Args2} = couch_index_server:get_index(?MOD, Db, DDoc, ArgCheck),
+    DbUpdateSeq = couch_util:with_db(Db, fun(WDb) ->
+        couch_db:get_update_seq(WDb)
+    end,
+    MinSeq = case Args2#mrargs.stale of
+        ok -> 0; update_after -> 0; _ -> DbUpdateSeq
+    end,
     {ok, State} = case couch_index:get_state(Pid, MinSeq) of
         {ok, _} = Resp -> Resp;
         Error -> throw(Error)
     end,
-    UpdateAfterFun = fun() ->
-        LastSeq = couch_db:get_update_seq(Db),
-        catch couch_index:get_state(Pid, LastSeq)
-    end,
-    case Args2#mrargs.stale of
-        update_after -> spawn(UpdateAfterFun);
-        _ -> ok
+    if Args2#mrargs.stale == update_after ->
+        spawn(fun() -> catch couch_index:get_state(Pid, DbUpdateSeq) end);
+        true -> ok
     end,
     #mrst{language=Lang, views=Views} = State,
     {Type, View, Args3} = extract_view(Lang, Args2, ViewName, Views),
     check_range(Args3, view_cmp(View)),
     Sig = view_sig(Db, State, View, Args3),
     {ok, {Type, View}, Sig, Args3}.
-
-
-get_info(DbName, DDoc) when is_binary(DbName) ->
-    couch_util:with_db(DbName, fun(Db) -> get_info(Db, DDoc) end);
-get_info(Db, DDoc) when is_binary(DDoc) ->
-    case couch_db:open_doc(Db, DDoc, [ejson_body]) of
-        {ok, Doc} -> get_info(Db, Doc);
-        Error -> Error
-    end;
-get_info(Db, DDoc) ->
-    InitState = ddoc_to_mrst(couch_db:name(Db), DDoc),
-    {ok, Pid} = couch_index_server:get_index(couch_mrview_index, InitState),
-    couch_index:get_info(Pid).
-
-
-compact(DbName, DDoc) when is_binary(DbName) ->
-    couch_util:with_db(DbName, fun(Db) ->
-        compact(Db, DDoc)
-    end);
-compact(Db, DDoc) when is_binary(DDoc) ->
-    case couch_db:open_doc(Db, DDoc, [ejson_body]) of
-        {ok, Doc} -> compact(Db, Doc);
-        Error -> Error
-    end;
-compact(Db, DDoc) ->
-    InitState = ddoc_to_mrst(couch_db:name(Db), DDoc),
-    {ok, Pid} = couch_index_server:get_index(couch_mrview_index, InitState),
-    couch_index:compact(Pid).
     
 
 ddoc_to_mrst(DbName, #doc{id=Id, body={Fields}}) ->
@@ -129,38 +90,8 @@ ddoc_to_mrst(DbName, #doc{id=Id, body={Fields}}) ->
         design_opts=DesignOpts,
         root_dir=RootDir
     },
-    set_index_sig(IdxState).
-
-
-set_index_sig(State) ->
-    #mrst{
-        views=Views,
-        lib=Lib,
-        language=Language,
-        design_opts=DesignOptions
-    } = State,
-    SigInfo = {Views, Language, DesignOptions, sort_lib(Lib)},
-    State#mrst{sig=couch_util:md5(term_to_binary(SigInfo))}.
-
-
-view_sig(Db, State, View, #mrargs{include_docs=true}=Args) ->
-    BaseSig = view_sig(Db, State, View, Args#mrargs{include_docs=false}),
-    UpdateSeq = couch_db:get_update_seq(Db),
-    PurgeSeq = couch_db:get_purge_seq(Db),
-    Bin = term_to_binary({BaseSig, UpdateSeq, PurgeSeq}),
-    hexsig(couch_util:md5(Bin));
-view_sig(Db, State, {_Nth, _Lang, View}, Args) ->
-    view_sig(Db, State, View, Args);
-view_sig(_Db, State, View, Args0) ->
-    Sig = State#mrst.sig,
-    UpdateSeq = View#mrview.update_seq,
-    PurgeSeq = View#mrview.purge_seq,
-    Args = Args0#mrargs{
-        preflight_fun=undefined,
-        extra=[]
-    },
-    Bin = term_to_binary({Sig, UpdateSeq, PurgeSeq, Args}),
-    hexsig(couch_util:md5(Bin)).
+    SigInfo = {Views, Language, DesignOpts, couch_index_util:sort_lib(Lib)},
+    {ok, IdxState#mrst{sig=couch_util:md5(term_to_binary(SigInfo))}}.
 
 
 set_view_type(_Args, _ViewName, []) ->
@@ -195,6 +126,184 @@ extract_view(Lang, #mrargs{view_type=red}=Args, Name, [View | Rest]) ->
         true -> {red, {index_of(Name, RedNames), Lang, View}, Args};
         false -> extract_view(Lang, Args, Name, Rest)
     end.
+
+
+view_sig(Db, State, View, #mrargs{include_docs=true}=Args) ->
+    BaseSig = view_sig(Db, State, View, Args#mrargs{include_docs=false}),
+    UpdateSeq = couch_db:get_update_seq(Db),
+    PurgeSeq = couch_db:get_purge_seq(Db),
+    Bin = term_to_binary({BaseSig, UpdateSeq, PurgeSeq}),
+    hexsig(couch_util:md5(Bin));
+view_sig(Db, State, {_Nth, _Lang, View}, Args) ->
+    view_sig(Db, State, View, Args);
+view_sig(_Db, State, View, Args0) ->
+    Sig = State#mrst.sig,
+    UpdateSeq = View#mrview.update_seq,
+    PurgeSeq = View#mrview.purge_seq,
+    Args = Args0#mrargs{
+        preflight_fun=undefined,
+        extra=[]
+    },
+    Bin = term_to_binary({Sig, UpdateSeq, PurgeSeq, Args}),
+    hexsig(couch_util:md5(Bin)).
+
+
+init_state(Db, Fd, #mrst{views=Views}=State, nil) ->
+    Header = #mrheader{
+        seq=0,
+        purge_seq=couch_db:get_purge_seq(Db),
+        id_btree_state=nil,
+        view_states=[{nil, 0, 0} || _ <- Views]
+    },
+    init_state(Db, Fd, State, Header);
+init_state(Db, Fd, State, Header) ->
+    #mrst{language=Lang, views=Views} = State,
+    #mrheader{
+        seq=Seq,
+        purge_seq=PurgeSeq,
+        id_btree_state=IdBtreeState,
+        view_states=ViewStates
+    } = Header,
+
+    StateUpdate = fun
+        ({_, _, _}=St) -> St;
+        (St) -> {St, 0, 0}
+    end,
+    ViewStates2 = lists:map(StateUpdate, ViewStates),
+
+    IdReduce = fun
+        (reduce, KVs) -> length(KVs);
+        (rereduce, Reds) -> lists:sum(Reds)
+    end,
+
+    %IdBtOpts = [{compression, couch_db:compression(Db)}],
+    IdBtOpts = [{reduce, IdReduce}],
+    {ok, IdBtree} = couch_btree:open(IdBtreeState, Fd, IdBtOpts),
+
+    OpenViewFun = fun(St, View) -> open_view(Db, Fd, Lang, St, View) end,
+    Views2 = lists:zipwith(OpenViewFun, ViewStates2, Views),
+
+    State#mrst{
+        fd=Fd,
+        update_seq=Seq,
+        purge_seq=PurgeSeq,
+        id_btree=IdBtree,
+        views=Views2
+    }.
+
+
+open_view(_Db, Fd, Lang, {BTState, USeq, PSeq}, View) ->
+    FunSrcs = [FunSrc || {_Name, FunSrc} <- View#mrview.reduce_funs],
+    ReduceFun =
+        fun(reduce, KVs) ->
+            KVs2 = detuple_kvs(expand_dups(KVs, []), []),
+            {ok, Result} = couch_query_servers:reduce(Lang, FunSrcs, KVs2),
+            {length(KVs2), Result};
+        (rereduce, Reds) ->
+            Count = lists:sum([Count0 || {Count0, _} <- Reds]),
+            UsrReds = [UsrRedsList || {_, UsrRedsList} <- Reds],
+            {ok, Result} = couch_query_servers:rereduce(Lang, FunSrcs, UsrReds),
+            {Count, Result}
+        end,
+
+    Less = case couch_util:get_value(<<"collation">>, View#mrview.options) of
+        <<"raw">> -> fun(A, B) -> A < B end;
+        _ -> fun couch_view:less_json_ids/2
+    end,
+
+    ViewBtOpts = [
+        {less, Less},
+        {reduce, ReduceFun}
+        %{compression, couch_db:compression(Db)}
+    ],
+    {ok, Btree} = couch_btree:open(BTState, Fd, ViewBtOpts),
+    View#mrview{btree=Btree, update_seq=USeq, purge_seq=PSeq}.
+
+
+temp_view_to_ddoc({Props}) ->
+    Language = couch_util:get_value(<<"language">>, Props, <<"javascript">>),
+    Options = couch_util:get_value(<<"options">>, Props, {[]}),
+    View0 = [{<<"map">>, couch_util:get_value(<<"map">>, Props)}],
+    View1 = View0 ++ case couch_util:get_value(<<"reduce">>, Props) of
+        RedSrc when is_binary(RedSrc) -> [{<<"reduce">>, RedSrc}];
+        _ -> []
+    end,
+    DDoc = {[
+        {<<"_id">>, couch_uuids:random()},
+        {<<"language">>, Language},
+        {<<"options">>, Options},
+        {<<"views">>, {[
+            {<<"temp">>, {View1}}
+        ]}}
+    ]},
+    couch_doc:from_json_obj(DDoc).
+
+
+get_row_count(#mrview{btree=Bt}) ->
+    {ok, {Count, _Reds}} = couch_btree:full_reduce(Bt),
+    {ok, Count}.
+
+
+reduce_to_count(Reductions) ->
+    Reduce = fun
+        (reduce, KVs) ->
+            Counts = [
+                case V of {dups, Vals} -> length(Vals); _ -> 1 end
+                || {_,V} <- KVs
+            ],
+            {lists:sum(Counts), []};
+        (rereduce, Reds) ->
+            {lists:sum([Count0 || {Count0, _} <- Reds]), []}
+    end,
+    {Count, _} = couch_btree:final_reduce(Reduce, Reductions),
+    Count.
+
+
+fold(#mrview{btree=Bt}, Fun, Acc, Opts) ->
+    WrapperFun = fun(KV, Reds, Acc2) ->
+        fold_fun(Fun, expand_dups([KV], []), Reds, Acc2)
+    end,
+    {ok, _LastRed, _Acc} = couch_btree:fold(Bt, WrapperFun, Acc, Opts).
+
+
+fold_fun(_Fun, [], _, Acc) ->
+    {ok, Acc};
+fold_fun(Fun, [KV|Rest], {KVReds, Reds}, Acc) ->
+    case Fun(KV, {KVReds, Reds}, Acc) of
+        {ok, Acc2} ->
+            fold_fun(Fun, Rest, {[KV|KVReds], Reds}, Acc2);
+        {stop, Acc2} ->
+            {stop, Acc2}
+    end.
+
+
+fold_reduce({NthRed, Lang, View}, Fun,  Acc, Options) ->
+    #mrview{
+        btree=Bt,
+        reduce_funs=RedFuns
+    } = View,
+    LPad = lists:duplicate(NthRed - 1, []),
+    RPad = lists:duplicate(length(RedFuns) - NthRed, []),
+    {_Name, FunSrc} = lists:nth(NthRed,RedFuns),
+
+    ReduceFun = fun
+        (reduce, KVs0) ->
+            KVs1 = detuple_kvs(expand_dups(KVs0, []), []),
+            {ok, Red} = couch_query_servers:reduce(Lang, [FunSrc], KVs1),
+            {0, LPad ++ Red ++ RPad};
+        (rereduce, Reds) ->
+            ExtractRed = fun({_, UReds0}) -> [lists:nth(NthRed, UReds0)] end,
+            UReds = lists:map(ExtractRed, Reds),
+            {ok, Red} = couch_query_servers:rereduce(Lang, [FunSrc], UReds),
+            {0, LPad ++ Red ++ RPad}
+    end,
+
+    WrapperFun = fun({GroupedKey, _}, PartialReds, Acc0) ->
+        {_, Reds} = couch_btree:final_reduce(ReduceFun, PartialReds),
+        Fun(GroupedKey, lists:nth(NthRed, Reds), Acc0)
+    end,
+
+    couch_btree:fold_reduce(Bt, WrapperFun, Acc, Options).
 
 
 validate_args(Args) ->
@@ -351,78 +460,6 @@ view_cmp(View) ->
     fun(A, B) -> couch_btree:less(View#mrview.btree, A, B) end.
 
 
-init_state(Db, Fd, #mrst{views=Views}=State, nil) ->
-    Header = #mrheader{
-        seq=0,
-        purge_seq=couch_db:get_purge_seq(Db),
-        id_btree_state=nil,
-        view_states=[{nil, 0, 0} || _ <- Views]
-    },
-    init_state(Db, Fd, State, Header);
-init_state(Db, Fd, State, Header) ->
-    #mrst{language=Lang, views=Views} = State,
-    #mrheader{
-        seq=Seq,
-        purge_seq=PurgeSeq,
-        id_btree_state=IdBtreeState,
-        view_states=ViewStates
-    } = Header,
-
-    StateUpdate = fun
-        ({_, _, _}=St) -> St;
-        (St) -> {St, 0, 0}
-    end,
-    ViewStates2 = lists:map(StateUpdate, ViewStates),
-
-    IdReduce = fun
-        (reduce, KVs) -> length(KVs);
-        (rereduce, Reds) -> lists:sum(Reds)
-    end,
-
-    %IdBtOpts = [{compression, couch_db:compression(Db)}],
-    IdBtOpts = [{reduce, IdReduce}],
-    {ok, IdBtree} = couch_btree:open(IdBtreeState, Fd, IdBtOpts),
-
-    OpenViewFun = fun(St, View) -> open_view(Db, Fd, Lang, St, View) end,
-    Views2 = lists:zipwith(OpenViewFun, ViewStates2, Views),
-
-    State#mrst{
-        fd=Fd,
-        update_seq=Seq,
-        purge_seq=PurgeSeq,
-        id_btree=IdBtree,
-        views=Views2
-    }.
-
-
-open_view(_Db, Fd, Lang, {BTState, USeq, PSeq}, View) ->
-    FunSrcs = [FunSrc || {_Name, FunSrc} <- View#mrview.reduce_funs],
-    ReduceFun =
-        fun(reduce, KVs) ->
-            KVs2 = detuple_kvs(expand_dups(KVs, []), []),
-            {ok, Result} = couch_query_servers:reduce(Lang, FunSrcs, KVs2),
-            {length(KVs2), Result};
-        (rereduce, Reds) ->
-            Count = lists:sum([Count0 || {Count0, _} <- Reds]),
-            UsrReds = [UsrRedsList || {_, UsrRedsList} <- Reds],
-            {ok, Result} = couch_query_servers:rereduce(Lang, FunSrcs, UsrReds),
-            {Count, Result}
-        end,
-
-    Less = case couch_util:get_value(<<"collation">>, View#mrview.options) of
-        <<"raw">> -> fun(A, B) -> A < B end;
-        _ -> fun couch_view:less_json_ids/2
-    end,
-    
-    ViewBtOpts = [
-        {less, Less},
-        {reduce, ReduceFun}
-        %{compression, couch_db:compression(Db)}
-    ],
-    {ok, Btree} = couch_btree:open(BTState, Fd, ViewBtOpts),
-    View#mrview{btree=Btree, update_seq=USeq, purge_seq=PSeq}.
-
-
 make_header(State) ->
     #mrst{
         update_seq=Seq,
@@ -455,6 +492,10 @@ compaction_file(RootDir, DbName, Sig) ->
     design_root(RootDir, DbName) ++ hexsig(Sig) ++ ".compact.view".
 
 
+design_root(RootDir, DbName) ->
+    RootDir ++ "/." ++ binary_to_list(DbName) ++ "_design/mrviews".
+
+
 open_file(FName) ->
     case couch_file:open(FName) of
         {ok, Fd} -> {ok, Fd};
@@ -469,10 +510,6 @@ reset_index(Db, Fd, #mrst{sig=Sig}=State) ->
     init_state(Db, Fd, reset_state(State), nil).
 
 
-design_root(RootDir, DbName) ->
-    RootDir ++ "/." ++ binary_to_list(DbName) ++ "_design/".
-
-
 reset_state(State) ->
     State#mrst{
         fd=nil,
@@ -481,26 +518,6 @@ reset_state(State) ->
         id_btree=nil,
         views=[View#mrview{btree=nil} || View <- State#mrst.views]
     }.
-
-
-get_row_count(#mrview{btree=Bt}) ->
-    {ok, {Count, _Reds}} = couch_btree:full_reduce(Bt),
-    {ok, Count}.
-
-
-reduce_to_count(Reductions) ->
-    Reduce = fun
-        (reduce, KVs) ->
-            Counts = [
-                case V of {dups, Vals} -> length(Vals); _ -> 1 end
-                || {_,V} <- KVs
-            ],
-            {lists:sum(Counts), []};
-        (rereduce, Reds) ->
-            {lists:sum([Count0 || {Count0, _} <- Reds]), []}
-    end,
-    {Count, _} = couch_btree:final_reduce(Reduce, Reductions),
-    Count.
 
 
 key_opts(Args) ->
@@ -535,72 +552,6 @@ ekey_opts(#mrargs{end_key=EKey, end_key_docid=EKeyDocId}=Args) ->
     end.
 
 
-fold(#mrview{btree=Bt}, Fun, Acc, Opts) ->
-    WrapperFun = fun(KV, Reds, Acc2) ->
-        fold_fun(Fun, expand_dups([KV], []), Reds, Acc2)
-    end,
-    {ok, _LastRed, _Acc} = couch_btree:fold(Bt, WrapperFun, Acc, Opts).
-
-
-fold_fun(_Fun, [], _, Acc) ->
-    {ok, Acc};
-fold_fun(Fun, [KV|Rest], {KVReds, Reds}, Acc) ->
-    case Fun(KV, {KVReds, Reds}, Acc) of
-        {ok, Acc2} ->
-            fold_fun(Fun, Rest, {[KV|KVReds], Reds}, Acc2);
-        {stop, Acc2} ->
-            {stop, Acc2}
-    end.
-
-
-fold_reduce({NthRed, Lang, View}, Fun,  Acc, Options) ->
-    #mrview{
-        btree=Bt,
-        reduce_funs=RedFuns
-    } = View,
-    LPad = lists:duplicate(NthRed - 1, []),
-    RPad = lists:duplicate(length(RedFuns) - NthRed, []),
-    {_Name, FunSrc} = lists:nth(NthRed,RedFuns),
-
-    ReduceFun = fun
-        (reduce, KVs0) ->
-            KVs1 = detuple_kvs(expand_dups(KVs0, []), []),
-            {ok, Red} = couch_query_servers:reduce(Lang, [FunSrc], KVs1),
-            {0, LPad ++ Red ++ RPad};
-        (rereduce, Reds) ->
-            ExtractRed = fun({_, UReds0}) -> [lists:nth(NthRed, UReds0)] end,
-            UReds = lists:map(ExtractRed, Reds),
-            {ok, Red} = couch_query_servers:rereduce(Lang, [FunSrc], UReds),
-            {0, LPad ++ Red ++ RPad}
-    end,
-    
-    WrapperFun = fun({GroupedKey, _}, PartialReds, Acc0) ->
-        {_, Reds} = couch_btree:final_reduce(ReduceFun, PartialReds),
-        Fun(GroupedKey, lists:nth(NthRed, Reds), Acc0)
-    end,
-
-    couch_btree:fold_reduce(Bt, WrapperFun, Acc, Options).
-
-
-temp_view_to_ddoc({Props}) ->
-    Language = couch_util:get_value(<<"language">>, Props, <<"javascript">>),
-    Options = couch_util:get_value(<<"options">>, Props, {[]}),
-    View0 = [{<<"map">>, couch_util:get_value(<<"map">>, Props)}],
-    View1 = View0 ++ case couch_util:get_value(<<"reduce">>, Props) of
-        RedSrc when is_binary(RedSrc) -> [{<<"reduce">>, RedSrc}];
-        _ -> []
-    end,
-    DDoc = {[
-        {<<"_id">>, couch_uuids:random()},
-        {<<"language">>, Language},
-        {<<"options">>, Options},
-        {<<"views">>, {[
-            {<<"temp">>, {View1}}
-        ]}}
-    ]},
-    couch_doc:from_json_obj(DDoc).
-
-
 reverse_key_default(<<>>) -> <<255>>;
 reverse_key_default(<<255>>) -> <<>>;
 reverse_key_default(Key) -> Key.
@@ -620,43 +571,6 @@ sum_btree_sizes(_, nil) ->
     null;
 sum_btree_sizes(Size1, Size2) ->
     Size1 + Size2.
-    
-
-maybe_load_doc(_, _, _, #mrargs{include_docs=false}) ->
-    [];
-maybe_load_doc(Db, Id, {Props}, Args) ->
-    DocId = couch_util:get_value(<<"_id">>, Props, Id),
-    Rev = case couch_util:get_value(<<"_rev">>, Props, undefined) of
-        Rev0 when is_binary(Rev0) -> couch_doc:parse_rev(Rev0);
-        _ -> nil
-    end,
-    load_doc(Db, DocId, Rev, Args);
-maybe_load_doc(Db, Id, _Value, Args) ->
-    load_doc(Db, Id, nil, Args).
-    
-
-load_doc(Db, Id, Rev, Args) ->
-    Opts = case Args#mrargs.conflicts of
-        true -> [conflicts];
-        _ -> []
-    end,
-    case (catch couch_httpd_db:couch_doc_open(Db, Id, Rev, Opts)) of
-        #doc{} = Doc ->
-            [{doc, couch_doc:to_json_obj(Doc, [])}];
-        _Else ->
-            [{doc, null}]
-    end.
-
-
-sort_lib({Lib}) ->
-    sort_lib(Lib, []).
-sort_lib([], LAcc) ->
-    lists:keysort(1, LAcc);
-sort_lib([{LName, {LObj}}|Rest], LAcc) ->
-    LSorted = sort_lib(LObj, []), % descend into nested object
-    sort_lib(Rest, [{LName, LSorted}|LAcc]);
-sort_lib([{LName, LCode}|Rest], LAcc) ->
-    sort_lib(Rest, [{LName, LCode}|LAcc]).
 
 
 detuple_kvs([], Acc) ->
@@ -676,8 +590,12 @@ expand_dups([KV | Rest], Acc) ->
     expand_dups(Rest, [KV | Acc]).
 
 
-hexsig(Sig) ->
-    couch_util:to_hex(binary_to_list(Sig)).
+maybe_load_doc(_Db, _Id, _Val, #mrargs{include_docs=false}) ->
+    [];
+maybe_load_doc(Db, Id, Val, #mrargs{conflicts=true}) ->
+    [couch_index_util:load_doc(Db, Id, Val, [conflicts])];
+maybe_load_doc(Db, Id, Val, _Args) ->
+    [couch_index_util:load_doc(Db, Id, Val, [])].
 
 
 index_of(Key, List) ->

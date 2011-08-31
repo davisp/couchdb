@@ -10,43 +10,50 @@
 -include_lib("couch_mrview/include/couch_mrview.hrl").
 
 
-get(db_name, #mrst{db_name=DbName}) -> DbName;
-get(idx_name, #mrst{idx_name=IdxName}) -> IdxName;
-get(signature, #mrst{sig=Sig}) -> Sig;
-get(update_seq, #mrst{update_seq=Seq}) -> Seq;
-get(purge_seq, #mrst{purge_seq=Seq}) -> Seq;
-get(update_opts, #mrst{opts=Opts}) ->
-    Opts1 = case couch_util:get_value(<<"include_design">>, Opts, false) of
-        true -> [include_design];
-        _ -> []
-    end,
-    Opts2 = case couch_util:get_value(<<"local_seq">>, Opts, false) of
-        true -> [local_seq];
-        _ -> []
-    end,
-    Opts1 ++ Opts2;
-get(info, State) ->
-    #mrst{
-        fd = Fd,
-        sig = Sig,
-        id_btree = Btree,
-        language = Lang,
-        update_seq = UpdateSeq,
-        purge_seq = PurgeSeq,
-        views = Views
-    } = State,
-    {ok, Size} = couch_file:bytes(Fd),
-    {ok, DataSize} = couch_mrview_util:calculate_data_size(Btree, Views),
-    {ok, [
-        {signature, list_to_binary(couch_mrview_util:hexsig(Sig))},
-        {language, Lang},
-        {disk_size, Size},
-        {data_size, DataSize},
-        {update_seq, UpdateSeq},
-        {purge_seq, PurgeSeq}
-    ]};
-get(Other, _) ->
-    exit({invalid_item, Other}).
+get(Property, State) ->
+    case Propert of
+        db_name ->
+            State#mrst.db_name;
+        idx_name ->
+            State#mrst.idx_name;
+        signature ->
+            State#mrst.sig;
+        update_seq ->
+            State#mrst.update_seq;
+        purge_seq ->
+            State#mrst.purge_seq;
+        update_opts ->
+            IncDesign = couch_util:get_value(<<"include_design">>, Opts, false),
+            LocalSeq = couch_util:get_value(<<"local_seq">>, Opts, false),
+            if IncDesign -> [include_design]; true -> [] end
+                ++ if LocalSeq -> [local_seq]; true -> [] end;
+        info ->
+            #mrst{
+                fd = Fd,
+                sig = Sig,
+                id_btree = Btree,
+                language = Lang,
+                update_seq = UpdateSeq,
+                purge_seq = PurgeSeq,
+                views = Views
+            } = State,
+            {ok, Size} = couch_file:bytes(Fd),
+            {ok, DataSize} = couch_mrview_util:calculate_data_size(Btree,Views),
+            {ok, [
+                {signature, list_to_binary(couch_mrview_util:hexsig(Sig))},
+                {language, Lang},
+                {disk_size, Size},
+                {data_size, DataSize},
+                {update_seq, UpdateSeq},
+                {purge_seq, PurgeSeq}
+            ]};
+        Other ->
+            throw({unknown_index_property, Other})
+    end.
+
+
+init(Db, Id, Val, Args) ->
+    couch_mrview_util:ddoc_to_mrst(couch_db:db_name(Db), DDoc).
 
 
 open(Db, State) ->
@@ -75,6 +82,12 @@ close(State) ->
     couch_file:close(State#mrst.fd).
 
 
+delete(#mrst{db_name=DbName, sig=Sig}=State) ->
+    couch_file:close(State#mrst.fd),
+    RootDir = couch_config:get("couchdb", "index_dir"),
+    catch couch_mrview_util:delete_index_file(RootDir, DbName, Sig).
+
+
 reset(State) ->
     couch_util:with_db(State#mrst.db_name, fun(Db) ->
         NewState = couch_mrview_util:reset_index(Db, State#mrst.fd, State),
@@ -82,12 +95,12 @@ reset(State) ->
     end).
 
 
-start_update(Parent, PartialDest, State) ->
+start_update(PartialDest, State) ->
     couch_mrview_updater:start_update(Parent, PartialDest, State).
 
 
 purge(Db, PurgeSeq, PurgedIdRevs, State) ->
-    couch_mrview_updater:purge_index(Db, PurgeSeq, PurgedIdRevs, State).
+    couch_mrview_updater:purge(Db, PurgeSeq, PurgedIdRevs, State).
 
 
 process_doc(Doc, Seq, State) ->

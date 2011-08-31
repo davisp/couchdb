@@ -13,7 +13,7 @@
 -module(couch_index_server).
 -behaviour(gen_server).
 
--export([start_link/0, get_index/2]).
+-export([start_link/0, get_index/3, get_index/2]).
 -export([config_change/2, update_notify/1]).
 
 -export([init/1, terminate/2, code_change/3]).
@@ -31,9 +31,32 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 
+get_index(Module, DbName, DDoc) ->
+    get_index(Module, DbName, DDoc, nil).
+
+
+get_index(Module, DbName, DDoc, Fun) when is_binary(DbName) ->
+    couch_util:with_db(DbName, fun(Db) ->
+        get_index(Module, Db, DDoc, Fun)
+    end);
+get_index(Module, Db, DDoc, Fun) when is_binary(DDoc) ->
+    case couch_db:open_doc(Db, DDoc, [ejson_body]) of
+        {ok, Doc} -> get_index(Module, Db, Doc, Fun);
+        Error -> Error
+    end;
+get_view(Module, Db, DDoc, Fun) when is_function(Fun, 1) ->
+    {ok, InitState} = Module:init(Db, DDoc),
+    {ok, FunResp} = Fun(InitState),
+    {ok, Pid} = get_index(Module, InitState),
+    {ok, Pid, FunResp};
+get_view(Module, Db, DDoc, _Fun) ->
+    {ok, InitState} = Module:init(Db, DDoc),
+    get_index(Module, InitState).
+
+
 get_index(Module, IdxState) ->
-    DbName = Module:db_name(IdxState),
-    Sig = Module:signature(IdxState),
+    DbName = Module:get(db_name, IdxState),
+    Sig = Module:get(signature, IdxState),
     case ets:lookup(?BY_SIG, {DbName, Sig}) of
         [{_, Pid}] when is_pid(Pid) ->
             {ok, Pid};

@@ -3,31 +3,31 @@
 get(Field, State) ->
     ok.
 
-set(Field, Value, State) ->
-    {ok, State}.
 
-
-open_index(Db, State) ->
+open(Db, State) ->
     ok.
 
-close_index(State) ->
+close(State) ->
     ok.
 
-reset_index(State) ->
+delete(State) ->
+    ok.
+
+reset(State) ->
     ok.
 
 
 start_update(State) ->
     {ok, State}.
 
+purge(PurgedIdRevs, State) ->
+    ok.
+
 process_doc(Doc, State) ->
     ok.
 
 finish_update(State) ->
     {ok, State}.
-
-purge_index(PurgedIdRevs, State) ->
-    ok.
 
 commit(State) ->
     ok.

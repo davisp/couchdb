@@ -23,41 +23,7 @@ start_update(Parent, Partial, State) ->
     spawn_link(MapFun),
     spawn_link(WriteFun),
     
-    UpdaterState.
-
-
-
-process_doc(nil, Seq, State) ->
-    couch_work_queue:queue(State#mrst.doc_queue, {nil, Seq}),
-    State;
-process_doc(#doc{id=Id, deleted=true}, Seq, State) ->
-    couch_work_queue:queue(State#mrst.doc_queue, {Id, Seq, []}),
-    State;
-process_doc(Doc, Seq, State) ->
-process_doc(Doc, #mrst{query_server=QServer}=State) ->
-    % Run all the non deleted docs through the view engine and
-    % then pass the results on to the writer process.
-    MapFun = fun({Seq, #doc{id=Id, deleted=Deleted}=Doc}, {SeqAcc, Results}) ->
-        case Deleted of
-            true ->
-                {max(Seq, SeqAcc), [{Id, []} | Results]};
-            false ->
-                {ok, Result} = couch_query_servers:map_doc_raw(QServer, Doc),
-                {max(Seq, SeqAcc), [{Id, Result} | Results]}
-        end
-    end,
-    {Seq, MapResults} = lists:foldl(MapFun, {0, []}, Docs),
-    ok = couch_work_queue:queue(State#mrst.write_queue, {Seq, MapResults}),
-    State.
-
-
-finish_update(State) ->
-    couch_query_servers:stop_doc_map(State#mrst.query_server),
-    couch_work_queue:close(State#mrst.write_queue),
-    receive
-        {new_state, NewState} ->
-            NewState
-    end.
+    {ok, UpdaterState}.
 
 
 purge_index(_Db, PurgeSeq, PurgedIdRevs, State) ->
@@ -102,6 +68,73 @@ purge_index(_Db, PurgeSeq, PurgedIdRevs, State) ->
     }}.
 
 
+process_doc(nil, Seq, State) ->
+    couch_work_queue:queue(State#mrst.doc_queue, {nil, Seq, nil}),
+    {ok, State};
+process_doc(#doc{id=Id, deleted=true}, Seq, State) ->
+    couch_work_queue:queue(State#mrst.doc_queue, {Id, Seq, deleted}),
+    {ok, State};
+process_doc(Doc, Seq, #mrst{query_server=QServer}=State) ->
+    couch_work_queue:queue(State#mrst.doc_queue, {Id, Seq, Doc}),
+    {ok, State}.
+
+
+finish_update(State) ->
+    couch_work_queue:close(State#mrst.write_queue),
+    receive
+        {new_state, NewState} ->
+            {ok, NewState#mrst{
+                first_build=undefined,
+                updater_pid=undefined,
+                partial_resp_pid=undefined,
+                doc_queue=undefined,
+                write_queue=undefined,
+                query_server=nil
+            }}
+    end.
+
+
+map_docs(Parent, State0) ->
+    case couch_work_queue:dequeue(State0#mrst.doc_queue) of
+        closed ->
+            couch_query_servers:stop_doc_map(State0#mrst.query_server),
+            couch_work_queue:close(State0#mrst.write_queue);
+        {ok, Docs} ->
+            % Run all the non deleted docs through the view engine and
+            % then pass the results on to the writer process.
+            State1 = case State0#mrst.qserver of
+                nil -> start_query_server(State0);
+                _ -> State0
+            end,
+            QServer = State1#mrst.qserver,
+            MapFun = fun
+                ({nil, Seq, _}, {SeqAcc, Results}) ->
+                    {erlang:max(Seq, SeqAcc), Results};
+                ({Id, Seq, deleted}, {SeqAcc, Results}) ->
+                    {erlang:max(Seq, SeqAcc), [{Id, []} | Results]};
+                ({Id, Seq, Doc}, {SeqAcc, Results}) ->
+                    {ok, Res} = couch_query_servers:map_doc_raw(QServer, Doc),
+                    {erlang:max(Seq, SeqAcc), [{Id, Res} | Results]}
+            end,
+            Results = lists:foldl(MapFun, {0, []}, Docs),
+            couch_work_queue:queue(State1#mrst.write_queue, Results),
+            map_docs(Parent, State1)
+    end.
+
+
+write_results(Parent, State) ->
+    case couch_work_queue:dequeue(State#mrst.write_queue) of
+        closed ->
+            Parent ! {new_state, State};
+        {ok, Info} ->
+            EmptyKVs = [{V#mrview.id_num, []} || V <- State#mrst.views],
+            {Seq, ViewKVs, DocIdKeys} = merge_results(Info, 0, EmptyKVs, []),
+            NewState = write_kvs(State, Seq, ViewKVs, DocIdKeys),
+            send_partial(NewState#mrst.partial_resp_pid, NewState),
+            write_results(Parent, NewState, Queue)
+    end.
+
+
 start_query_server(State) ->
     #mrst{
         language=Language,
@@ -117,19 +150,6 @@ start_query_server(State) ->
     }.
 
 
-write_results(Parent, State, Queue) ->
-    case couch_work_queue:dequeue(Queue) of
-        closed ->
-            Parent ! {new_state, State};
-        {ok, Info} ->
-            EmptyKVs = [{V#mrview.id_num, []} || V <- State#mrst.views],
-            {Seq, ViewKVs, DocIdKeys} = merge_results(Info, 0, EmptyKVs, []),
-            NewState = write_kvs(State, Seq, ViewKVs, DocIdKeys),
-            send_partial(NewState#mrst.partial_resp_pid, NewState),
-            write_results(Parent, NewState, Queue)
-    end.
-
-
 merge_results([], SeqAcc, ViewKVs, DocIdKeys) ->
     {SeqAcc, ViewKVs, DocIdKeys};
 merge_results([{Seq, Results} | Rest], SeqAcc, ViewKVs, DocIdKeys) ->
@@ -137,7 +157,7 @@ merge_results([{Seq, Results} | Rest], SeqAcc, ViewKVs, DocIdKeys) ->
         merge_results(RawResults, VKV, DIK)
     end,
     {ViewKVs1, DocIdKeys1} = lists:foldl(Fun, {ViewKVs, DocIdKeys}, Results),
-    merge_results(Rest, max(Seq, SeqAcc), ViewKVs1, DocIdKeys1).
+    merge_results(Rest, erlang:max(Seq, SeqAcc), ViewKVs1, DocIdKeys1).
 
 
 merge_results({DocId, []}, ViewKVs, DocIdKeys) ->

@@ -104,12 +104,12 @@ code_change(_OldVsn, State, _Extra) ->
 
 update(Idx, Mod, IdxState) ->
     Self = self(),
-    DbName = Mod:db_name(IdxState),
-    CurrSeq = Mod:update_seq(IdxState),
-    CommittedSeq = couch_db:get_committed_update_seq(Db),
-    CommittedOnly = Mod:committed_only(IdxState),
-        
-    UpdateOpts = Mod:update_options(PurgedIdxState),
+    DbName = Mod:get(db_name, IdxState),
+    CurrSeq = Mod:get(update_seq, IdxState),
+    CommittedSeq = couch_db:get_committed_update_seq(Db),        
+    UpdateOpts = Mod:get(update_options, PurgedIdxState),
+    
+    CommittedOnly = lists:member(committed_only, UpdateOpts),
     IncludeDesign = lists:member(include_design, UpdateOpts),
     DocOpts = case lists:member(local_seq, UpdateOpts) of
         true -> [conflicts, deleted_conflicts, local_seq];
@@ -118,7 +118,7 @@ update(Idx, Mod, IdxState) ->
 
     TaskType = <<"Indexer">>,
     Starting = <<"Starting index update.">>,
-    couch_task_status:add_task(TaskType, Mod:index_name(IdxState), Starting),
+    couch_task_status:add_task(TaskType, Mod:get(idx_name, IdxState), Starting),
 
     couch_util:with_db(DbName, fun(Db) ->
         PurgedIdxState = case purge_index(Db, Mod, IdxState) of
@@ -154,13 +154,12 @@ update(Idx, Mod, IdxState) ->
                 false ->
                     update_task_status(NumChanges, Count),
                     {Doc, Seq} = LoadDoc(DocInfo),
-                    NewSt = Mod:process_doc(Doc, Seq, StAcc),
+                    {ok, NewSt} = Mod:process_doc(Doc, Seq, StAcc),
                     {ok, {NewSt, Count+1}}
             end
         end,
         
-        
-        InitIdxState = Mod:start_update(self(), Idx, PurgedIdxState),
+        {ok, InitIdxState} = Mod:start_update(Idx, PurgedIdxState),
         Acc0 = {InitIdxSt, 0},
         {ok, _, Acc} = couch_db:enum_docs_since(Db, CurrSeq, Proc, Acc0, []),
         {ProcIdxSt, _} = Acc,
@@ -168,14 +167,14 @@ update(Idx, Mod, IdxState) ->
         couch_task_status:set_update_frequency(0),
         couch_task_status:update("Waiting for index writer to finish."),
 
-        FinalState = Mod:finish_update(ProcIdxSt),
+        {ok, FinalState} = Mod:finish_update(ProcIdxSt),
         exit({updated, NewIdxState2})
     end).
 
 
 purge_index(Db, Mod, IdxState) ->
     DbPurgeSeq = couch_db:get_purge_seq(Db),
-    IdxPurgeSeq = Mod:purge_seq(IdxState),
+    IdxPurgeSeq = Mod:get(purge_seq, IdxState),
     if
         DbPurgeSeq == IdxPurgeSeq ->
             {ok, IdxState};

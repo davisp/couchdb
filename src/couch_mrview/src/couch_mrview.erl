@@ -53,13 +53,14 @@ query_view(Db, {Type, View}, Args, Callback, Acc) ->
     end.
 
 
-% API convenience.
 get_info(Db, DDoc) ->
-    couch_mrview_util:get_info(Db, DDoc).
+    {ok, Pid} = couch_index_server:get_index(couch_mrview_idnex, Db, DDoc),
+    couch_inded:get_info(Pid).
 
 
 compact(Db, DDoc) ->
-    couch_mrview_util:compact(Db, DDoc).
+    {ok, Pid} = couch_index_server:get_index(couch_mrview_index, Db, DDoc),
+    couch_index:compact(Pid).
 
 
 cleanup(Db) ->

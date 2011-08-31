@@ -58,7 +58,7 @@ compact(Pid) ->
 
 init({Mod, IdxState}) ->
     process_flag(trap_exit, true),
-    DbName = Mod:db_name(IdxState),
+    DbName = Mod:get(db_name, IdxState),
     couch_util:with_db(DbName, fun(Db) ->
         case Mod:open(Db, IdxState) of
             {ok, NewIdxState} ->
@@ -66,7 +66,7 @@ init({Mod, IdxState}) ->
                 {ok, UPid} = couch_index_updater:start_link(self(), Mod),
                 {ok, CPid} = couch_index_compactor:start_link(self(), Mod),
                 Delay = couch_config:get(
-                    "query_server_config", "commit_freq", "10"
+                    "query_server_config", "commit_freq", "60"
                 ),
                 MsDelay = 1000 * list_to_integer(Delay),
                 proc_lib:init_ack({ok, self()}),
@@ -101,7 +101,7 @@ handle_call({get_state, ReqSeq}, From, State) ->
         idx_state=IdxState,
         waiters=Waiters
     } = State,
-    IdxSeq = Mod:update_seq(IdxState),
+    IdxSeq = Mod:get(update_seq, IdxState),
     case ReqSeq =< IdxSeq of
         true ->
             {reply, {ok, IdxState}, State};
@@ -112,7 +112,7 @@ handle_call({get_state, ReqSeq}, From, State) ->
     end;
 handle_call(get_info, _From, State) ->
     #st{mod=Mod} = State,
-    {ok, Info0} = Mod:get_info(State#st.idx_state),
+    {ok, Info0} = Mod:get(info, State#st.idx_state),
     IsUpdating = couch_index_updater:is_running(State#st.updater),
     IsCompacting = couch_index_compactor:is_running(State#st.compactor),
     Info = Info0 ++ [
@@ -138,16 +138,14 @@ handle_call({compacted, NewIdxState}, _From, State) ->
         idx_state=OldIdxState,
         updater=Updater
     } = State,
-    NewSeq = Mod:update_seq(NewIdxState),
-    OldSeq = Mod:update_seq(OldIdxState),
+    NewSeq = Mod:get(update_seq, NewIdxState),
+    OldSeq = Mod:get(update_seq, OldIdxState),
     % For indices that require swapping files, we have to make sure we're
     % up to date with the current index. Otherwise indexes could roll back
     % (perhaps considerably) to previous points in history.
     case NewSeq >= OldSeq of
         true ->
-            {ok, NewIdxState1} = Mod:swap_compacted(
-                OldIdxState, NewIdxState
-            ),
+            {ok, NewIdxState1} = Mod:swap_compacted(OldIdxState, NewIdxState),
             ok = couch_index_updater:restart(Updater, NewIdxState1),
             {reply, ok, State#st{
                 idx_state=NewIdxState1,
@@ -165,7 +163,7 @@ handle_cast({updated, NewIdxState}, State) ->
     {noreply, NewState};
 handle_cast({new_state, NewIdxState}, State) ->
     #st{mod=Mod} = State,
-    CurrSeq = Mod:update_seq(NewIdxState),
+    CurrSeq = Mod:get(update_seq, NewIdxState),
     Rest = send_replies(State#st.waiters, CurrSeq, NewIdxState),
     {noreply, State#st{
         idx_state=NewIdxState,
@@ -189,10 +187,10 @@ handle_info(commit, #st{committed=true}=State) ->
     {noreply, State};
 handle_info(commit, State) ->
     #st{mod=Mod, idx_state=IdxState} = State,
-    DbName = Mod:db_name(IdxState),
+    DbName = Mod:get(db_name, IdxState),
     GetCommSeq = fun(Db) -> couch_db:get_committed_update_seq(Db) end,
     CommittedSeq = couch_util:with_db(DbName, GetCommSeq),
-    case CommittedSeq >= Mod:update_seq(IdxState) of
+    case CommittedSeq >= Mod:get(update_seq, IdxState) of
         true ->
             % Commit the updates
             ok = Mod:commit(IdxState),
@@ -218,10 +216,11 @@ code_change(_OldVsn, State, _Extra) ->
 maybe_restart_updater(#st{waiters=[]}) ->
     ok;
 maybe_restart_updater(#st{mod=Mod, idx_state=IdxState}=State) ->
-    couch_util:with_db(Mod:db_name(IdxState), fun(Db) ->
-        UpdateSeq = Mod:update_seq(IdxState),
+    couch_util:with_db(Mod:get(db_name, IdxState), fun(Db) ->
+        UpdateSeq = Mod:get(update_seq, IdxState),
         CommitedSeq = couch_db:get_commited_update_seq(Db),
-        case Mod:committed_only(IdxState) and (CommitedSeq =< UpdateSeq) of
+        UpdateOpts = Mod:get(update_options, IdxState),
+        case lists:member(committed_only, UpdateOpts) of
             true -> couch_db:ensure_full_commit(Db);
             false -> ok
         end
