@@ -945,7 +945,13 @@ changes_since(Db, StartSeq, Fun, Acc) ->
     changes_since(Db, StartSeq, Fun, [], Acc).
     
 changes_since(Db, StartSeq, Fun, Options, Acc) ->
-    Wrapper = fun(DocInfo, _Offset, Acc2) -> Fun(DocInfo, Acc2) end,
+    Wrapper = fun(DocInfo, _Offset, Acc2) ->
+        case DocInfo#doc_info.revs of
+            [] -> ?LOG_ERROR("CS Missing Revs: ~p~n", [DocInfo]);
+            _ -> ok
+        end,
+        Fun(DocInfo, Acc2)
+    end,
     {ok, _LastReduction, AccOut} = couch_btree:fold(Db#db.docinfo_by_seq_btree,
         Wrapper, Acc, [{start_key, StartSeq + 1}] ++ Options),
     {ok, AccOut}.

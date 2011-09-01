@@ -89,7 +89,7 @@ os_filter_fun(FilterName, Style, Req, Db) ->
     [] ->
         fun(_Db2, #doc_info{revs=Revs}=DI) ->
                 case Revs of
-                    [] -> ?LOG_ERROR("Broken #doc_info: ~p", [DI]);
+                    [] -> ?LOG_ERROR("1. Broken #doc_info: ~p", [DI]);
                     _ -> ok
                 end,
                 builtin_results(Style, Revs)
@@ -142,7 +142,7 @@ filter_docids(DocIds, Style) when is_list(DocIds)->
             case lists:member(DocId, DocIds) of
                 true ->
                     case Revs of
-                        [] -> ?LOG_ERROR("Broken #doc_info: ~p", [DI]);
+                        [] -> ?LOG_ERROR("2. Broken #doc_info: ~p", [DI]);
                         _ -> ok
                     end,
                     builtin_results(Style, Revs);
@@ -157,7 +157,7 @@ filter_designdoc(Style) ->
             case DocId of
             <<"_design", _/binary>> ->
                     case Revs of
-                        [] -> ?LOG_ERROR("Broken #doc_info: ~p", [DI]);
+                        [] -> ?LOG_ERROR("3. Broken #doc_info: ~p", [DI]);
                         _ -> ok
                     end,
                     builtin_results(Style, Revs);

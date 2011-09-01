@@ -293,6 +293,10 @@ btree_by_seq_split(#doc_info{id=Id, high_seq=KeySeq, revs=Revs}) ->
     {KeySeq, {Id, lists:reverse(RevInfos), lists:reverse(DeletedRevInfos)}}.
 
 btree_by_seq_join(KeySeq, {Id, RevInfos, DeletedRevInfos}) ->
+    case RevInfos of
+        [] -> ?LOG_ERROR("SEQ JOIN: Missing revisions for: ~p", [Id]);
+        _ -> ok
+    end,
     #doc_info{
         id = Id,
         high_seq=KeySeq,
