@@ -87,7 +87,11 @@ os_filter_fun(FilterName, Style, Req, Db) ->
     case [list_to_binary(couch_httpd:unquote(Part))
             || Part <- string:tokens(FilterName, "/")] of
     [] ->
-        fun(_Db2, #doc_info{revs=Revs}) ->
+        fun(_Db2, #doc_info{revs=Revs}=DI) ->
+                case Revs of
+                    [] -> ?LOG_ERROR("Broken #doc_info: ~p", [DI]);
+                    _ -> ok
+                end,
                 builtin_results(Style, Revs)
         end;
     [DName, FName] ->
@@ -134,9 +138,13 @@ builtin_filter_fun(_FilterName, _Style, _Req, _Db) ->
     throw({bad_request, "unknown builtin filter name"}).
 
 filter_docids(DocIds, Style) when is_list(DocIds)->
-    fun(_Db, #doc_info{id=DocId, revs=Revs}) ->
+    fun(_Db, #doc_info{id=DocId, revs=Revs}=DI) ->
             case lists:member(DocId, DocIds) of
                 true ->
+                    case Revs of
+                        [] -> ?LOG_ERROR("Broken #doc_info: ~p", [DI]);
+                        _ -> ok
+                    end,
                     builtin_results(Style, Revs);
                 _ -> []
             end
@@ -145,9 +153,13 @@ filter_docids(_, _) ->
     throw({bad_request, "`doc_ids` filter parameter is not a list."}).
 
 filter_designdoc(Style) ->
-    fun(_Db, #doc_info{id=DocId, revs=Revs}) ->
+    fun(_Db, #doc_info{id=DocId, revs=Revs}=DI) ->
             case DocId of
             <<"_design", _/binary>> ->
+                    case Revs of
+                        [] -> ?LOG_ERROR("Broken #doc_info: ~p", [DI]);
+                        _ -> ok
+                    end,
                     builtin_results(Style, Revs);
                 _ -> []
             end
