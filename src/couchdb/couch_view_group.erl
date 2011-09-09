@@ -230,7 +230,10 @@ handle_cast({compact_done, NewGroup}, State) ->
     } = State,
     ?LOG_INFO("View index compaction still behind for ~s ~s -- current: ~p " ++
         "compact: ~p", [DbName, GroupId, CurrentSeq, NewGroup#group.current_seq]),
-    couch_db:close(NewGroup#group.db),
+    case NewGroup#group.db of
+        nil -> ok;
+        _ -> couch_db:close(NewGroup#group.db)
+    end,
     Pid = spawn_link(fun() ->
         {ok, Db} = couch_db:open_int(DbName, []),
         {_,Ref} = erlang:spawn_monitor(fun() ->
