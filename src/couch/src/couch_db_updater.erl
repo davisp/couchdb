@@ -20,6 +20,10 @@
 
 -include_lib("couch/include/couch_db.hrl").
 
+-record(comp_header, {
+    db_header,
+    meta_state
+}).
 
 init({DbName, Filepath, Fd, Options}) ->
     case lists:member(create, Options) of
@@ -29,7 +33,9 @@ init({DbName, Filepath, Fd, Options}) ->
         ok = couch_file:write_header(Fd, Header),
         % delete any old compaction files that might be hanging around
         RootDir = couch_config:get("couchdb", "database_dir", "."),
-        couch_file:delete(RootDir, Filepath ++ ".compact");
+        couch_file:delete(RootDir, Filepath ++ ".compact"),
+        couch_file:delete(RootDir, Filepath ++ ".compact.data"),
+        couch_file:delete(RootDir, Filepath ++ ".compact.meta");
     false ->
         case couch_file:read_header(Fd) of
         {ok, Header} ->
@@ -39,7 +45,9 @@ init({DbName, Filepath, Fd, Options}) ->
             Header =  #db_header{},
             ok = couch_file:write_header(Fd, Header),
             % delete any old compaction files that might be hanging around
-            file:delete(Filepath ++ ".compact")
+            file:delete(Filepath ++ ".compact"),
+            file:delete(Filepath ++ ".compact.data"),
+            file:delete(Filepath ++ ".compact.meta")
         end
     end,
     Db = init_db(DbName, Filepath, Fd, Header, Options),
@@ -212,9 +220,13 @@ handle_cast({compact_done, CompactFilepath}, #db{filepath=Filepath}=Db) ->
 
         ?LOG_DEBUG("CouchDB swapping files ~s and ~s.",
                 [Filepath, CompactFilepath]),
+        ok = file:rename(CompactFilepath, Filepath ++ ".compact"),
         RootDir = couch_config:get("couchdb", "database_dir", "."),
         couch_file:delete(RootDir, Filepath),
-        ok = file:rename(CompactFilepath, Filepath),
+        ok = file:rename(Filepath ++ ".compact", Filepath),
+        % Delete the old meta compaction file after promoting
+        % the compaction file.
+        couch_file:delete(RootDir, Filepath ++ ".compact.meta"),
         close_db(Db),
         NewDb3 = refresh_validate_doc_funs(NewDb2),
         ok = gen_server:call(couch_server, {db_updated, NewDb3}, infinity),
@@ -900,13 +912,15 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, MixedInfos, Retry) ->
     NewInfos = stem_full_doc_infos(Db, NewInfos1),
     RemoveSeqs =
     case Retry of
-    false ->
+    nil ->
         [];
-    true ->
-        % We are retrying a compaction, meaning the documents we are copying may
-        % already exist in our file and must be removed from the by_seq index.
+    OldDocIdTree ->
+        % Compaction is being rerun to catch up to writes during the
+        % first pass. This means we may have docs that already exist
+        % in the seq_tree in the .data file. Here we lookup any old
+        % update_seqs so that they can be removed.
         Ids = [Id || #full_doc_info{id=Id} <- NewInfos],
-        Existing = couch_btree:lookup(NewDb#db.id_tree, Ids),
+        Existing = couch_btree:lookup(OldDocIdTree, Ids),
         [Seq || {ok, #full_doc_info{update_seq=Seq}} <- Existing]
     end,
 
@@ -916,7 +930,6 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, MixedInfos, Retry) ->
             NewDb#db.id_tree, NewInfos, []),
     update_compact_task(length(NewInfos)),
     NewDb#db{id_tree=IdTree, seq_tree=SeqTree}.
-
 
 
 copy_compact(Db, NewDb0, Retry) ->
@@ -945,7 +958,8 @@ copy_compact(Db, NewDb0, Retry) ->
                 Db, AccNewDb, lists:reverse([DocInfo | AccUncopied]), Retry),
             AccCopiedSize2 = AccCopiedSize + AccUncopiedSize2,
             if AccCopiedSize2 >= CheckpointAfter ->
-                {ok, {commit_data(NewDb2#db{update_seq = Seq}), [], 0, 0}};
+                CommNewDb2 = commit_compaction_data(NewDb2#db{update_seq=Seq}),
+                {ok, {CommNewDb2, [], 0, 0}};
             true ->
                 {ok, {NewDb2#db{update_seq = Seq}, [], 0, AccCopiedSize2}}
             end;
@@ -992,39 +1006,167 @@ copy_compact(Db, NewDb0, Retry) ->
         NewDb4 = NewDb3
     end,
 
-    commit_data(NewDb4#db{update_seq=Db#db.update_seq}).
+    commit_compaction_data(NewDb4#db{update_seq=Db#db.update_seq}).
 
-start_copy_compact(#db{name=Name,filepath=Filepath,header=#db_header{purge_seq=PurgeSeq}}=Db) ->
-    CompactFile = Filepath ++ ".compact",
+
+start_copy_compact(#db{}=Db) ->
+    #db{name=Name, filepath=Filepath, options=Options} = Db,
     ?LOG_DEBUG("Compaction process spawned for db \"~s\"", [Name]),
-    case couch_file:open(CompactFile) of
-    {ok, Fd} ->
-        Retry = true,
-        case couch_file:read_header(Fd) of
-        {ok, Header} ->
-            ok;
-        no_valid_header ->
-            ok = couch_file:write_header(Fd, Header=#db_header{})
-        end;
-    {error, enoent} ->
-        {ok, Fd} = couch_file:open(CompactFile, [create]),
-        Retry = false,
-        ok = couch_file:write_header(Fd, Header=#db_header{})
-    end,
-    NewDb = init_db(Name, CompactFile, Fd, Header, Db#db.options),
-    NewDb2 = if PurgeSeq > 0 ->
-        {ok, PurgedIdsRevs} = couch_db:get_last_purged(Db),
-        {ok, Pointer, _} = couch_file:append_term(
-            Fd, PurgedIdsRevs, [{compression, NewDb#db.compression}]),
-        NewDb#db{header=Header#db_header{purge_seq=PurgeSeq, purged_docs=Pointer}};
+
+    {ok, NewDb, DName, DFd, MFd, Retry} =
+        open_compaction_files(Name, Filepath, Options),
+    erlang:monitor(process, MFd),
+
+    % This is a bit worrisome. init_db/4 will monitor the data fd
+    % but it doesn't know about the meta fd. For now I'll maintain
+    % that the data fd is the old normal fd and meta fd is special
+    % and hope everything works out for the best.
+    unlink(DFd),
+
+    NewDb1 = copy_purge_info(Db, NewDb),
+    NewDb2 = copy_compact(Db, NewDb1, Retry),
+    NewDb3 = copy_meta_data(NewDb2),
+    NewDb4 = commit_data(NewDb3),
+    close_db(NewDb4),
+
+    ok = couch_file:close(MFd),
+    gen_server:cast(Db#db.main_pid, {compact_done, DName}).
+
+
+open_compaction_files(DbName, DbFilePath, Options) ->
+    DataFile = DbFilePath ++ ".compact.data",
+    MetaFile = DbFilePath ++ ".compact.meta",
+    {ok, DataFd, DataHdr} = open_compaction_file(DataFile),
+    {ok, MetaFd, MetaHdr} = open_compaction_file(MetaFile),
+    case {DataHdr, MetaHdr} of
+        {#comp_header{}=A, #comp_header{}=A} ->
+            DbHeader = A#comp_header.db_header,
+            Db0 = init_db(DbName, DataFile, DataFd, DbHeader, Options),
+            Db1 = bind_id_tree(Db0, MetaFd, A#comp_header.meta_state),
+            {ok, Db1, DataFile, DataFd, MetaFd, true};
+        {#db_header{}, _} ->
+            ok = reset_compaction_file(MetaFd, #db_header{}),
+            Db0 = init_db(DbName, DataFile, DataFd, DataHdr, Options),
+            Db1 = bind_id_tree(Db0, MetaFd, nil),
+            {ok, Db1, DataFile, DataFd, MetaFd, true};
+        _ ->
+            Header = #db_header{},
+            ok = reset_compaction_file(DataFd, Header),
+            ok = reset_compaction_file(MetaFd, Header),
+            Db0 = init_db(DbName, DataFile, DataFd, Header, Options),
+            Db1 = bind_id_tree(Db0, MetaFd, nil),
+            {ok, Db1, DataFile, DataFd, MetaFd, false}
+    end.
+
+
+open_compaction_file(FilePath) ->
+    case couch_file:open(FilePath) of
+        {ok, Fd} ->
+            case couch_file:read_header(Fd) of
+                {ok, Header} -> {ok, Fd, Header};
+                no_valid_header -> {ok, Fd, nil}
+            end;
+        {error, enoent} ->
+            {ok, Fd} = couch_file:open(FilePath, [create]),
+            {ok, Fd, nil}
+    end.
+
+
+reset_compaction_file(Fd, Header) ->
+    ok = couch_file:truncate(Fd, 0),
+    ok = couch_file:write_header(Fd, Header).
+
+
+copy_purge_info(OldDb, NewDb) ->
+    OldHdr = OldDb#db.header,
+    NewHdr = NewDb#db.header,
+    if OldHdr#db_header.purge_seq > 0 ->
+        {ok, PurgedIdsRevs} = couch_db:get_last_purged(OldDb),
+        Opts = [{compression, NewDb#db.compression}],
+        {ok, Ptr} = couch_file:append_term(NewDb#db.fd, PurgedIdsRevs, Opts),
+        NewDb#db{
+            header=NewHdr#db_header{
+                purge_seq=OldHdr#db_header.purge_seq,
+                purged_docs=Ptr
+            }
+        };
     true ->
         NewDb
-    end,
-    unlink(Fd),
+    end.
 
-    NewDb3 = copy_compact(Db, NewDb2, Retry),
-    close_db(NewDb3),
-    gen_server:cast(Db#db.main_pid, {compact_done, CompactFile}).
+
+commit_compaction_data(#db{}=Db) ->
+    % Compaction needs to write headers to both the data file
+    % and the meta file so if we need to restart we can pick
+    % back up from where we left off.
+    commit_compaction_data(Db, meta_fd(Db)),
+    commit_compaction_data(Db, Db#db.fd).
+
+
+commit_compaction_data(#db{header=OldHeader}=Db0, Fd) ->
+    % Mostly copied from commit_data/2 but I have to
+    % replace the logic to commit and fsync to a specific
+    % fd instead of the Filepath stuff that commit_data/2
+    % does.
+    DataState = OldHeader#db_header.id_tree_state,
+    MetaState = couch_btree:get_state(Db0#db.id_tree),
+    MetaFd = meta_fd(Db0),
+    Db1 = bind_id_tree(Db0, Db0#db.fd, DataState),
+    Header = db_to_header(Db1, OldHeader),
+    CompHeader = #comp_header{
+        db_header = Header,
+        meta_state = MetaState
+    },
+    ok = couch_file:sync(Fd),
+    ok = couch_file:write_header(Fd, CompHeader),
+    Db2 = Db1#db{
+        waiting_delayed_commit=nil,
+        header=Header,
+        committed_update_seq=Db1#db.update_seq
+    },
+    bind_id_tree(Db2, MetaFd, MetaState).
+
+
+bind_id_tree(Db, Fd, State) ->
+    {ok, IdBtree} = couch_btree:open(State, Fd, [
+        {split, fun ?MODULE:btree_by_id_split/1},
+        {join, fun ?MODULE:btree_by_id_join/2},
+        {reduce, fun ?MODULE:btree_by_id_reduce/2}
+    ]),
+    Db#db{id_tree=IdBtree}.
+
+
+meta_fd(Db) ->
+    % XXX: Hack to extract the meta compaction fd
+    %      from a btree record.
+    element(2, Db#db.id_tree).
+
+
+copy_meta_data(#db{fd=Fd, header=Header}=Db) ->
+    Src = Db#db.id_tree,
+    DstState = Header#db_header.id_tree_state,
+    {ok, Dst} = couch_btree:open(DstState, Fd, [
+        {split, fun ?MODULE:btree_by_id_split/1},
+        {join, fun ?MODULE:btree_by_id_join/2},
+        {reduce, fun ?MODULE:btree_by_id_reduce/2}
+    ]),
+    {ok, NewBtree} = merge_btrees(Src, Dst),
+    Db#db{id_tree=NewBtree}.
+
+
+merge_btrees(Src, Dst) ->
+    FoldFun = fun(KV, _Reds, {TreeAcc0, KVs}) ->
+        case length(KVs) > 1000 of
+            true ->
+                {ok, TreeAcc1} = couch_btree:add(TreeAcc0, [KV | KVs]),
+                {ok, {TreeAcc1, []}};
+            false ->
+                {ok, {TreeAcc0, [KV | KVs]}}
+        end
+    end,
+    {ok, _, {Tree, Unwritten}} = couch_btree:foldl(Src, FoldFun, {Dst, []}),
+    couch_btree:add(Tree, Unwritten).
+
 
 update_compact_task(NumChanges) ->
     [Changes, Total] = couch_task_status:get([changes_done, total_changes]),
@@ -1036,6 +1178,7 @@ update_compact_task(NumChanges) ->
         (Changes2 * 100) div Total
     end,
     couch_task_status:update([{changes_done, Changes2}, {progress, Progress}]).
+
 
 make_doc_summary(#db{compression = Comp}, {Body0, Atts0}) ->
     Body = case couch_compress:is_compressed(Body0, Comp) of
