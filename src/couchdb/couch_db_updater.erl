@@ -802,21 +802,26 @@ copy_docs(Db, #db{fd=DestFd}=NewDb, InfoBySeq0, Retry) ->
     NewDocInfos = [couch_doc:to_doc_info(Info) || Info <- NewFullDocInfos],
     RemoveSeqs =
     case Retry of
-    false ->
+    nil ->
         [];
-    true ->
+    OldDocIdTree ->
         % We are retrying a compaction, meaning the documents we are copying may
         % already exist in our file and must be removed from the by_seq index.
-        Existing = couch_btree:lookup(NewDb#db.fulldocinfo_by_id_btree, Ids),
+        Existing = couch_btree:lookup(OldDocIdTree, Ids),
         [Seq || {ok, #full_doc_info{update_seq=Seq}} <- Existing]
     end,
 
     {ok, DocInfoBTree} = couch_btree:add_remove(
             NewDb#db.docinfo_by_seq_btree, NewDocInfos, RemoveSeqs),
-    {ok, FullDocInfoBTree} = couch_btree:add_remove(
-            NewDb#db.fulldocinfo_by_id_btree, NewFullDocInfos, []),
-    NewDb#db{ fulldocinfo_by_id_btree=FullDocInfoBTree,
-              docinfo_by_seq_btree=DocInfoBTree}.
+
+    FDIKVs = [{Id, FDI} || #full_doc_info{id=Id}=FDI <- NewFullDocInfos],
+    {ok, FullDocInfoEms} = couch_emsort:add(
+            NewDb#db.fulldocinfo_by_id_btree, FDIKVs),
+
+    NewDb#db{
+        fulldocinfo_by_id_btree=FullDocInfoEms,
+        docinfo_by_seq_btree=DocInfoBTree
+    }.
 
 
 
@@ -868,7 +873,7 @@ start_copy_compact(#db{}=Db) ->
 
     {ok, NewDb, DName, DFd, MFd, Retry} = open_compaction_files(Name, Filepath),
 
-    TName = if Retry -> <<Name/binary, " retry">>; true -> Name end,
+    TName = if Retry == nil -> <<Name/binary, " retry">>; true -> Name end,
     couch_task_status:add_task(<<"Database Compaction">>,TName,<<"Starting">>),
 
     % This is a bit worrisome. init_db/4 will monitor the data fd
@@ -895,19 +900,20 @@ open_compaction_files(DbName, DbFilePath) ->
     case {DataHdr, MetaHdr} of
         {#comp_header{}=A, #comp_header{}=A} ->
             Db0 = init_db(DbName, DataFile, DataFd, A#comp_header.db_header),
-            Db1 = bind_id_tree(Db0, MetaFd, A#comp_header.meta_state),
-            {ok, Db1, DataFile, DataFd, MetaFd, true};
+            Db1 = bind_emsort(Db0, MetaFd, A#comp_header.meta_state),
+            {ok, Db1, DataFile, DataFd, MetaFd, Db0#db.fulldocinfo_by_id_btree};
         {#db_header{}, _} ->
+            ok = reset_compaction_file(MetaFd, #db_header{}),
             Db0 = init_db(DbName, DataFile, DataFd, DataHdr),
-            Db1 = bind_id_tree(Db0, MetaFd, nil),
-            {ok, Db1, DataFile, DataFd, MetaFd, true};
+            Db1 = bind_emsort(Db0, MetaFd, nil),
+            {ok, Db1, DataFile, DataFd, MetaFd, Db0#db.fulldocinfo_by_id_btree};
         _ ->
             Header = #db_header{},
             ok = reset_compaction_file(DataFd, Header),
             ok = reset_compaction_file(MetaFd, Header),
             Db0 = init_db(DbName, DataFile, DataFd, Header),
-            Db1 = bind_id_tree(Db0, MetaFd, nil),
-            {ok, Db1, DataFile, DataFd, MetaFd, false}
+            Db1 = bind_emsort(Db0, MetaFd, nil),
+            {ok, Db1, DataFile, DataFd, MetaFd, nil}
     end.
 
 
@@ -950,7 +956,8 @@ commit_compaction_data(#db{}=Db) ->
     % Compaction needs to write headers to both the data file
     % and the meta file so if we need to restart we can pick
     % back up from where we left off.
-    commit_compaction_data(Db, meta_fd(Db)),
+    MetaFd = couch_emsort:get_fd(Db#db.fulldocinfo_by_id_btree),
+    commit_compaction_data(Db, MetaFd),
     commit_compaction_data(Db, Db#db.fd).
 
 
@@ -960,8 +967,8 @@ commit_compaction_data(#db{header=OldHeader}=Db0, Fd) ->
     % fd instead of the Filepath stuff that commit_data/2
     % does.
     DataState = OldHeader#db_header.fulldocinfo_by_id_btree_state,
-    MetaState = couch_btree:get_state(Db0#db.fulldocinfo_by_id_btree),
-    MetaFd = meta_fd(Db0),
+    MetaFd = couch_emsort:get_fd(Db0#db.fulldocinfo_by_id_btree),
+    MetaState = couch_emsort:get_state(Db0#db.fulldocinfo_by_id_btree),
     Db1 = bind_id_tree(Db0, Db0#db.fd, DataState),
     Header = db_to_header(Db1, OldHeader),
     CompHeader = #comp_header{
@@ -975,7 +982,15 @@ commit_compaction_data(#db{header=OldHeader}=Db0, Fd) ->
         header=Header,
         committed_update_seq=Db1#db.update_seq
     },
-    bind_id_tree(Db2, MetaFd, MetaState).
+    bind_emsort(Db2, MetaFd, MetaState).
+
+
+bind_emsort(Db, Fd, nil) ->
+    {ok, Ems} = couch_emsort:open(Fd),
+    Db#db{fulldocinfo_by_id_btree=Ems};
+bind_emsort(Db, Fd, State) ->
+    {ok, Ems} = couch_emsort:open(Fd, [{root, State}]),
+    Db#db{fulldocinfo_by_id_btree=Ems}.
 
 
 bind_id_tree(Db, Fd, State) ->
@@ -987,12 +1002,6 @@ bind_id_tree(Db, Fd, State) ->
     Db#db{fulldocinfo_by_id_btree=IdBtree}.
 
 
-meta_fd(Db) ->
-    % XXX: Hack to extract the meta compaction fd
-    %      from a btree record.
-    element(2, Db#db.fulldocinfo_by_id_btree).
-
-
 copy_meta_data(#db{fd=Fd, header=Header}=Db) ->
     Src = Db#db.fulldocinfo_by_id_btree,
     DstState = Header#db_header.fulldocinfo_by_id_btree_state,
@@ -1001,20 +1010,30 @@ copy_meta_data(#db{fd=Fd, header=Header}=Db) ->
         {join, fun ?MODULE:btree_by_id_join/2},
         {reduce, fun ?MODULE:btree_by_id_reduce/2}
     ]),
-    {ok, NewBtree} = merge_btrees(Src, Dst),
+    {ok, NewBtree} = merge_docids(Src, Dst),
     Db#db{fulldocinfo_by_id_btree=NewBtree}.
 
 
-merge_btrees(Src, Dst) ->
-    FoldFun = fun(KV, _Reds, {TreeAcc0, KVs}) ->
-        case length(KVs) > 1000 of
+merge_docids(Src, Dst) ->
+    FoldFun = fun(_K, FDInfo, {TreeAcc0, Infos0}) ->
+        Infos1 = maybe_add_info(FDInfo, Infos0),
+        case length(Infos1) > 1000 of
             true ->
-                {ok, TreeAcc1} = couch_btree:add(TreeAcc0, [KV | KVs]),
-                {ok, {TreeAcc1, []}};
+                {ok, TreeAcc1} = couch_btree:add(TreeAcc0, Infos1),
+                {TreeAcc1, []};
             false ->
-                {ok, {TreeAcc0, [KV | KVs]}}
+                {TreeAcc0, Infos1}
         end
     end,
-    {ok, _, {Tree, Unwritten}} = couch_btree:foldl(Src, FoldFun, {Dst, []}),
+    {Tree, Unwritten} = couch_emsort:sort(Src, FoldFun, {Dst, []}),
     couch_btree:add(Tree, Unwritten).
+
+
+maybe_add_info(#full_doc_info{id=Id}=I1, [#full_doc_info{id=Id}=I2 | Rest]) ->
+    case I1#full_doc_info.update_seq > I2#full_doc_info.update_seq of
+        true -> [I1 | Rest];
+        false -> [I2 | Rest]
+    end;
+maybe_add_info(I, Acc) ->
+    [I | Acc].
 
