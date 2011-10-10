@@ -151,6 +151,12 @@ AC_ARG_WITH([js-lib], [AC_HELP_STRING([--with-js-lib=PATH],
     JS_LIBS="-L$withval"
 ], [])
 
+use_js_trunk=no
+AC_ARG_ENABLE([js-trunk], [AC_HELP_STRING([--enable-js-trunk],
+    [allow linking to recent revisions of SpiderMonkey trunk])], [
+    use_js_trunk=$enableval
+], [])
+
 AC_ARG_VAR([ERLC_FLAGS], [general flags to prepend to ERLC_FLAGS])
 AC_ARG_VAR([FLAGS], [general flags to prepend to LDFLAGS and CPPFLAGS])
 AS_CASE([$(uname -s)],
@@ -271,6 +277,21 @@ AC_CHECK_HEADER([jsapi.h], [], [
 
 Are the Mozilla SpiderMonkey headers installed?])
         ])])
+
+# Prevent people from accidentally using SpiderMonkey's that are too new
+
+if test "$use_js_trunk" = "no"; then
+AC_CHECK_DECL([JSOPTION_ANONFUNFIX], [], [
+    AC_MSG_ERROR([Your SpiderMonkey library is too new.
+
+Newer SpiderMonkey libraries remove the optional enforcement of anonymous
+functions in a statement context. This will most likely break any existing
+JavaScript functions you have as well as render all examples invalid.
+
+If you wish to ignore this error pass --enable-js-trunk to ./configure.])],
+    [[#include <jsapi.h>]])
+fi
+
 CPPFLAGS="$OLD_CPPFLAGS"
 
 
