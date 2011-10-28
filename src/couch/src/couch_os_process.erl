@@ -203,7 +203,7 @@ init([Command, Options, PortOptions]) ->
             Proc#os_proc{timeout=TimeOut}
         end
     end, BaseProc, Options),
-    {ok, OsProc}.
+    {ok, OsProc, hibernate}.
 
 terminate(_Reason, #os_proc{port=Port}) ->
     catch port_close(Port),
@@ -223,6 +223,8 @@ handle_call({prompt, Data}, _From, OsProc) ->
             {reply, OsError, OsProc};
         throw:OtherError ->
             {stop, normal, OtherError, OsProc}
+    after
+        garbage_collect()
     end.
 
 handle_cast({send, Data}, #os_proc{writer=Writer}=OsProc) ->
