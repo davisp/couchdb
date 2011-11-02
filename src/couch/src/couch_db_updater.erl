@@ -1177,7 +1177,7 @@ copy_meta_data(#db{fd=Fd, header=Header}=Db) ->
         rem_seqs=[],
         infos=[]
     },
-    {ok, Acc} = merge_docids(Iter, Acc0),
+    Acc = merge_docids(Iter, Acc0),
     {ok, IdTree} = couch_btree:add(Acc#merge_st.id_tree, Acc#merge_st.infos),
     {ok, SeqTree} = couch_btree:add_remove(
         Acc#merge_st.seq_tree, [], Acc#merge_st.rem_seqs
