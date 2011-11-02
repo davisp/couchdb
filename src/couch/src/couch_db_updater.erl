@@ -1202,13 +1202,13 @@ merge_docids(Iter, #merge_st{infos=Infos}=Acc) when length(Infos) > 1000 ->
     merge_docids(Iter, Acc1);
 merge_docids(Iter, #merge_st{curr=Curr}=Acc) ->
     case next_info(Iter, Curr, []) of
-        {ok, NewCurr, FDI, Seqs} ->
+        {NextIter, NewCurr, FDI, Seqs} ->
             Acc1 = Acc#merge_st{
                 infos = [FDI | Acc#merge_st.infos],
                 rem_seqs = Seqs ++ Acc#merge_st.rem_seqs,
                 curr = NewCurr
             },
-            merge_docids(Iter, Acc1);
+            merge_docids(NextIter, Acc1);
         {finished, FDI, Seqs} ->
             Acc#merge_st{
                 infos = [FDI | Acc#merge_st.infos],
