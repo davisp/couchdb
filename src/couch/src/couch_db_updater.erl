@@ -1036,9 +1036,11 @@ start_copy_compact(#db{}=Db) ->
 
     NewDb1 = copy_purge_info(Db, NewDb),
     NewDb2 = copy_compact(Db, NewDb1, Retry),
-    NewDb3 = copy_meta_data(NewDb2),
-    NewDb4 = commit_data(NewDb3),
-    close_db(NewDb4),
+    NewDb3 = sort_meta_data(NewDb2),
+    NewDb4 = commit_compaction_data(NewDb3),
+    NewDb5 = copy_meta_data(NewDb4),
+    NewDb6 = commit_data(NewDb5),
+    close_db(NewDb6),
 
     ok = couch_file:close(MFd),
     gen_server:cast(Db#db.main_pid, {compact_done, DName}).
@@ -1155,6 +1157,11 @@ bind_id_tree(Db, Fd, State) ->
     Db#db{id_tree=IdBtree}.
 
 
+sort_meta_data(Db0) ->
+    {ok, Ems} = couch_emsort:merge(Db0#db.id_tree),
+    Db0#db{id_tree=Ems}.
+
+
 copy_meta_data(#db{fd=Fd, header=Header}=Db) ->
     Src = Db#db.id_tree,
     DstState = Header#db_header.id_tree_state,
@@ -1163,7 +1170,7 @@ copy_meta_data(#db{fd=Fd, header=Header}=Db) ->
         {join, fun ?MODULE:btree_by_id_join/2},
         {reduce, fun ?MODULE:btree_by_id_reduce/2}
     ]),
-    {ok, Iter} = couch_emsort:sort(Src),
+    {ok, Iter} = couch_emsort:iter(Src),
     Acc0 = #merge_st{
         id_tree=IdTree0,
         seq_tree=Db#db.seq_tree,
