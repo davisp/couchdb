@@ -189,7 +189,9 @@ iter(#ems{root=undefined}=Ems) ->
     {ok, {Ems, []}};
 iter(#ems{root={BB, nil}}=Ems) ->
     Chains = init_chains(Ems, small, BB),
-    {ok, {Ems, Chains}}.
+    {ok, {Ems, Chains}};
+iter(#ems{root={_, _}}) ->
+    {error, not_merged}.
 
 
 next({_Ems, []}) ->
