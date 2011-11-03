@@ -129,7 +129,8 @@
 %     CA3                  CD3
 %
 
--export([open/1, open/2, get_fd/1, get_state/1, add/2, sort/1, next/1]).
+-export([open/1, open/2, get_fd/1, get_state/1]).
+-export([add/2, merge/1, sort/1, iter/1, next/1]).
 
 
 -record(ems, {
@@ -173,10 +174,20 @@ add(Ems, KVs) ->
     {ok, add_bb_pos(Ems, Pos)}.
 
 
-sort(#ems{root=undefined}=Ems) ->
-    {ok, {Ems, []}};
 sort(#ems{}=Ems) ->
-    BB = decimate(Ems),
+    {ok, Ems1} = merge(Ems),
+    iter(Ems1).
+
+
+merge(#ems{root=undefined}=Ems) ->
+    {ok, Ems};
+merge(#ems{}=Ems) ->
+    {ok, decimate(Ems)}.
+
+
+iter(#ems{root=undefined}=Ems) ->
+    {ok, {Ems, []}};
+iter(#ems{root={BB, nil}}=Ems) ->
     Chains = init_chains(Ems, small, BB),
     {ok, {Ems, Chains}}.
 
@@ -207,10 +218,10 @@ write_kvs(Ems, KVs) ->
     Final.
 
 
-decimate(#ems{root={BB, nil}}) ->
+decimate(#ems{root={_BB, nil}}=Ems) ->
     % We have less than bb_chunk backbone pointers so we're
     % good to start streaming KV's back to the client.
-    BB;
+    Ems;
 decimate(#ems{root={BB, NextBB}}=Ems) ->
     % To make sure we have a bounded amount of data in RAM
     % at any given point we first need to decimate the data

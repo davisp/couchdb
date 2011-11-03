@@ -21,7 +21,7 @@ total() -> group() * rows().
 
 main(_) ->
     test_util:init_code_path(),
-    etap:plan(unknown),
+    etap:plan(4),
     case (catch test()) of
         ok ->
             etap:end_tests();
@@ -47,11 +47,17 @@ test_basic(Fd) ->
        EAcc1
     end, Ems, lists:seq(1, rows())),
 
-    {ok, Iter} = couch_emsort:sort(Ems1),
-    {Bad, Total} = read_sorted(Iter, {-1, 0, 0}),
+    {ok, Iter1} = couch_emsort:sort(Ems1),
+    {Bad1, Total1} = read_sorted(Iter1, {-1, 0, 0}),
+    etap:is(Bad1, 0, "No rows out of order."),
+    etap:is(Total1, total(), "Found exactly as many rows as expected."),
 
-    etap:is(Bad, 0, "No rows out of order."),
-    etap:is(Total, total(), "Found exactly as many rows as expected."),
+    {ok, Ems2} = couch_emsort:merge(Ems1),
+    {ok, Iter2} = couch_emsort:iter(Ems2),
+    {Bad2, Total2} = read_sorted(Iter2, {-1, 0, 0}),
+    etap:is(Bad2, 0, "No rows out of order."),
+    etap:is(Total2, total(), "Found exactly as many rows as expected."),
+
     ok.
 
 read_sorted(Iter, {Prev, Bad, Count}) ->
