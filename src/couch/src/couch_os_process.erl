@@ -262,6 +262,17 @@ handle_info(Msg, #os_proc{idle=Idle}=OsProc) ->
     ?LOG_DEBUG("OS Proc: Unknown info: ~p", [Msg]),
     {noreply, OsProc, Idle}.
 
+code_change(_, {os_proc, Cmd, Port, W, R, Timeout} , _) ->
+    V = couch_config:get("query_server_config","os_process_idle_limit","300"),
+    State = #os_proc{
+        command = Cmd,
+        port = Port,
+        writer = W,
+        reader = R,
+        timeout = Timeout,
+        idle = list_to_integer(V) * 1000
+    },
+    {ok, State};
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
