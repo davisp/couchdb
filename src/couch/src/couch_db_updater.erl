@@ -944,9 +944,8 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, MixedInfos, Retry) ->
 
 
 copy_compact(Db, NewDb0, Retry) ->
-    FsyncOptions = [Op || Op <- NewDb0#db.fsync_options, Op == before_header],
     Compression = couch_compress:get_compression_method(),
-    NewDb = NewDb0#db{fsync_options=FsyncOptions, compression=Compression},
+    NewDb = NewDb0#db{compression=Compression},
     TotalChanges = couch_db:count_changes_since(Db, NewDb#db.update_seq),
     BufferSize = list_to_integer(
         couch_config:get("database_compaction", "doc_buffer_size", "524288")),
