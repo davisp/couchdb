@@ -183,8 +183,8 @@ init([Command, Options, PortOptions]) ->
     BaseProc = #os_proc{
         command=Command,
         port=open_port({spawn, Spawnkiller ++ " " ++ Command}, PortOptions),
-        writer=fun writejson/2,
-        reader=fun readjson/1,
+        writer=fun ?MODULE:writejson/2,
+        reader=fun ?MODULE:readjson/1,
         idle=IdleLimit
     },
     KillCmd = iolist_to_binary(readline(BaseProc)),
