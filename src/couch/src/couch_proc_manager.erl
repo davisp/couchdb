@@ -143,8 +143,11 @@ terminate(_Reason, #state{tab=Tab}) ->
     ets:foldl(fun(#proc{pid=P}, _) -> couch_util:shutdown_sync(P) end, 0, Tab),
     ok.
 
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+code_change(_OldVsn, #state{tab = Tab} = State, _Extra) ->
+    NewTab = ets:new(procs, [ordered_set, {keypos, #proc.pid}]),
+    true = ets:insert(ets:tab2list(Tab)),
+    true = ets:delete(Tab),
+    {ok, State#state{tab = NewTab}}.
 
 
 
