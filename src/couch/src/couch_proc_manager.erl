@@ -145,7 +145,7 @@ terminate(_Reason, #state{tab=Tab}) ->
 
 code_change(_OldVsn, #state{tab = Tab} = State, _Extra) ->
     NewTab = ets:new(procs, [ordered_set, {keypos, #proc.pid}]),
-    true = ets:insert(ets:tab2list(Tab)),
+    true = ets:insert(NewTab, ets:tab2list(Tab)),
     true = ets:delete(Tab),
     {ok, State#state{tab = NewTab}}.
 
