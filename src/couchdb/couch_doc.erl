@@ -13,6 +13,7 @@
 -module(couch_doc).
 
 -export([to_doc_info/1,to_doc_info_path/1,parse_rev/1,parse_revs/1,rev_to_str/1,revs_to_strs/1]).
+-export([merge/3]).
 -export([att_foldl/3,range_att_foldl/5,att_foldl_decode/3,get_validate_doc_fun/1]).
 -export([from_json_obj/1,to_json_obj/2,has_stubs/1, merge_stubs/2]).
 -export([validate_docid/1]).
@@ -24,6 +25,69 @@
 -export([with_ejson_body/1]).
 
 -include("couch_db.hrl").
+
+
+merge(#full_doc_info{}=OldDoc, #doc{revs={NewPos, _}}=NewDoc, Options) ->
+    #full_doc_info{
+        rev_tree=OldTree,
+        deleted=OldDeleted
+    } = OldDoc,
+    #doc{
+        revs={NewPos, _}
+    } = NewDoc,
+    RevsLimit = couch_util:get_value(revs_limit, Options, 1000),
+    MergeConflicts = couch_util:get_value(merge_conflicts, Options, false),
+    case couch_key_tree:merge(OldTree, to_path(NewDoc), RevsLimit) of
+    {NewTree, new_leaf} ->
+        % Happy case created a new leaf
+        {ok, OldDoc#full_doc_info{
+            rev_tree=NewTree,
+            deleted=NewDoc#doc.deleted,
+            update_seq=increment
+        }};
+    {_, internal_node} when OldDeleted, not MergeConflicts ->
+        % Recreating a deleted document into a state that
+        % previously existed. Create a new revision and
+        % carry on.
+        #doc_info{
+            revs=[#rev_info{rev={OldPos, OldRev}} | _]
+        } = couch_doc:to_doc_info(OldDoc),
+        NewRevId = couch_db:new_revid(NewDoc#doc{revs={OldPos, [OldRev]}}),
+        NewDoc1 = NewDoc#doc{revs={OldPos + 1, [NewRevId, OldRev]}},
+        {Tree, _} = couch_key_tree:merge(OldTree, to_path(NewDoc1), RevsLimit),
+        {ok, OldDoc#full_doc_info{
+            rev_tree=Tree,
+            deleted=NewDoc#doc.deleted,
+            update_seq=increment
+        }, {OldPos + 1, NewRevId}};
+    {NewTree, new_branch} when OldDeleted, not MergeConflicts, NewPos == 1 ->
+        % Recreating a deleted document into a new state.
+        {ok, OldDoc#full_doc_info{
+            rev_tree=NewTree,
+            deleted=NewDoc#doc.deleted,
+            update_seq=increment
+        }};
+    {NewTree, internal_node} when MergeConflicts ->
+        % Replication gave us something we already had so
+        % just update the rev tree and carry on. We keep
+        % the new revision tree in case we're recovering
+        % from COUCHDB-968 and friends but deletion and
+        % update_seqs should not be affected.
+        {ok, OldDoc#full_doc_info{
+            rev_tree=NewTree
+        }};
+    {NewTree, _} when MergeConflicts ->
+        % Replication gave us a new leaf or branch
+        % so we need to bump the update_seq and
+        % deletion status.
+        {ok, OldDoc#full_doc_info{
+            rev_tree=NewTree,
+            deleted=OldDeleted and NewDoc#doc.deleted,
+            update_seq=increment
+        }};
+    _ ->
+        conflict
+    end.
 
 -spec to_path(#doc{}) -> path().
 to_path(#doc{revs={Start, RevIds}}=Doc) ->

@@ -54,8 +54,6 @@
 -include("couch_db.hrl").
 
 %% @doc Merge a path with a list of paths and stem to the given length.
--spec merge([path()], path(), pos_integer()) -> {[path()],
-    conflicts | no_conflicts}.
 merge(Paths, Path, Depth) ->
     {Merged, Conflicts} = merge(Paths, Path),
     {stem(Merged, Depth), Conflicts}.
@@ -63,93 +61,80 @@ merge(Paths, Path, Depth) ->
 %% @doc Merge a path with an existing list of paths, returning a new list of
 %% paths. A return of conflicts indicates a new conflict was discovered in this
 %% merge. Conflicts may already exist in the original list of paths.
--spec merge([path()], path()) -> {[path()], conflicts | no_conflicts}.
 merge(Paths, Path) ->
-    {ok, Merged, HasConflicts} = merge_one(Paths, Path, [], false),
-    if HasConflicts ->
-        Conflicts = conflicts;
-    (length(Merged) =/= length(Paths)) and (length(Merged) =/= 1) ->
-        Conflicts = conflicts;
-    true ->
-        Conflicts = no_conflicts
-    end,
-    {lists:sort(Merged), Conflicts}.
+    {Merged, Status} = merge_one(Paths, Path, []),
+    {lists:sort(Merged), Status}.
 
--spec merge_one(Original::[path()], Inserted::path(), [path()], boolean()) ->
-    {ok, Merged::[path()], NewConflicts::boolean()}.
-merge_one([], Insert, OutAcc, ConflictsAcc) ->
-    {ok, [Insert | OutAcc], ConflictsAcc};
-merge_one([{Start, Tree}|Rest], {StartInsert, TreeInsert}, Acc, HasConflicts) ->
-    case merge_at([Tree], StartInsert - Start, [TreeInsert]) of
-    {ok, [Merged], Conflicts} ->
-        MergedStart = lists:min([Start, StartInsert]),
-        {ok, Rest ++ [{MergedStart, Merged} | Acc], Conflicts or HasConflicts};
-    no ->
-        AccOut = [{Start, Tree} | Acc],
-        merge_one(Rest, {StartInsert, TreeInsert}, AccOut, HasConflicts)
+merge_one([], Path, []) ->
+    % Special case when the doc is created and has
+    % no revisions to merge with
+    {[Path], new_leaf};
+merge_one([], Path, Acc) ->
+    % Merge created a new top-level branch
+    {[Path | Acc], new_branch};
+merge_one([{Start, Tree} | Rest], {PathStart, PathVals}, Acc) ->
+    try
+        {[Merged], Status} = merge_at([Tree], PathStart - Start, [PathVals]),
+        MergedStart = lists:min([Start, PathStart]),
+        {Rest ++ [{MergedStart, Merged} | Acc], Status}
+    catch throw:no_merge ->
+        merge_one(Rest, {PathStart, PathVals}, [{Start, Tree} | Acc])
     end.
 
--spec merge_at(tree(), Place::integer(), tree()) ->
-    {ok, Merged::tree(), HasConflicts::boolean()} | no.
-merge_at(_Ours, _Place, []) ->
-    no;
-merge_at([], _Place, _Insert) ->
-    no;
-merge_at([{Key, Value, SubTree}|Sibs], Place, InsertTree) when Place > 0 ->
-    % inserted starts later than committed, need to drill into committed subtree
-    case merge_at(SubTree, Place - 1, InsertTree) of
-    {ok, Merged, Conflicts} ->
-        {ok, [{Key, Value, Merged} | Sibs], Conflicts};
-    no ->
+merge_at([], _Depth, _Path) ->
+    throw(no_merge);
+merge_at([{Key, Value, SubTree} | Sibs], Depth, Path) when Depth > 0 ->
+    % inserted starts later than committed,
+    % need to drill into committed subtree
+    try
+        {Merged0, Status0} = merge_at(SubTree, Depth - 1, Path),
+        {[{Key, Value, Merged0} | Sibs], Status0}
+    catch throw:no_merge ->
         % first branch didn't merge, move to next branch
-        case merge_at(Sibs, Place, InsertTree) of
-        {ok, Merged, Conflicts} ->
-            {ok, [{Key, Value, SubTree} | Merged], Conflicts};
-        no ->
-            no
-        end
+        {Merged1, Status1} = merge_at(Sibs, Depth, Path),
+        {[{Key, Value, SubTree} | Merged1], Status1}
     end;
-merge_at(OurTree, Place, [{Key, Value, SubTree}]) when Place < 0 ->
-    % inserted starts earlier than committed, need to drill into insert subtree
-    case merge_at(OurTree, Place + 1, SubTree) of
-    {ok, Merged, Conflicts} ->
-        {ok, [{Key, Value, Merged}], Conflicts};
-    no ->
-        no
-    end;
-merge_at([{Key, V1, SubTree}|Sibs], 0, [{Key, V2, InsertSubTree}]) ->
-    {Merged, Conflicts} = merge_simple(SubTree, InsertSubTree),
-    {ok, [{Key, value_pref(V1, V2), Merged} | Sibs], Conflicts};
+merge_at(OurTree, Depth, [{Key, Value, SubPath}]) when Depth < 0 ->
+    % inserted starts earlier than committed,
+    % need to drill into insert subtree
+    {Merged, Status} = merge_at(OurTree, Depth + 1, SubPath),
+    {[{Key, Value, Merged}], Status};
+merge_at([{Key, V1, SubTree} | Sibs], 0, [{Key, V2, SubPath}]) ->
+    {Merged, Status} = merge_simple(SubTree, SubPath),
+    {[{Key, value_pref(V1, V2), Merged} | Sibs], Status};
 merge_at([{OurKey, _, _} | _], 0, [{Key, _, _}]) when OurKey > Key ->
     % siblings keys are ordered, no point in continuing
-    no;
+    throw(no_merge);
 merge_at([Tree | Sibs], 0, InsertTree) ->
-    case merge_at(Sibs, 0, InsertTree) of
-    {ok, Merged, Conflicts} ->
-        {ok, [Tree | Merged], Conflicts};
-    no ->
-        no
-    end.
+    {Merged, Status} = merge_at(Sibs, 0, InsertTree),
+    {[Tree | Merged], Status}.
 
-% key tree functions
-
--spec merge_simple(tree(), tree()) -> {Merged::tree(), NewConflicts::boolean()}.
+merge_simple([], []) ->
+    % Inserted path lands on a leaf
+    {[], internal_node};
 merge_simple([], B) ->
-    {B, false};
+    % Inserted path extends a leaf
+    {B, new_leaf};
 merge_simple(A, []) ->
-    {A, false};
-merge_simple([{Key, V1, SubA} | NextA], [{Key, V2, SubB} | NextB]) ->
-    {MergedSubTree, Conflict1} = merge_simple(SubA, SubB),
-    {MergedNextTree, Conflict2} = merge_simple(NextA, NextB),
-    Value = value_pref(V1, V2),
-    {[{Key, Value, MergedSubTree} | MergedNextTree], Conflict1 or Conflict2};
-merge_simple([{A, _, _} = Tree | Next], [{B, _, _} | _] = Insert) when A < B ->
-    {Merged, Conflict} = merge_simple(Next, Insert),
-    % if Merged has more branches than the input we added a new conflict
-    {[Tree | Merged], Conflict orelse (length(Merged) > length(Next))};
-merge_simple(Ours, [Tree | Next]) ->
-    {Merged, Conflict} = merge_simple(Ours, Next),
-    {[Tree | Merged], Conflict orelse (length(Merged) > length(Next))}.
+    % Ran out of insertion path at an internal node
+    {A, internal_node};
+merge_simple([{Key, V1, SubTree} | NextTree], [{Key, V2, SubPath}]) ->
+    % Keys match, continue descending along this branch
+    {Merged, Status} = merge_simple(SubTree, SubPath),
+    {[{Key, value_pref(V1, V2), Merged} | NextTree], Status};
+merge_simple([{A, _, _} = Tree | Siblings], [{B, _, _}] = Path) when A < B ->
+    % Keep trying siblings until we run out or find a
+    % key A > B
+    {Merged, Status0} = merge_simple(Siblings, Path),
+    Status = case length(Merged) == length(Siblings) of
+        true -> Status0;
+        false -> new_branch
+    end,
+    {[Tree | Merged], Status};
+merge_simple(Tree, [Path]) ->
+    % Sorted keys means we know the rest of the path
+    % is a new branch
+    {[Path | Tree], new_branch}.
 
 find_missing(_Tree, []) ->
     [];

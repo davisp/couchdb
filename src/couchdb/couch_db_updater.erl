@@ -572,80 +572,35 @@ send_result(Client, Ref, NewResult) ->
     % used to send a result to the client
     catch(Client ! {result, self(), {Ref, NewResult}}).
 
-merge_rev_trees(_Limit, _Merge, [], [], AccNewInfos, AccRemoveSeqs, AccSeq) ->
+merge_rev_trees([], [], AccNewInfos, AccRemoveSeqs, AccSeq, _Opts) ->
     {ok, lists:reverse(AccNewInfos), AccRemoveSeqs, AccSeq};
-merge_rev_trees(Limit, MergeConflicts, [NewDocs|RestDocsList],
-        [OldDocInfo|RestOldInfo], AccNewInfos, AccRemoveSeqs, AccSeq) ->
-    #full_doc_info{id=Id,rev_tree=OldTree,deleted=OldDeleted0,update_seq=OldSeq}
-            = OldDocInfo,
-    {NewRevTree, _} = lists:foldl(
-        fun({Client, {#doc{revs={Pos,[_Rev|PrevRevs]}}=NewDoc, Ref}}, {AccTree, OldDeleted}) ->
-            if not MergeConflicts ->
-                case couch_key_tree:merge(AccTree, couch_doc:to_path(NewDoc),
-                    Limit) of
-                {_NewTree, conflicts} when (not OldDeleted) ->
-                    send_result(Client, Ref, conflict),
-                    {AccTree, OldDeleted};
-                {NewTree, conflicts} when PrevRevs /= [] ->
-                    % Check to be sure if prev revision was specified, it's
-                    % a leaf node in the tree
-                    Leafs = couch_key_tree:get_all_leafs(AccTree),
-                    IsPrevLeaf = lists:any(fun({_, {LeafPos, [LeafRevId|_]}}) ->
-                            {LeafPos, LeafRevId} == {Pos-1, hd(PrevRevs)}
-                        end, Leafs),
-                    if IsPrevLeaf ->
-                        {NewTree, OldDeleted};
-                    true ->
-                        send_result(Client, Ref, conflict),
-                        {AccTree, OldDeleted}
-                    end;
-                {NewTree, no_conflicts} when  AccTree == NewTree ->
-                    % the tree didn't change at all
-                    % meaning we are saving a rev that's already
-                    % been editted again.
-                    if (Pos == 1) and OldDeleted ->
-                        % this means we are recreating a brand new document
-                        % into a state that already existed before.
-                        % put the rev into a subsequent edit of the deletion
-                        #doc_info{revs=[#rev_info{rev={OldPos,OldRev}}|_]} =
-                                couch_doc:to_doc_info(OldDocInfo),
-                        NewRevId = couch_db:new_revid(
-                                NewDoc#doc{revs={OldPos, [OldRev]}}),
-                        NewDoc2 = NewDoc#doc{revs={OldPos + 1, [NewRevId, OldRev]}},
-                        {NewTree2, _} = couch_key_tree:merge(AccTree,
-                                couch_doc:to_path(NewDoc2), Limit),
-                        % we changed the rev id, this tells the caller we did
-                        send_result(Client, Ref, {ok, {OldPos + 1, NewRevId}}),
-                        {NewTree2, OldDeleted};
-                    true ->
-                        send_result(Client, Ref, conflict),
-                        {AccTree, OldDeleted}
-                    end;
-                {NewTree, _} ->
-                    {NewTree, NewDoc#doc.deleted}
-                end;
-            true ->
-                {NewTree, _} = couch_key_tree:merge(AccTree,
-                            couch_doc:to_path(NewDoc), Limit),
-                {NewTree, OldDeleted}
-            end
-        end,
-        {OldTree, OldDeleted0}, NewDocs),
-    if NewRevTree == OldTree ->
-        % nothing changed
-        merge_rev_trees(Limit, MergeConflicts, RestDocsList, RestOldInfo,
-            AccNewInfos, AccRemoveSeqs, AccSeq);
-    true ->
-        % we have updated the document, give it a new seq #
-        NewInfo = #full_doc_info{id=Id,update_seq=AccSeq+1,rev_tree=NewRevTree},
-        RemoveSeqs = case OldSeq of
-            0 -> AccRemoveSeqs;
-            _ -> [OldSeq | AccRemoveSeqs]
-        end,
-        merge_rev_trees(Limit, MergeConflicts, RestDocsList, RestOldInfo,
-            [NewInfo|AccNewInfos], RemoveSeqs, AccSeq+1)
+merge_rev_trees([NewDocs|RestDocsList], [OldDocInfo|RestOldInfo],
+        AccNewInfos, AccRemoveSeqs, AccSeq, Opts) ->
+    NewDocInfo = lists:foldl(fun({Client, {NewDoc, Ref}}, AccDocInfo) ->
+        case couch_doc:merge(AccDocInfo, NewDoc, Opts) of
+            {ok, NewInfo} ->
+                NewInfo;
+            {ok, NewInfo, NewRev} ->
+                send_result(Client, Ref, {ok, NewRev}),
+                NewInfo;
+            conflict ->
+                send_result(Client, Ref, conflict),
+                AccDocInfo
+        end
+    end, OldDocInfo, NewDocs),
+    case NewDocInfo#full_doc_info.update_seq of
+        increment ->
+            RemSeqs = case OldDocInfo#full_doc_info.update_seq of
+                0 -> AccRemoveSeqs;
+                N -> [N | AccRemoveSeqs]
+            end,
+            NewDocInfo1 = NewDocInfo#full_doc_info{update_seq=AccSeq + 1},
+            merge_rev_trees(RestDocsList, RestOldInfo,
+                [NewDocInfo1 | AccNewInfos], RemSeqs, AccSeq + 1, Opts);
+        _ ->
+            merge_rev_trees(RestDocsList, RestOldInfo,
+                [NewDocInfo | AccNewInfos], AccRemoveSeqs, AccSeq, Opts)
     end.
-
 
 
 new_index_entries([], AccById, AccBySeq, AccDDocIds) ->
@@ -687,8 +642,9 @@ update_docs_int(Db, DocsList, NonRepDocs, MergeConflicts, FullCommit) ->
         end,
         Ids, OldDocLookups),
     % Merge the new docs into the revision trees.
-    {ok, NewFullDocInfos, RemoveSeqs, NewSeq} = merge_rev_trees(RevsLimit,
-            MergeConflicts, DocsList, OldDocInfos, [], [], LastSeq),
+    Options = [{merge_conflicts, MergeConflicts}, {revs_limit, RevsLimit}],
+    {ok, NewFullDocInfos, RemoveSeqs, NewSeq} = merge_rev_trees(DocsList,
+            OldDocInfos, [], [], LastSeq, Options),
 
     % All documents are now ready to write.
 
