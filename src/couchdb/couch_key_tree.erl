@@ -109,6 +109,9 @@ merge_at([Tree | Sibs], 0, InsertTree) ->
     {Merged, Status} = merge_at(Sibs, 0, InsertTree),
     {[Tree | Merged], Status}.
 
+merge_simple([], []) ->
+    % Inserted path lands on a leaf
+    {[], internal_node};
 merge_simple([], B) ->
     % Inserted path extends a leaf
     {B, new_leaf};
@@ -122,7 +125,11 @@ merge_simple([{Key, V1, SubTree} | NextTree], [{Key, V2, SubPath}]) ->
 merge_simple([{A, _, _} = Tree | Siblings], [{B, _, _}] = Path) when A < B ->
     % Keep trying siblings until we run out or find a
     % key A > B
-    {Merged, Status} = merge_simple(Siblings, Path),
+    {Merged, Status0} = merge_simple(Siblings, Path),
+    Status = case length(Merged) == length(Siblings) of
+        true -> Status0;
+        false -> new_branch
+    end,
     {[Tree | Merged], Status};
 merge_simple(Tree, [Path]) ->
     % Sorted keys means we know the rest of the path
