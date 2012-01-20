@@ -728,7 +728,6 @@ update_docs(Db, Docs, Options, interactive_edit) ->
         end, {[], []}, Docs2),
 
     {NonRepDocs, _} = new_revs(NonRepDocs0, [], []),
-    io:format("NON-REP:~n~p~n", [NonRepDocs]),
 
     DocBuckets = before_docs_update(Db, group_alike_docs(Docs3)),
 

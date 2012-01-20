@@ -332,7 +332,6 @@ btree_by_id_split(#full_doc_info{id=Id, update_seq=Seq,
             IsDeleted = element(1, RevValue),
             BodyPointer = element(2, RevValue),
             UpdateSeq = element(3, RevValue),
-            io:format("RV: ~p~n", [RevValue]),
             Size = case tuple_size(RevValue) of
             4 ->
                 element(4, RevValue);
@@ -693,7 +692,10 @@ update_local_docs(#db{local_docs_btree=Btree}=Db, Docs) ->
     FoldFun = fun({OldInfo, {Client, [{NewDoc, Ref}]}}, Acc) ->
         case couch_doc:merge(OldInfo, NewDoc, Options) of
             {ok, NewInfo} ->
-                send_result(Client, Ref, {ok, {0, 0}}),
+                #doc_info{
+                    revs=[#rev_info{rev={NewPos, NewRev}} | _]
+                } = couch_doc:to_doc_info(NewInfo),
+                send_result(Client, Ref, {ok, {NewPos, NewRev}}),
                 [NewInfo | Acc];
             {ok, NewInfo, NewRev} ->
                 send_result(Client, Ref, {ok, NewRev}),
@@ -704,13 +706,11 @@ update_local_docs(#db{local_docs_btree=Btree}=Db, Docs) ->
         end
     end,
     Ids = [Id || {_Client, [{#doc{id=Id}, _Ref}]} <- Docs],
-    io:format("Ids: ~p~n", [Docs]),
     OldInfos0 = couch_btree:lookup(Btree, Ids),
     OldInfos = lists:zipwith(ZipFun, Ids, OldInfos0),
     Pairs = lists:zip(OldInfos, Docs),
     NewInfos = lists:foldl(FoldFun, [], Pairs),
     {ok, FlushedInfos} = flush_trees(Db, NewInfos, []),
-    io:format("Flushed:~n~p~n", [FlushedInfos]),
     {ok, Btree2} = couch_btree:add(Btree, FlushedInfos),
     {ok, Db#db{local_docs_btree = Btree2}}.
 
