@@ -717,15 +717,18 @@ update_docs(Db, Docs, Options, interactive_edit) ->
 
     % associate reference with each doc in order to track duplicates
     Docs2 = lists:map(fun(Doc) -> {Doc, make_ref()} end,Docs),
-    {Docs3, NonRepDocs} = lists:foldl(
+    {Docs3, NonRepDocs0} = lists:foldl(
          fun({#doc{id=Id},_Ref}=Doc, {DocsAcc, NonRepDocsAcc}) ->
             case Id of
             <<?LOCAL_DOC_PREFIX, _/binary>> ->
-                {DocsAcc, [Doc | NonRepDocsAcc]};
+                {DocsAcc, [[Doc] | NonRepDocsAcc]};
             Id->
                 {[Doc | DocsAcc], NonRepDocsAcc}
             end
         end, {[], []}, Docs2),
+
+    {NonRepDocs, _} = new_revs(NonRepDocs0, [], []),
+    io:format("NON-REP:~n~p~n", [NonRepDocs]),
 
     DocBuckets = before_docs_update(Db, group_alike_docs(Docs3)),
 
@@ -826,8 +829,9 @@ collect_results(UpdatePid, MRef, ResultsAcc) ->
     end.
 
 write_and_commit(#db{update_pid=UpdatePid}=Db, DocBuckets1,
-        NonRepDocs, Options0) ->
+        NonRepDocs1, Options0) ->
     DocBuckets = prepare_doc_summaries(Db, DocBuckets1),
+    NonRepDocs = prepare_doc_summaries(Db, NonRepDocs1),
     Options = set_commit_option(Options0),
     MergeConflicts = lists:member(merge_conflicts, Options),
     FullCommit = lists:member(full_commit, Options),
@@ -1182,9 +1186,15 @@ open_doc_revs_int(Db, IdRevs, Options) ->
 
 open_doc_int(Db, <<?LOCAL_DOC_PREFIX, _/binary>> = Id, Options) ->
     case couch_btree:lookup(local_btree(Db), [Id]) of
-    [{ok, {_, {Rev, BodyData}}}] ->
-        Doc = #doc{id=Id, revs={0, [?l2b(integer_to_list(Rev))]}, body=BodyData},
-        apply_open_options({ok, Doc}, Options);
+    [{ok, #full_doc_info{id=Id,rev_tree=RevTree}=FullDocInfo}] ->
+        #doc_info{revs=[#rev_info{deleted=IsDeleted,rev=Rev,body_sp=Bp}|_]} =
+            DocInfo = couch_doc:to_doc_info(FullDocInfo),
+        {[{_, RevPath}], []} = couch_key_tree:get(RevTree, [Rev]),
+        Doc = make_doc(Db, Id, IsDeleted, Bp, RevPath),
+        apply_open_options(
+            {ok, Doc#doc{
+                meta=doc_meta_info(DocInfo, RevTree, Options)
+            }}, Options);
     [not_found] ->
         {not_found, missing}
     end;

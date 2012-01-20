@@ -332,6 +332,7 @@ btree_by_id_split(#full_doc_info{id=Id, update_seq=Seq,
             IsDeleted = element(1, RevValue),
             BodyPointer = element(2, RevValue),
             UpdateSeq = element(3, RevValue),
+            io:format("RV: ~p~n", [RevValue]),
             Size = case tuple_size(RevValue) of
             4 ->
                 element(4, RevValue);
@@ -449,7 +450,11 @@ init_db(DbName, Filepath, Fd, ReaderFd, Header0, Options) ->
             {reduce, fun(X,Y) -> btree_by_seq_reduce(X,Y) end},
             {compression, Compression}]),
     {ok, LocalDocsBtree} = couch_btree:open(Header#db_header.local_docs_btree_state, Fd,
-        [{compression, Compression}]),
+        [
+            {split, fun(X) -> btree_by_id_split(X) end},
+            {join, fun(X,Y) -> btree_by_id_join(X,Y) end},
+            {compression, Compression}
+        ]),
     case Header#db_header.security_ptr of
     nil ->
         Security = [],
@@ -685,7 +690,7 @@ update_local_docs(#db{local_docs_btree=Btree}=Db, Docs) ->
         (_Id, {ok, FullDocInfo}) -> FullDocInfo;
         (Id, not_found) -> #full_doc_info{id=Id}
     end,
-    FoldFun = fun({OldInfo, {Client, {NewDoc, Ref}}}, Acc) ->
+    FoldFun = fun({OldInfo, {Client, [{NewDoc, Ref}]}}, Acc) ->
         case couch_doc:merge(OldInfo, NewDoc, Options) of
             {ok, NewInfo} ->
                 send_result(Client, Ref, {ok, {0, 0}}),
@@ -698,12 +703,15 @@ update_local_docs(#db{local_docs_btree=Btree}=Db, Docs) ->
                 Acc
         end
     end,
-    Ids = [Id || {_Client, {#doc{id=Id}, _Ref}} <- Docs],
+    Ids = [Id || {_Client, [{#doc{id=Id}, _Ref}]} <- Docs],
+    io:format("Ids: ~p~n", [Docs]),
     OldInfos0 = couch_btree:lookup(Btree, Ids),
     OldInfos = lists:zipwith(ZipFun, Ids, OldInfos0),
     Pairs = lists:zip(OldInfos, Docs),
-    Updates = lists:foldl(FoldFun, [], Pairs),
-    {ok, Btree2} = couch_btree:add(Btree, Updates),
+    NewInfos = lists:foldl(FoldFun, [], Pairs),
+    {ok, FlushedInfos} = flush_trees(Db, NewInfos, []),
+    io:format("Flushed:~n~p~n", [FlushedInfos]),
+    {ok, Btree2} = couch_btree:add(Btree, FlushedInfos),
     {ok, Db#db{local_docs_btree = Btree2}}.
 
 
