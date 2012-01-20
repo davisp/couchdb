@@ -580,15 +580,18 @@ fold_replication_logs([Db | Rest] = Dbs, Vsn, LogId, NewId, Rep, Acc) ->
         fold_replication_logs(Dbs, Vsn - 1,
             ?l2b(?LOCAL_DOC_PREFIX ++ OldRepId), NewId, Rep, Acc);
     {error, <<"not_found">>} ->
+        Doc0 = #doc{id = NewId},
+        Doc1 = Doc0#doc{revs = {1, [couch_db:new_revid(Doc0)]}},
         fold_replication_logs(
-            Rest, ?REP_ID_VERSION, NewId, NewId, Rep, [#doc{id = NewId} | Acc]);
+            Rest, ?REP_ID_VERSION, NewId, NewId, Rep, [Doc1 | Acc]);
     {ok, Doc} when LogId =:= NewId ->
         fold_replication_logs(
             Rest, ?REP_ID_VERSION, NewId, NewId, Rep, [Doc | Acc]);
     {ok, Doc} ->
-        MigratedLog = #doc{id = NewId, body = Doc#doc.body},
+        Log0 = #doc{id = NewId, body = Doc#doc.body},
+        Log1 = Log0#doc{revs = {1, [couch_db:new_revid(Log0)]}},
         fold_replication_logs(
-            Rest, ?REP_ID_VERSION, NewId, NewId, Rep, [MigratedLog | Acc])
+            Rest, ?REP_ID_VERSION, NewId, NewId, Rep, [Log1 | Acc])
     end.
 
 

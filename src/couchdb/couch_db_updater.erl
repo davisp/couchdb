@@ -183,12 +183,8 @@ handle_call({compact_done, CompactFilepath}, _From, #db{filepath=Filepath}=Db) -
     case Db#db.update_seq == NewSeq of
     true ->
         % suck up all the local docs into memory and write them to the new db
-        {ok, _, LocalDocs} = couch_btree:foldl(Db#db.local_docs_btree,
-                fun(Value, _Offset, Acc) -> {ok, [Value | Acc]} end, []),
-        {ok, NewLocalBtree} = couch_btree:add(NewDb#db.local_docs_btree, LocalDocs),
-
-        NewDb2 = commit_data(NewDb#db{
-            local_docs_btree = NewLocalBtree,
+        NewDb1 = copy_local_docs(Db, NewDb),
+        NewDb2 = commit_data(NewDb1#db{
             main_pid = Db#db.main_pid,
             filepath = Filepath,
             instance_start_time = Db#db.instance_start_time,
@@ -449,7 +445,11 @@ init_db(DbName, Filepath, Fd, ReaderFd, Header0, Options) ->
             {reduce, fun(X,Y) -> btree_by_seq_reduce(X,Y) end},
             {compression, Compression}]),
     {ok, LocalDocsBtree} = couch_btree:open(Header#db_header.local_docs_btree_state, Fd,
-        [{compression, Compression}]),
+        [
+            {split, fun(X) -> btree_by_id_split(X) end},
+            {join, fun(X,Y) -> btree_by_id_join(X,Y) end},
+            {compression, Compression}
+        ]),
     case Header#db_header.security_ptr of
     nil ->
         Security = [],
@@ -680,45 +680,34 @@ update_docs_int(Db, DocsList, NonRepDocs, MergeConflicts, FullCommit) ->
 update_local_docs(Db, []) ->
     {ok, Db};
 update_local_docs(#db{local_docs_btree=Btree}=Db, Docs) ->
-    Ids = [Id || {_Client, {#doc{id=Id}, _Ref}} <- Docs],
-    OldDocLookups = couch_btree:lookup(Btree, Ids),
-    BtreeEntries = lists:zipwith(
-        fun({Client, {#doc{id=Id,deleted=Delete,revs={0,PrevRevs},body=Body}, Ref}}, OldDocLookup) ->
-            case PrevRevs of
-            [RevStr|_] ->
-                PrevRev = list_to_integer(?b2l(RevStr));
-            [] ->
-                PrevRev = 0
-            end,
-            OldRev =
-            case OldDocLookup of
-                {ok, {_, {OldRev0, _}}} -> OldRev0;
-                not_found -> 0
-            end,
-            case OldRev == PrevRev of
-            true ->
-                case Delete of
-                    false ->
-                        send_result(Client, Ref, {ok,
-                                {0, ?l2b(integer_to_list(PrevRev + 1))}}),
-                        {update, {Id, {PrevRev + 1, Body}}};
-                    true  ->
-                        send_result(Client, Ref,
-                                {ok, {0, <<"0">>}}),
-                        {remove, Id}
-                end;
-            false ->
+    Options = [{revs_limit, Db#db.revs_limit}],
+    ZipFun = fun
+        (_Id, {ok, FullDocInfo}) -> FullDocInfo;
+        (Id, not_found) -> #full_doc_info{id=Id}
+    end,
+    FoldFun = fun({OldInfo, {Client, [{NewDoc, Ref}]}}, Acc) ->
+        case couch_doc:merge(OldInfo, NewDoc, Options) of
+            {ok, NewInfo} ->
+                #doc_info{
+                    revs=[#rev_info{rev={NewPos, NewRev}} | _]
+                } = couch_doc:to_doc_info(NewInfo),
+                send_result(Client, Ref, {ok, {NewPos, NewRev}}),
+                [NewInfo | Acc];
+            {ok, NewInfo, NewRev} ->
+                send_result(Client, Ref, {ok, NewRev}),
+                [NewInfo | Acc];
+            conflict ->
                 send_result(Client, Ref, conflict),
-                ignore
-            end
-        end, Docs, OldDocLookups),
-
-    BtreeIdsRemove = [Id || {remove, Id} <- BtreeEntries],
-    BtreeIdsUpdate = [{Key, Val} || {update, {Key, Val}} <- BtreeEntries],
-
-    {ok, Btree2} =
-        couch_btree:add_remove(Btree, BtreeIdsUpdate, BtreeIdsRemove),
-
+                Acc
+        end
+    end,
+    Ids = [Id || {_Client, [{#doc{id=Id}, _Ref}]} <- Docs],
+    OldInfos0 = couch_btree:lookup(Btree, Ids),
+    OldInfos = lists:zipwith(ZipFun, Ids, OldInfos0),
+    Pairs = lists:zip(OldInfos, Docs),
+    NewInfos = lists:foldl(FoldFun, [], Pairs),
+    {ok, FlushedInfos} = flush_trees(Db, NewInfos, []),
+    {ok, Btree2} = couch_btree:add(Btree, FlushedInfos),
     {ok, Db#db{local_docs_btree = Btree2}}.
 
 
@@ -852,6 +841,31 @@ copy_docs(Db, #db{updater_fd = DestFd} = NewDb, InfoBySeq0, Retry) ->
               docinfo_by_seq_btree=DocInfoBTree}.
 
 
+copy_local_docs(Db, #db{revs_limit=Limit, updater_fd = DestFd}=NewDb) ->
+    FoldFun = fun(#full_doc_info{rev_tree=RevTree}=Info, Acc) ->
+        NewRevTree0 = couch_key_tree:map(fun
+            (_, _, branch) ->
+                ?REV_MISSING;
+            (_Rev, LeafVal, leaf) ->
+                IsDel = element(1, LeafVal),
+                Sp = element(2, LeafVal),
+                Seq = element(3, LeafVal),
+                {_Body, AttsInfo} = Summary = copy_doc_attachments(
+                    Db, Sp, DestFd),
+                SummaryChunk = make_doc_summary(NewDb, Summary),
+                {ok, Pos, SummarySize} = couch_file:append_raw_chunk(
+                    DestFd, SummaryChunk),
+                TotalLeafSize = lists:foldl(
+                    fun({_, _, _, AttLen, _, _, _, _}, S) -> S + AttLen end,
+                    SummarySize, AttsInfo),
+                {IsDel, Pos, Seq, TotalLeafSize}
+        end, RevTree),
+        NewRevTree = couch_key_tree:stem(NewRevTree0, Limit),
+        {ok, [Info#full_doc_info{rev_tree=NewRevTree} | Acc]}
+    end,
+    {ok, _, NewInfos} = couch_btree:foldl(Db#db.local_docs_btree, FoldFun, []),
+    {ok, LocalBtree} = couch_btree:add(NewDb#db.local_docs_btree, NewInfos),
+    NewDb#db{local_docs_btree=LocalBtree}.
 
 copy_compact(Db, NewDb0, Retry) ->
     FsyncOptions = [Op || Op <- NewDb0#db.fsync_options, Op == before_header],
@@ -911,17 +925,7 @@ copy_compact(Db, NewDb0, Retry) ->
     NewDb3 = copy_docs(Db, NewDb2, lists:reverse(Uncopied), Retry),
     TotalChanges = couch_task_status:get(changes_done),
 
-    % copy misc header values
-    if NewDb3#db.security /= Db#db.security ->
-        {ok, Ptr, _} = couch_file:append_term(
-            NewDb3#db.updater_fd, Db#db.security,
-            [{compression, NewDb3#db.compression}]),
-        NewDb4 = NewDb3#db{security=Db#db.security, security_ptr=Ptr};
-    true ->
-        NewDb4 = NewDb3
-    end,
-
-    commit_data(NewDb4#db{update_seq=Db#db.update_seq}).
+    commit_data(NewDb3#db{update_seq=Db#db.update_seq}).
 
 start_copy_compact(#db{name=Name,filepath=Filepath,header=#db_header{purge_seq=PurgeSeq}}=Db) ->
     CompactFile = Filepath ++ ".compact",
