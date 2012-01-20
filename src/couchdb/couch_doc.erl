@@ -27,7 +27,7 @@
 -include("couch_db.hrl").
 
 
-merge(#full_doc_info{}=OldDoc, #doc{}=NewDoc, Options) ->
+merge(#full_doc_info{}=OldDoc, #doc{revs={NewPos, _}}=NewDoc, Options) ->
     #full_doc_info{
         rev_tree=OldTree,
         deleted=OldDeleted
@@ -45,7 +45,8 @@ merge(#full_doc_info{}=OldDoc, #doc{}=NewDoc, Options) ->
             deleted=NewDoc#doc.deleted,
             update_seq=increment
         }};
-    {_, _} when OldDeleted == true ->
+    {_, Status} when OldDeleted == true, not MergeConflicts,
+            (NewPos == 1 orelse Status == new_leaf) ->
         % Recreating a deleted document create a
         % new revision and carry on.
         #doc_info{
