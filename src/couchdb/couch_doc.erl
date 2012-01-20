@@ -45,10 +45,9 @@ merge(#full_doc_info{}=OldDoc, #doc{}=NewDoc, Options) ->
             deleted=NewDoc#doc.deleted,
             update_seq=increment
         }};
-    {_, internal_node} when OldDeleted == true, NewPos == 1 ->
-        % Recreating a deleted document with a
-        % revision it previously had. Create a
-        % new one and carry on
+    {_, _} when OldDeleted == true ->
+        % Recreating a deleted document create a
+        % new revision and carry on.
         #doc_info{
             revs=[#rev_info{rev={OldPos, OldRev}} | _]
         } = couch_doc:to_doc_info(OldDoc),
