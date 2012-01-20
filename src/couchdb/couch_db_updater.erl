@@ -680,45 +680,30 @@ update_docs_int(Db, DocsList, NonRepDocs, MergeConflicts, FullCommit) ->
 update_local_docs(Db, []) ->
     {ok, Db};
 update_local_docs(#db{local_docs_btree=Btree}=Db, Docs) ->
-    Ids = [Id || {_Client, {#doc{id=Id}, _Ref}} <- Docs],
-    OldDocLookups = couch_btree:lookup(Btree, Ids),
-    BtreeEntries = lists:zipwith(
-        fun({Client, {#doc{id=Id,deleted=Delete,revs={0,PrevRevs},body=Body}, Ref}}, OldDocLookup) ->
-            case PrevRevs of
-            [RevStr|_] ->
-                PrevRev = list_to_integer(?b2l(RevStr));
-            [] ->
-                PrevRev = 0
-            end,
-            OldRev =
-            case OldDocLookup of
-                {ok, {_, {OldRev0, _}}} -> OldRev0;
-                not_found -> 0
-            end,
-            case OldRev == PrevRev of
-            true ->
-                case Delete of
-                    false ->
-                        send_result(Client, Ref, {ok,
-                                {0, ?l2b(integer_to_list(PrevRev + 1))}}),
-                        {update, {Id, {PrevRev + 1, Body}}};
-                    true  ->
-                        send_result(Client, Ref,
-                                {ok, {0, <<"0">>}}),
-                        {remove, Id}
-                end;
-            false ->
+    Options = [{revs_limit, Db#db.revs_limit}],
+    ZipFun = fun
+        (_Id, {ok, FullDocInfo}) -> FullDocInfo;
+        (Id, not_found) -> #full_doc_info{id=Id}
+    end,
+    FoldFun = fun({OldInfo, {CLient, {NewDoc, Ref}}}, Acc) ->
+        case couch_doc:merge(OldInfo, NewDoc, Options) of
+            {ok, NewInfo} ->
+                send_result(Client, Ref, {ok, {0, 0}}),
+                [NewInfo | Acc];
+            {ok, NewInfo, NewRev} ->
+                send_result(Client, Ref, {ok, NewRev}),
+                [NewInfo | Acc];
+            conflict ->
                 send_result(Client, Ref, conflict),
-                ignore
-            end
-        end, Docs, OldDocLookups),
-
-    BtreeIdsRemove = [Id || {remove, Id} <- BtreeEntries],
-    BtreeIdsUpdate = [{Key, Val} || {update, {Key, Val}} <- BtreeEntries],
-
-    {ok, Btree2} =
-        couch_btree:add_remove(Btree, BtreeIdsUpdate, BtreeIdsRemove),
-
+                Acc
+        end
+    end,
+    Ids = [Id || {_Client, {#doc{id=Id}, _Ref}} <- Docs],
+    OldInfos0 = couch_btree:lookup(Btree, Ids),
+    OldInfos = lists:zipwith(ZipFun, Ids, OldInfos0),
+    Pairs = lists:zip(OldDocInfos, Docs),
+    Updates = lists:foldl(FoldFun, [], Pairs),
+    {ok, Btree2} = couch_btree:add(Btree, Updates),
     {ok, Db#db{local_docs_btree = Btree2}}.
 
 
