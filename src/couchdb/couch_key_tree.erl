@@ -87,12 +87,12 @@ merge_at([{Key, Value, SubTree} | Sibs], Depth, Path) when Depth > 0 ->
     % inserted starts later than committed,
     % need to drill into committed subtree
     try
-        {Merged, Status} = merge_at(SubTree, Depth - 1, Path),
-        {[{Key, Value, Merged} | Sibs], Status}
+        {Merged0, Status0} = merge_at(SubTree, Depth - 1, Path),
+        {[{Key, Value, Merged0} | Sibs], Status0}
     catch throw:no_merge ->
         % first branch didn't merge, move to next branch
-        {Merged, Status} = merge_at(Sibs, Place, InsertTree) of
-        {[{Key, Value, SubTree} | Merged], Status};
+        {Merged1, Status1} = merge_at(Sibs, Depth, Path),
+        {[{Key, Value, SubTree} | Merged1], Status1}
     end;
 merge_at(OurTree, Depth, [{Key, Value, SubPath}]) when Depth < 0 ->
     % inserted starts earlier than committed,
@@ -119,10 +119,10 @@ merge_simple([{Key, V1, SubTree} | NextTree], [{Key, V2, SubPath}]) ->
     % Keys match, continue descending along this branch
     {Merged, Status} = merge_simple(SubTree, SubPath),
     {[{Key, value_pref(V1, V2), Merged} | NextTree], Status};
-merge_simple([{A, _, _} = Tree | Sibling], [{B, _, _}] = Path) when A < B ->
+merge_simple([{A, _, _} = Tree | Siblings], [{B, _, _}] = Path) when A < B ->
     % Keep trying siblings until we run out or find a
     % key A > B
-    {Merged, Status} = merge_simple(Next, Path),
+    {Merged, Status} = merge_simple(Siblings, Path),
     {[Tree | Merged], Status};
 merge_simple(Tree, [Path]) ->
     % Sorted keys means we know the rest of the path

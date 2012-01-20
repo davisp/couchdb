@@ -577,7 +577,7 @@ merge_rev_trees([], [], AccNewInfos, AccRemoveSeqs, AccSeq, _Opts) ->
 merge_rev_trees([NewDocs|RestDocsList], [OldDocInfo|RestOldInfo],
         AccNewInfos, AccRemoveSeqs, AccSeq, Opts) ->
     NewDocInfo = lists:foldl(fun({Client, {NewDoc, Ref}}, AccDocInfo) ->
-        case couch_doc:merge(AccDocInfo, NewDoc, Options) of
+        case couch_doc:merge(AccDocInfo, NewDoc, Opts) of
             {ok, NewInfo} ->
                 NewInfo;
             {ok, NewInfo, NewRev} ->
@@ -685,7 +685,7 @@ update_local_docs(#db{local_docs_btree=Btree}=Db, Docs) ->
         (_Id, {ok, FullDocInfo}) -> FullDocInfo;
         (Id, not_found) -> #full_doc_info{id=Id}
     end,
-    FoldFun = fun({OldInfo, {CLient, {NewDoc, Ref}}}, Acc) ->
+    FoldFun = fun({OldInfo, {Client, {NewDoc, Ref}}}, Acc) ->
         case couch_doc:merge(OldInfo, NewDoc, Options) of
             {ok, NewInfo} ->
                 send_result(Client, Ref, {ok, {0, 0}}),
@@ -701,7 +701,7 @@ update_local_docs(#db{local_docs_btree=Btree}=Db, Docs) ->
     Ids = [Id || {_Client, {#doc{id=Id}, _Ref}} <- Docs],
     OldInfos0 = couch_btree:lookup(Btree, Ids),
     OldInfos = lists:zipwith(ZipFun, Ids, OldInfos0),
-    Pairs = lists:zip(OldDocInfos, Docs),
+    Pairs = lists:zip(OldInfos, Docs),
     Updates = lists:foldl(FoldFun, [], Pairs),
     {ok, Btree2} = couch_btree:add(Btree, Updates),
     {ok, Db#db{local_docs_btree = Btree2}}.

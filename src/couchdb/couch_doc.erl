@@ -30,7 +30,7 @@
 merge(#full_doc_info{}=OldDoc, #doc{}=NewDoc, Options) ->
     #full_doc_info{
         rev_tree=OldTree,
-        deleted=OldDeleted,
+        deleted=OldDeleted
     } = OldDoc,
     #doc{
         revs={NewPos, _}
@@ -45,7 +45,7 @@ merge(#full_doc_info{}=OldDoc, #doc{}=NewDoc, Options) ->
             deleted=NewDoc#doc.deleted,
             update_seq=increment
         }};
-    {NewTree, internal_node} when OldDeleted == true, NewPos == 1 ->
+    {_, internal_node} when OldDeleted == true, NewPos == 1 ->
         % Recreating a deleted document with a
         % revision it previously had. Create a
         % new one and carry on
@@ -54,7 +54,7 @@ merge(#full_doc_info{}=OldDoc, #doc{}=NewDoc, Options) ->
         } = couch_doc:to_doc_info(OldDoc),
         NewRevId = couch_db:new_revid(NewDoc#doc{revs={OldPos, [OldRev]}}),
         NewDoc1 = NewDoc#doc{revs={OldPos + 1, [NewRevId, OldRev]}},
-        {Tree, _} = couch_key_tree:merge(OldTree, to_path(NewDoc2), RevsLimit),
+        {Tree, _} = couch_key_tree:merge(OldTree, to_path(NewDoc1), RevsLimit),
         {ok, OldDoc#full_doc_info{
             rev_tree=Tree,
             deleted=NewDoc#doc.deleted,
