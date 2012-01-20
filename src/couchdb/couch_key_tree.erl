@@ -68,7 +68,7 @@ merge(Paths, Path) ->
 merge_one([], Path, []) ->
     % Special case when the doc is created and has
     % no revisions to merge with
-    {Path, new_leaf};
+    {[Path], new_leaf};
 merge_one([], Path, Acc) ->
     % Merge created a new top-level branch
     {[Path | Acc], new_branch};
