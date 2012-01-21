@@ -273,14 +273,14 @@ refresh_entries(AuthDb) ->
     end.
 
 
-refresh_entry(Db, #doc_info{high_seq = DocSeq} = DocInfo) ->
+refresh_entry(Db, #doc_info{id=Id, high_seq = DocSeq} = DocInfo) ->
     case is_user_doc(DocInfo) of
     {true, UserName} ->
         case ets:lookup(?BY_USER, UserName) of
         [] ->
             ok;
         [{UserName, {_OldCreds, ATime}}] ->
-            {ok, Doc} = couch_db:open_doc(Db, DocInfo, [conflicts, deleted]),
+            {ok, Doc} = couch_db:open_doc(Db, Id, [conflicts, deleted]),
             NewCreds = user_creds(Doc),
             true = ets:insert(?BY_USER, {UserName, {NewCreds, ATime}})
         end;
@@ -359,7 +359,7 @@ get_user_props_from_db(UserName) ->
             Db = reopen_auth_db(AuthDb),
             DocId = <<"org.couchdb.user:", UserName/binary>>,
             try
-                {ok, Doc} = couch_db:open_doc(Db, DocId, [conflicts]),
+                {ok, Doc} = couch_db:open_doc(Db, DocId, [conflicts, revs]),
                 {DocProps} = couch_query_servers:json_doc(Doc),
                 DocProps
             catch
