@@ -26,122 +26,153 @@ main(_) ->
     ok.
 
 test() ->
-    One = {1, {"1","foo",[]}},
+
+    Simple = {1, {"1","foo",[]}},
+    TwoDeep0 = {1, {"1", "foo", [{"2_0", "bar", []}]}},
+    TwoDeep1 = {1, {"1", "foo", [{"2_1", "baz", []}]}},
+    NewLeaf = {2, {"2_0", "bar", [{"3", "bing", []}]}},
+    WithNewLeaf = {1, {"1", "foo", [{"2_0", "bar", [{"3", "bing", []}]}]}},
+    NewBranch = {1, {"1", "foo", [{"2_0", "bar", []}, {"2_1", "baz", []}]}},
+    NewDeepBranch = {2, {"2_0", "bar", [{"3_1", "bang", []}]}},
+
+    StemmedEdit = {3, {"3", "bing", []}},
+    StemmedConflicts = [Simple, StemmedEdit],
+
+    NewBranchLeaf = {1,
+        {"1", "foo", [
+            {"2_0", "bar", [
+                {"3", "bing", []}
+            ]},
+            {"2_1", "baz", []}
+        ]}
+    },
+
+    NewBranchLeafBranch = {1,
+        {"1", "foo", [
+            {"2_0", "bar", [
+                {"3", "bing", []},
+                {"3_1", "bang", []}
+            ]},
+            {"2_1", "baz", []}
+        ]}
+    },
+
+    Stemmed2 = [
+        {1, {"1", "foo", [
+            {"2_1", "baz", []}
+        ]}},
+        {2, {"2_0", "bar", [
+            {"3", "bing", []},
+            {"3_1", "bang", []}
+        ]}}
+    ],
+
+    Stemmed3 = [
+        {2, {"2_1", "baz", []}},
+        {3, {"3", "bing", []}},
+        {3, {"3_1", "bang", []}}
+    ],
+
+    PartialRecover = [
+        {1, {"1", "foo", [
+            {"2_0", "bar", [
+                {"3", "bing", []}
+            ]}
+        ]}},
+        {2, {"2_1", "baz", []}},
+        {3, {"3_1", "bang", []}}
+    ],
 
     etap:is(
-        {[One], no_conflicts},
-        couch_key_tree:merge([], One, 10),
-        "The empty tree is the identity for merge."
-    ),
-    etap:is(
-        {[One], no_conflicts},
-        couch_key_tree:merge([One], One, 10),
-        "Merging is reflexive."
-    ),
-
-    TwoSibs = [{1, {"1","foo",[]}},
-               {1, {"2","foo",[]}}],
-
-    etap:is(
-        {TwoSibs, no_conflicts},
-        couch_key_tree:merge(TwoSibs, One, 10),
-        "Merging a prefix of a tree with the tree yields the tree."
-    ),
-
-    Three = {1, {"3","foo",[]}},
-    ThreeSibs = [{1, {"1","foo",[]}},
-                 {1, {"2","foo",[]}},
-                 {1, {"3","foo",[]}}],
-
-    etap:is(
-        {ThreeSibs, conflicts},
-        couch_key_tree:merge(TwoSibs, Three, 10),
-        "Merging a third unrelated branch leads to a conflict."
-    ),
-
-
-    TwoChild = {1, {"1","foo", [{"1a", "bar", [{"1aa", "bar", []}]}]}},
-
-    etap:is(
-        {[TwoChild], no_conflicts},
-        couch_key_tree:merge([TwoChild], TwoChild, 10),
-        "Merging two children is still reflexive."
-    ),
-
-    TwoChildSibs = {1, {"1","foo", [{"1a", "bar", []},
-                                     {"1b", "bar", []}]}},
-    etap:is(
-        {[TwoChildSibs], no_conflicts},
-        couch_key_tree:merge([TwoChildSibs], TwoChildSibs, 10),
-        "Merging a tree to itself is itself."),
-
-    TwoChildPlusSibs =
-        {1, {"1","foo", [{"1a", "bar", [{"1aa", "bar", []}]},
-                         {"1b", "bar", []}]}},
-
-    etap:is(
-        {[TwoChildPlusSibs], no_conflicts},
-        couch_key_tree:merge([TwoChild], TwoChildSibs, 10),
-        "Merging tree of uneven length at node 2."),
-
-    Stemmed1b = {2, {"1a", "bar", []}},
-    etap:is(
-        {[TwoChildSibs], no_conflicts},
-        couch_key_tree:merge([TwoChildSibs], Stemmed1b, 10),
-        "Merging a tree with a stem."
-    ),
-
-    TwoChildSibs2 = {1, {"1","foo", [{"1a", "bar", []},
-                                     {"1b", "bar", [{"1bb", "boo", []}]}]}},
-    Stemmed1bb = {3, {"1bb", "boo", []}},
-    etap:is(
-        {[TwoChildSibs2], no_conflicts},
-        couch_key_tree:merge([TwoChildSibs2], Stemmed1bb, 10),
-        "Merging a stem at a deeper level."
-    ),
-
-    StemmedTwoChildSibs2 = [{2,{"1a", "bar", []}},
-                            {2,{"1b", "bar", [{"1bb", "boo", []}]}}],
-
-    etap:is(
-        {StemmedTwoChildSibs2, no_conflicts},
-        couch_key_tree:merge(StemmedTwoChildSibs2, Stemmed1bb, 10),
-        "Merging a stem at a deeper level against paths at deeper levels."
-    ),
-
-    Stemmed1aa = {3, {"1aa", "bar", []}},
-    etap:is(
-        {[TwoChild], no_conflicts},
-        couch_key_tree:merge([TwoChild], Stemmed1aa, 10),
-        "Merging a single tree with a deeper stem."
-    ),
-
-    Stemmed1a = {2, {"1a", "bar", [{"1aa", "bar", []}]}},
-    etap:is(
-        {[TwoChild], no_conflicts},
-        couch_key_tree:merge([TwoChild], Stemmed1a, 10),
-        "Merging a larger stem."
+        couch_key_tree:merge([], Simple, 10),
+        {[Simple], new_leaf},
+        "Merging a path into an empty tree is the path"
     ),
 
     etap:is(
-        {[Stemmed1a], no_conflicts},
-        couch_key_tree:merge([Stemmed1a], Stemmed1aa, 10),
-        "More merging."
-    ),
-
-    OneChild = {1, {"1","foo",[{"1a", "bar", []}]}},
-    Expect1 = [OneChild, Stemmed1aa],
-    etap:is(
-        {Expect1, conflicts},
-        couch_key_tree:merge([OneChild], Stemmed1aa, 10),
-        "Merging should create conflicts."
+        couch_key_tree:merge([Simple], Simple, 10),
+        {[Simple], internal_node},
+        "Remerge path into path is reflexive"
     ),
 
     etap:is(
-        {[TwoChild], no_conflicts},
-        couch_key_tree:merge(Expect1, TwoChild, 10),
-        "Merge should have no conflicts."
+        couch_key_tree:merge([], TwoDeep0, 10),
+        {[TwoDeep0], new_leaf},
+        "Merging a path with multiple entries is the path"
     ),
+
+    etap:is(
+        couch_key_tree:merge([TwoDeep0], TwoDeep0, 10),
+        {[TwoDeep0], internal_node},
+        "Merging a path with multiple entries is reflexive"
+    ),
+
+    etap:is(
+        couch_key_tree:merge([TwoDeep0], Simple, 10),
+        {[TwoDeep0], internal_node},
+        "Merging a subpath into a path results in the path"
+    ),
+
+    etap:is(
+        couch_key_tree:merge([TwoDeep0], NewLeaf, 10),
+        {[WithNewLeaf], new_leaf},
+        "Merging a new leaf gives us a new leaf"
+    ),
+
+    etap:is(
+        couch_key_tree:merge([TwoDeep0], TwoDeep1, 10),
+        {[NewBranch], new_branch},
+        "Merging a new branch returns a proper tree"
+    ),
+
+    etap:is(
+        couch_key_tree:merge([TwoDeep1], TwoDeep0, 10),
+        {[NewBranch], new_branch},
+        "Order of merging does not affect the resulting tree"
+    ),
+
+    etap:is(
+        couch_key_tree:merge([NewBranch], NewLeaf, 10),
+        {[NewBranchLeaf], new_leaf},
+        "Merging a new_leaf doesn't return new_branch when branches exist"
+    ),
+
+    etap:is(
+        couch_key_tree:merge([NewBranchLeaf], NewDeepBranch, 10),
+        {[NewBranchLeafBranch], new_branch},
+        "Merging a deep branch with branches works"
+    ),
+
+    etap:is(
+        couch_key_tree:merge(StemmedConflicts, WithNewLeaf, 10),
+        {[WithNewLeaf], new_leaf},
+        "New information reconnects steming induced conflicts"
+    ),
+
+    etap:is(
+        couch_key_tree:merge([TwoDeep0], NewLeaf, 2),
+        {[NewLeaf], new_leaf},
+        "Simple stemming works"
+    ),
+
+    etap:is(
+        couch_key_tree:merge([NewBranchLeafBranch], Simple, 2),
+        {Stemmed2, internal_node},
+        "Merge with stemming works correctly for branches"
+    ),
+
+    etap:is(
+        couch_key_tree:merge([NewBranchLeafBranch], Simple, 1),
+        {Stemmed3, internal_node},
+        "Merge with stemming to leaves works fine"
+    ),
+
+    etap:is(
+        couch_key_tree:merge(Stemmed3, WithNewLeaf, 10),
+        {PartialRecover, internal_node},
+        "Merging unstemmed recovers as much as possible without losing info"
+    ),
+
 
     %% this test is based on couch-902-test-case2.py
     %% foo has conflicts from replication at depth two
@@ -168,7 +199,7 @@ test() ->
                ]}},
 
     etap:is(
-      {[FooBar], no_conflicts},
+      {[FooBar], new_leaf},
       couch_key_tree:merge([Foo],Bar,10),
       "Merging trees with conflicts ought to behave."
     ),
