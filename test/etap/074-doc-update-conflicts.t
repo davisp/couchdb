@@ -187,7 +187,7 @@ test_bulk_delete_create() ->
         "New leaf revision doesn't have deleted conflicts"),
 
     etap:is(element(1, Rev1), 2, "Deleted revision has position 2"),
-    etap:is(element(1, Rev2), 3, "New leaf revision has position 3"),
+    etap:is(element(1, Rev2), 1, "New leaf revision has position 1"),
 
     delete_db(Db2).
 
