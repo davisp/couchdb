@@ -45,10 +45,10 @@ merge(#full_doc_info{}=OldDoc, #doc{revs={NewPos, _}}=NewDoc, Options) ->
             deleted=NewDoc#doc.deleted,
             update_seq=increment
         }};
-    {_, Status} when OldDeleted == true, not MergeConflicts,
-            (NewPos == 1 orelse Status == new_leaf) ->
-        % Recreating a deleted document create a
-        % new revision and carry on.
+    {_, internal_node} when OldDeleted, not MergeConflicts ->
+        % Recreating a deleted document into a state that
+        % previously existed. Create a new revision and
+        % carry on.
         #doc_info{
             revs=[#rev_info{rev={OldPos, OldRev}} | _]
         } = couch_doc:to_doc_info(OldDoc),
@@ -60,6 +60,13 @@ merge(#full_doc_info{}=OldDoc, #doc{revs={NewPos, _}}=NewDoc, Options) ->
             deleted=NewDoc#doc.deleted,
             update_seq=increment
         }, {OldPos + 1, NewRevId}};
+    {NewTree, new_branch} when OldDeleted, not MergeConflicts, NewPos == 1 ->
+        % Recreating a deleted document into a new state.
+        {ok, OldDoc#full_doc_info{
+            rev_tree=NewTree,
+            deleted=NewDoc#doc.deleted,
+            update_seq=increment
+        }};
     {NewTree, internal_node} when MergeConflicts ->
         % Replication gave us something we already had so
         % just update the rev tree and carry on. We keep
