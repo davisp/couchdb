@@ -359,21 +359,23 @@ check_is_member(#db{user_ctx=#user_ctx{name=Name,roles=Roles}=UserCtx}=Db) ->
         end
     end.
 
-get_admins(#db{security=SecProps}) ->
+get_admins(#db{security=Doc}) ->
+    #doc{body={SecProps}} = Doc,
     couch_util:get_value(<<"admins">>, SecProps, {[]}).
 
-get_members(#db{security=SecProps}) ->
+get_members(#db{security=Doc}) ->
+    #doc{body={SecProps}} = Doc,
     % we fallback to readers here for backwards compatibility
     couch_util:get_value(<<"members">>, SecProps,
         couch_util:get_value(<<"readers">>, SecProps, {[]})).
 
-get_security(#db{security=SecProps}) ->
-    {SecProps}.
+get_security(#db{security=SecDoc}) ->
+    SecDoc#doc.body.
 
-set_security(#db{update_pid=Pid}=Db, {NewSecProps}) when is_list(NewSecProps) ->
+set_security(#db{security=Doc}=Db, {NewSecProps}) when is_list(NewSecProps) ->
     check_is_admin(Db),
     ok = validate_security_object(NewSecProps),
-    ok = gen_server:call(Pid, {set_security, NewSecProps}, infinity),
+    {ok, _} = update_doc(Db, Doc#doc{body={NewSecProps}}, []),
     {ok, _} = ensure_full_commit(Db),
     ok;
 set_security(_, _) ->
@@ -459,9 +461,11 @@ group_alike_docs([{Doc,Ref}|Rest], [Bucket|RestBuckets]) ->
 
 validate_doc_update(#db{}=Db, #doc{id= <<"_design/",_/binary>>}, _GetDiskDocFun) ->
     catch check_is_admin(Db);
-validate_doc_update(#db{validate_doc_funs=[]}, _Doc, _GetDiskDocFun) ->
-    ok;
+validate_doc_update(Db, #doc{id= ?SECURITY_ID}, _GetDiskDocFun) ->
+    catch check_is_admin(Db);
 validate_doc_update(_Db, #doc{id= <<"_local/",_/binary>>}, _GetDiskDocFun) ->
+    ok;
+validate_doc_update(#db{validate_doc_funs=[]}, _Doc, _GetDiskDocFun) ->
     ok;
 validate_doc_update(Db, Doc, GetDiskDocFun) ->
     DiskDoc = GetDiskDocFun(),
@@ -731,7 +735,7 @@ update_docs(Db, Docs, Options, interactive_edit) ->
     % request. This relies on couch_db_updater not collecting
     % more than one update that contains _local docs but this
     % is still trigerable with a _bulk_docs request.
-    UniqNRIds = lists:usort([Id || #doc{id=Id} <- NonRepDocs0]),
+    UniqNRIds = lists:usort([Id || [{#doc{id=Id}, _}] <- NonRepDocs0]),
     case length(UniqNRIds) == length(NonRepDocs0) of
         true -> ok;
         false -> throw({update_error, repeated_local_docs})

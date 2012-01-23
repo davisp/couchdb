@@ -11,6 +11,7 @@
 % the License.
 
 -define(LOCAL_DOC_PREFIX, "_local/").
+-define(SECURITY_ID, <<"_local/_security">>).
 -define(DESIGN_DOC_PREFIX0, "_design").
 -define(DESIGN_DOC_PREFIX, "_design/").
 -define(DEFAULT_COMPRESSION, snappy).

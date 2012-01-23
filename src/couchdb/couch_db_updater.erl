@@ -67,14 +67,6 @@ handle_call(increment_update_seq, _From, Db) ->
     couch_db_update_notifier:notify({updated, Db#db.name}),
     {reply, {ok, Db2#db.update_seq}, Db2};
 
-handle_call({set_security, NewSec}, _From, #db{compression = Comp} = Db) ->
-    {ok, Ptr, _} = couch_file:append_term(
-        Db#db.updater_fd, NewSec, [{compression, Comp}]),
-    Db2 = commit_data(Db#db{security=NewSec, security_ptr=Ptr,
-            update_seq=Db#db.update_seq+1}),
-    ok = gen_server:call(Db2#db.main_pid, {db_updated, Db2}),
-    {reply, ok, Db2};
-
 handle_call({set_revs_limit, Limit}, _From, Db) ->
     Db2 = commit_data(Db#db{revs_limit=Limit,
             update_seq=Db#db.update_seq+1}),
@@ -183,7 +175,7 @@ handle_call({compact_done, CompactFilepath}, _From, #db{filepath=Filepath}=Db) -
     case Db#db.update_seq == NewSeq of
     true ->
         % suck up all the local docs into memory and write them to the new db
-        NewDb1 = copy_local_docs(Db, NewDb),
+        {ok, NewDb1} = update_security(copy_local_docs(Db, NewDb)),
         NewDb2 = commit_data(NewDb1#db{
             main_pid = Db#db.main_pid,
             filepath = Filepath,
@@ -231,16 +223,17 @@ handle_info({update_docs, Client, GroupedDocs, NonRepDocs, MergeConflicts,
     try update_docs_int(Db, GroupedDocs3, NonRepDocs2, MergeConflicts,
                 FullCommit2) of
     {ok, Db2, UpdatedDDocIds} ->
-        ok = gen_server:call(Db#db.main_pid, {db_updated, Db2}),
-        if Db2#db.update_seq /= Db#db.update_seq ->
-            couch_db_update_notifier:notify({updated, Db2#db.name});
+        {ok, Db3} = maybe_update_security(Db2, NonRepDocs),
+        ok = gen_server:call(Db#db.main_pid, {db_updated, Db3}),
+        if Db3#db.update_seq /= Db#db.update_seq ->
+            couch_db_update_notifier:notify({updated, Db3#db.name});
         true -> ok
         end,
         [catch(ClientPid ! {done, self()}) || ClientPid <- Clients],
         lists:foreach(fun(DDocId) ->
-            couch_db_update_notifier:notify({ddoc_updated, {Db#db.name, DDocId}})
+            couch_db_update_notifier:notify({ddoc_updated, {Db3#db.name, DDocId}})
         end, UpdatedDDocIds),
-        {noreply, Db2}
+        {noreply, Db3}
     catch
         throw: retry ->
             [catch(ClientPid ! {retry, self()}) || ClientPid <- Clients],
@@ -450,19 +443,12 @@ init_db(DbName, Filepath, Fd, ReaderFd, Header0, Options) ->
             {join, fun(X,Y) -> btree_by_id_join(X,Y) end},
             {compression, Compression}
         ]),
-    case Header#db_header.security_ptr of
-    nil ->
-        Security = [],
-        SecurityPtr = nil;
-    SecurityPtr ->
-        {ok, Security} = couch_file:pread_term(Fd, SecurityPtr)
-    end,
     % convert start time tuple to microsecs and store as a binary string
     {MegaSecs, Secs, MicroSecs} = now(),
     StartTime = ?l2b(io_lib:format("~p",
             [(MegaSecs*1000000*1000000) + (Secs*1000000) + MicroSecs])),
     {ok, RefCntr} = couch_ref_counter:start([Fd, ReaderFd]),
-    #db{
+    Db = #db{
         update_pid=self(),
         fd = ReaderFd,
         updater_fd = Fd,
@@ -475,8 +461,6 @@ init_db(DbName, Filepath, Fd, ReaderFd, Header0, Options) ->
         update_seq = Header#db_header.update_seq,
         name = DbName,
         filepath = Filepath,
-        security = Security,
-        security_ptr = SecurityPtr,
         instance_start_time = StartTime,
         revs_limit = Header#db_header.revs_limit,
         fsync_options = FsyncOptions,
@@ -484,7 +468,21 @@ init_db(DbName, Filepath, Fd, ReaderFd, Header0, Options) ->
         compression = Compression,
         before_doc_update = couch_util:get_value(before_doc_update, Options, nil),
         after_doc_read = couch_util:get_value(after_doc_read, Options, nil)
-        }.
+        },
+    case Header#db_header.security_ptr of
+    local ->
+        {ok, Db1} = update_security(Db),
+        Db1#db{security_ptr=local};
+    nil ->
+        {ok, Db1} = init_security(Db, {[]}),
+        {ok, Db2} = update_security(Db1),
+        Db2#db{security_ptr=local};
+    SecurityPtr ->
+        {ok, Security} = couch_file:pread_term(Fd, SecurityPtr),
+        {ok, Db1} = init_security(Db, {Security}),
+        {ok, Db2} = update_security(Db1),
+        Db2#db{security_ptr=local}
+    end.
 
 open_reader_fd(Filepath, Options) ->
     {ok, Fd} = case lists:member(sys_db, Options) of
@@ -513,6 +511,31 @@ refresh_validate_doc_funs(Db0) ->
             end
         end, DesignDocs),
     Db0#db{validate_doc_funs=ProcessDocFuns}.
+
+update_security(Db0) ->
+    Db = Db0#db{
+        user_ctx = #user_ctx{roles=[<<"_admin">>]},
+        after_doc_read=nil
+    },
+    {ok, Doc} = couch_db:open_doc_int(Db, ?SECURITY_ID, [ejson_body]),
+    {ok, Db0#db{security=Doc}}.
+
+maybe_update_security(Db, Docs) ->
+    Ids = [Doc#doc.id || [{Doc, _}] <- Docs],
+    case lists:member(?SECURITY_ID, Ids) of
+        true -> update_security(Db);
+        false -> {ok, Db}
+    end.
+
+init_security(Db0, Body) ->
+    Db1 = Db0#db{user_ctx=#user_ctx{roles=[<<"_admin">>]}},
+    Doc0 = #doc{id=?SECURITY_ID, body=Body},
+    RevId = couch_db:new_revid(Doc0),
+    Doc1 = Doc0#doc{revs={1, [RevId]}},
+    SummaryChunk = make_doc_summary(Db1, {Body, []}),
+    Doc2 = Doc1#doc{body={summary, SummaryChunk, nil}},
+    Req = [{nil, [{Doc2, nil}]}],
+    update_local_docs(Db1, Req).
 
 % rev tree functions
 
@@ -568,6 +591,9 @@ flush_trees(#db{updater_fd = Fd} = Db,
     flush_trees(Db, RestUnflushed, [InfoFlushed | AccFlushed]).
 
 
+send_result(nil, _, _) ->
+    % For doc writes from init_db
+    ok;
 send_result(Client, Ref, NewResult) ->
     % used to send a result to the client
     catch(Client ! {result, self(), {Ref, NewResult}}).
