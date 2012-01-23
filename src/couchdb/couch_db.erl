@@ -727,6 +727,16 @@ update_docs(Db, Docs, Options, interactive_edit) ->
             end
         end, {[], []}, Docs2),
 
+    % Prevent updating multiple _local docs in a single update
+    % request. This relies on couch_db_updater not collecting
+    % more than one update that contains _local docs but this
+    % is still trigerable with a _bulk_docs request.
+    UniqNRIds = lists:usort([Id || #doc{id=Id} <- NonRepDocs0]),
+    case length(UniqNRIds) == length(NonRepDocs0) of
+        true -> ok;
+        false -> throw({update_error, repeated_local_docs})
+    end,
+
     {NonRepDocs, _} = new_revs(NonRepDocs0, [], []),
 
     DocBuckets = before_docs_update(Db, group_alike_docs(Docs3)),
