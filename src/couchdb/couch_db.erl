@@ -459,9 +459,11 @@ group_alike_docs([{Doc,Ref}|Rest], [Bucket|RestBuckets]) ->
 
 validate_doc_update(#db{}=Db, #doc{id= <<"_design/",_/binary>>}, _GetDiskDocFun) ->
     catch check_is_admin(Db);
-validate_doc_update(#db{validate_doc_funs=[]}, _Doc, _GetDiskDocFun) ->
-    ok;
+validate_doc_update(_Db, #doc{id= <<"_local/_security">>}, _GetDiskDocFun) ->
+    catch check_is_admin(Db);
 validate_doc_update(_Db, #doc{id= <<"_local/",_/binary>>}, _GetDiskDocFun) ->
+    ok;
+validate_doc_update(#db{validate_doc_funs=[]}, _Doc, _GetDiskDocFun) ->
     ok;
 validate_doc_update(Db, Doc, GetDiskDocFun) ->
     DiskDoc = GetDiskDocFun(),
