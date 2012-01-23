@@ -42,8 +42,10 @@ EJSON_C_HDRS = \
     yajl/yajl_parse.h \
     yajl/yajl_parser.h
 
+ejson_app_file = \
+    ejson.app.in
+
 ejson_file_collection = \
-    ejson.app.in \
     ejson.erl \
     mochijson2.erl \
     mochinum.erl
@@ -56,10 +58,13 @@ ejsonebin_make_generated_file_list = \
 
 EXTRA_DIST = \
 	$(EJSON_C_HDRS) \
+	$(ejson_app_file) \
 	$(ejson_file_collection)
 
 ejsonebin_DATA = \
     $(ejsonebin_make_generated_file_list)
+
+ERLC_OPTS=$(ERLC_FLAGS)
 
 if USE_OTP_NIFS
 ejsonpriv_LTLIBRARIES = ejson.la
@@ -85,5 +90,9 @@ endif
 %.app: %.app.in
 	cp $< $@
 
-%.beam: %.erl
-	$(ERLC) $(ERLC_FLAGS) $<
+%.beam: %.erl build_erl
+	@true
+
+build_erl:
+	@$(ESCRIPT) $(abs_top_srcdir)/bin/couch_erlc $(ERLC_FLAGS) \
+		$(ejson_file_collection)

@@ -16,6 +16,9 @@ endif
 
 mochiwebebindir = $(localerlanglibdir)/mochiweb-1.4.1/ebin
 
+mochiweb_app_file = \
+	mochiweb.app.in
+
 mochiweb_file_collection = \
 	mochifmt.erl \
 	mochifmt_records.erl \
@@ -29,7 +32,6 @@ mochiweb_file_collection = \
 	mochinum.erl \
 	mochitemp.erl \
 	mochiutf8.erl \
-	mochiweb.app.in \
 	mochiweb.erl \
 	mochiweb_acceptor.erl \
 	mochiweb_app.erl \
@@ -92,6 +94,7 @@ mochiwebebin_DATA = \
     $(mochiwebebin_make_generated_file_list)
 
 EXTRA_DIST =  \
+	$(mochiweb_app_file) \
     $(mochiweb_file_collection) \
     internal.hrl
 
@@ -104,5 +107,9 @@ CLEANFILES = \
 mochijson2.beam: mochijson2.erl
 	$(ERLC) $(ERLC_FLAGS) $(MOCHIJSON_ERLC_FLAGS) $<
 
-%.beam: %.erl
-	$(ERLC) $(ERLC_FLAGS) $<
+%.beam: %.erl build_erl
+	@true
+
+build_erl:
+	@$(ESCRIPT) $(abs_top_srcdir)/bin/couch_erlc $(ERLC_FLAGS) \
+		$(mochiweb_file_collection)

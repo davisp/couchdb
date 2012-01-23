@@ -17,6 +17,7 @@ couch_indexebin_DATA = $(compiled_files)
 
 EXTRA_DIST = $(source_files)
 CLEANFILES = $(compiled_files)
+ERLC_OPTS=$(ERLC_FLAGS) -I$(top_srcdir)/src/couchdb -o ebin/
 
 source_files = \
     src/couch_index.erl \
@@ -32,7 +33,9 @@ compiled_files = \
     ebin/couch_index_updater.beam \
 	ebin/couch_index_util.beam
 
-ebin/%.beam: src/%.erl
+ebin/%.beam: src/%.erl build_erl
 	@mkdir -p ebin/
-	$(ERLC) -I$(top_srcdir)/src/couchdb -o ebin/ $(ERLC_FLAGS) ${TEST} $<;
+
+build_erl:
+	$(ESCRIPT) $(abs_top_srcdir)/bin/couch_erlc $(ERLC_OPTS) $(source_files)
 

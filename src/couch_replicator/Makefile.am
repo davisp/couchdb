@@ -17,6 +17,9 @@ couch_replicatorebindir = $(couch_replicatorlibdir)/ebin
 couch_replicatorinclude_DATA = $(include_files)
 couch_replicatorebin_DATA = $(compiled_files)
 
+app_file = \
+	src/couch_replicator.app.src
+
 include_files = \
 	src/couch_replicator_api_wrap.hrl \
 	src/couch_replicator.hrl \
@@ -32,7 +35,6 @@ source_files = \
 	src/couch_replicator_manager.erl \
 	src/couch_replicator_utils.erl \
 	src/couch_replicator_worker.erl \
-	src/couch_replicator.app.src \
 	src/couch_replicator.erl
 
 test_files = \
@@ -56,8 +58,9 @@ compiled_files = \
 	ebin/couch_replicator.app \
 	ebin/couch_replicator.beam
 
-EXTRA_DIST = $(include_files) $(source_files) $(test_files)
+EXTRA_DIST = $(app_file) $(include_files) $(source_files) $(test_files)
 CLEANFILES = $(compiled_files)
+ERLC_OPTS=$(ERLC_FLAGS) -I$(top_srcdir)/src -I$(top_srcdir)/src/couchdb -o ebin
 
 check:
 	$(abs_top_builddir)/test/etap/run $(abs_top_srcdir)/src/couch_replicator/test
@@ -67,9 +70,9 @@ ebin/%.app: src/%.app.src
 	sed -e "s|%version%|@version@|g" \
 	< $< > $@
 
-ebin/%.beam: src/%.erl $(include_files)
+ebin/%.beam: src/%.erl $(include_files) build_erl
 	@mkdir -p ebin/
-	$(ERLC) -Wall -I$(top_srcdir)/src -I$(top_srcdir)/src/couchdb \
-        -o ebin/ $(ERLC_FLAGS) ${TEST} $<;
 
+build_erl:
+	@$(ESCRIPT) $(abs_top_srcdir)/bin/couch_erlc $(ERLC_OPTS) $(source_files)
 

@@ -17,11 +17,13 @@ couch_mrviewebindir = $(couch_mrviewlibdir)/ebin
 couch_mrviewinclude_DATA = $(include_files)
 couch_mrviewebin_DATA = $(compiled_files)
 
+app_file = \
+	src/couch_mrview.app.src
+
 include_files = \
     include/couch_mrview.hrl
 
 source_files = \
-    src/couch_mrview.app.src \
     src/couch_mrview.erl \
     src/couch_mrview_cleanup.erl \
     src/couch_mrview_compactor.erl \
@@ -53,8 +55,9 @@ compiled_files = \
     ebin/couch_mrview_updater.beam \
     ebin/couch_mrview_util.beam
 
-EXTRA_DIST = $(include_files) $(source_files) $(test_files)
+EXTRA_DIST = $(app_file) $(include_files) $(source_files) $(test_files)
 CLEANFILES = $(compiled_files)
+ERLC_OPTS=$(ERLC_FLAGS) -I$(top_srcdir)/src -I$(top_srcdir)/src/couchdb -o ebin
 
 check:
 	$(abs_top_builddir)/test/etap/run $(abs_top_srcdir)/src/couch_mrview/test
@@ -64,8 +67,9 @@ ebin/%.app: src/%.app.src
 	sed -e "s|%version%|@version@|g" \
 	< $< > $@
 
-ebin/%.beam: src/%.erl $(include_files)
+ebin/%.beam: src/%.erl $(include_files) build_erl
 	@mkdir -p ebin/
-	$(ERLC) -Wall -I$(top_srcdir)/src -I$(top_srcdir)/src/couchdb \
-        -o ebin/ $(ERLC_FLAGS) ${TEST} $<;
+
+build_erl:
+	$(ESCRIPT) $(abs_top_srcdir)/bin/couch_erlc $(ERLC_OPTS) $(source_files)
 

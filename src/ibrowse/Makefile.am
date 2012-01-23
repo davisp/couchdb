@@ -12,8 +12,10 @@
 
 ibrowseebindir = $(localerlanglibdir)/ibrowse-2.2.0/ebin
 
+ibrowse_app_file = \
+	ibrowse.app.in
+
 ibrowse_file_collection = \
-	ibrowse.app.in \
     ibrowse.erl \
     ibrowse_app.erl \
     ibrowse_http_client.erl \
@@ -36,6 +38,7 @@ ibrowseebin_DATA = \
     $(ibrowseebin_make_generated_file_list)
 
 EXTRA_DIST =  \
+	$(ibrowse_app_file) \
     $(ibrowse_file_collection) \
     ibrowse.hrl
 
@@ -45,5 +48,9 @@ CLEANFILES = \
 %.app: %.app.in
 	cp $< $@
 
-%.beam: %.erl
-	$(ERLC) $(ERLC_FLAGS) $<
+%.beam: %.erl build_erl
+	@true
+
+build_erl:
+	@$(ESCRIPT) $(abs_top_srcdir)/bin/couch_erlc $(ERLC_FLAGS) \
+		$(ibrowse_file_collection)

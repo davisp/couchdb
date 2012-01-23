@@ -1,0 +1,265 @@
+#!/usr/bin/env escript
+
+-record(copts, {
+    opts=[],
+    outdir,
+    jobs,
+    files=[],
+    compiling=[],
+    results=[]
+}).
+
+
+main(Args) ->
+    COpts = parse_args(Args, #copts{}),
+    case lists:member(verbose, COpts#copts.opts) of
+        true -> show_config(COpts);
+        false -> ok
+    end,
+    spawn_workers(COpts, COpts#copts.jobs),
+    loop(COpts).
+
+
+loop(#copts{files=[], compiling=[]}) ->
+    ok;
+loop(COpts) ->
+    receive
+        {next_file, Worker} ->
+            case COpts#copts.files of
+                [] ->
+                    Worker ! done,
+                    loop(COpts);
+                [SrcFile | Rest] ->
+                    Ref = erlang:make_ref(),
+                    Worker ! {compile, Ref, SrcFile},
+                    COpts1 = COpts#copts{
+                        files=Rest,
+                        compiling=[Ref | COpts#copts.compiling]
+                    },
+                    loop(COpts1)
+            end;
+        {skip, Ref} ->
+            COpts1 = COpts#copts{
+                results=[{Ref, skip} | COpts#copts.results]
+            },
+            loop(drain_results(COpts1, lists:reverse(COpts#copts.compiling)));
+        {result, Ref, DstFile, Result} ->
+            COpts1 = COpts#copts{
+                results=[{Ref, DstFile, Result} | COpts#copts.results]
+            },
+            loop(drain_results(COpts1, lists:reverse(COpts#copts.compiling)))
+    end.
+
+
+spawn_workers(_COpts, 0) ->
+    ok;
+spawn_workers(COpts, N) when N > 0 ->
+    Self = self(),
+    spawn(fun() -> worker(COpts, Self) end),
+    spawn_workers(COpts, N-1).
+
+
+worker(COpts, Parent) ->
+    Parent ! {next_file, self()},
+    receive
+        done ->
+            ok;
+        {compile, Ref, SrcFile} ->
+            DstFile = dst_file(COpts, SrcFile),
+            case compile_needed(COpts, SrcFile, DstFile) of
+                true ->
+                    log("Compiling: ~s~n", [SrcFile]),
+                    Result = compile:file(SrcFile, COpts#copts.opts),
+                    Parent ! {result, Ref, DstFile, Result};
+                false ->
+                    log("Up to date: ~s~n", [SrcFile]),
+                    Parent ! {skip, Ref}
+            end,
+            worker(COpts, Parent)
+    end.
+
+
+drain_results(COpts, []) ->
+    COpts#copts{compiling=[]};
+drain_results(#copts{results=Results}=COpts, [Ref | Rest]) ->
+    case lists:keysearch(Ref, 1, Results) of
+        false ->
+            COpts#copts{compiling=lists:reverse([Ref | Rest])};
+        {value, {Ref, skip}} ->
+            Results1 = lists:keydelete(Ref, 1, Results),
+            drain_results(COpts#copts{results=Results1}, Rest);
+        {value, {Ref, DstFile, Result}} ->
+            handle_result(DstFile, Result),
+            Results1 = lists:keydelete(Ref, 1, Results),
+            drain_results(COpts#copts{results=Results1}, Rest)
+    end.
+
+
+handle_result(DstFile, {ok, _Mod, Bin, []}) ->
+    write_bin(DstFile, Bin);
+handle_result(DstFile, {ok, Mod, Bin, Warnings}) ->
+    format([], Warnings),
+    handle_result(DstFile, {ok, Mod, Bin, []});
+handle_result(_DstFile, {error, Errors, Warnings}) ->
+    format(Errors, Warnings),
+    halt("ERROR~n", []).
+
+
+write_bin(DstFile, Bin) ->
+    case file:write_file(DstFile, Bin) of
+        ok ->
+            ok;
+        {error, Reason} ->
+            halt("Error writing file: ~s :: ~p~n", [DstFile, Reason])
+    end.
+
+
+format(Errors, Warnings) ->
+    lists:foreach(fun({Type, File, Line, Mesg}) ->
+        log("~s: ~s:~b :: ~s~n", [Type, File, Line, Mesg])
+    end, generate(Errors, "Error", []) ++ generate(Warnings, "Warning", [])).
+
+
+generate([], _Type, Acc) ->
+    lists:keysort(2, Acc);
+generate([{File, Mesgs} | Rest], Type, Acc) ->
+    Chars = lists:map(fun({Line, Mod, ED}) ->
+        {Type, File, Line, lists:flatten(Mod:format_error(ED))}
+    end, Mesgs),
+    generate(Rest, Type, Chars ++ Acc).
+
+
+show_config(COpts) ->
+    log("Compile Options:~n    ~p~n", [COpts]).
+
+
+parse_args([], COpts) ->
+    finalize_opts(COpts);
+parse_args(Args, COpts) ->
+    case parse_arg(Args) of
+        {{outdir, Dir}, Rest} ->
+            COpts1 = COpts#copts{outdir=Dir},
+            parse_args(Rest, COpts1);
+        {{files, Files}, Rest} ->
+            COpts1 = COpts#copts{files=Files ++ COpts#copts.files},
+            parse_args(Rest, COpts1);
+        {Else, Rest} ->
+            parse_args(Rest, COpts#copts{opts=[Else | COpts#copts.opts]})
+    end.
+
+
+finalize_opts(#copts{opts=Opts, outdir=OutDir, jobs=Jobs0, files=Files}) ->
+    Jobs = case Jobs0 of
+        _ when is_integer(Jobs0), Jobs0 > 0 -> Jobs0;
+        _ -> erlang:system_info(schedulers) * 2
+    end,
+    #copts{
+        opts=lists:usort([binary, return | Opts]),
+        outdir=OutDir,
+        jobs=Jobs,
+        files=lists:usort(Files)
+    }.
+
+
+parse_arg(["-j", Num | Rest]) ->
+    {{jobs, list_to_integer(Num)}, Rest};
+parse_arg([[$-, $j | Num] | Rest]) ->
+    {{jobs, list_to_integer(Num)}, Rest};
+parse_arg(["-I", Dir | Rest]) ->
+    {{i, Dir}, Rest};
+parse_arg([[$-, $I | Dir] | Rest]) ->
+    {{i, Dir}, Rest};
+parse_arg(["-o", Dir | Rest]) ->
+    {{outdir, Dir}, Rest};
+parse_arg([[$-, $o | Dir] | Rest]) ->
+    {{outdir, Dir}, Rest};
+parse_arg([[$-, $D | Name] | Rest]) ->
+    Pred = fun($=) -> true; (_) -> false end,
+    case lists:splitwith(Pred, Name) of
+        {Macro, []} ->
+            {{d, Macro}, Rest};
+        {Macro, Value} ->
+            {{d, Macro, parse_term(Value)}, Rest}
+    end;
+parse_arg(["-Werror" | Rest]) ->
+    {warnings_as_errors, Rest};
+parse_arg(["-W0" | Rest]) ->
+    {{warn_format, 0}, Rest};
+parse_arg(["-W1" | Rest]) ->
+    {{warn_format, 1}, Rest};
+parse_arg(["-W2" | Rest]) ->
+    {{warn_format, 2}, Rest};
+parse_arg(["-v" | Rest]) ->
+    {verbose, Rest};
+parse_arg([[$+ | Term] | Rest]) ->
+    {parse_term(Term), Rest};
+parse_arg(["--" | Rest]) ->
+    {{files, Rest}, []};
+parse_arg([Other | Rest]) ->
+    {{files, [Other]}, Rest}.
+
+
+parse_term(String) ->
+    {ok, Tokens, _} = erl_scan:string(String ++ "."),
+    erl_parse:parse_term(Tokens).
+
+
+dst_file(COpts, SrcFile) ->
+    Beam = filename:rootname(filename:basename(SrcFile)) ++ ".beam",
+    case COpts#copts.outdir of
+        undefined -> Beam;
+        OutDir -> filename:join(OutDir, Beam)
+    end.
+
+
+compile_needed(COpts, SrcFile, DstFile) ->
+    case filelib:is_file(DstFile) of
+        true ->
+            DstTime = filelib:last_modified(DstFile),
+            Deps = [SrcFile | get_includes(COpts, SrcFile)],
+            DepTimes = [filelib:last_modified(F) || F <- Deps],
+            DstTime =< lists:max(DepTimes);
+        false ->
+            true
+    end.
+
+
+get_includes(COpts, SrcFile) ->
+    %% Based on rebar's dependency detection code
+    GetIncDirs = fun
+        ({i, IncDir}, Acc) -> [IncDir | Acc];
+        (_, Acc) -> Acc
+    end,
+    Includes = lists:foldl(GetIncDirs, [], COpts#copts.opts),
+    case epp:open(SrcFile, Includes) of
+        {ok, Epp} -> scan_epp(Epp, []);
+        {error, _Reason} -> []
+    end.
+
+
+scan_epp(Epp, Includes) ->
+    %% Based on rebar's dependency detection code
+    case epp:parse_erl_form(Epp) of
+        {ok, {attribute, 1, file, {FileName, _}}} ->
+            Includes1 = case filename:extension(FileName) of
+                ".hrl" -> [FileName | Includes];
+                _ -> Includes
+            end,
+            scan_epp(Epp, Includes1);
+        {eof, _} ->
+            epp:close(Epp),
+            Includes;
+        _ ->
+            scan_epp(Epp, Includes)
+    end.
+
+
+log(Fmt, Args) ->
+    io:format(Fmt, Args).
+
+
+halt(Fmt, Args) ->
+    log(Fmt, Args),
+    timer:sleep(200),
+    erlang:halt().
+

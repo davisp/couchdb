@@ -37,8 +37,11 @@ etapebin_make_generated_file_list = \
 etapebin_DATA = $(etapebin_make_generated_file_list)
 
 EXTRA_DIST =  $(etap_file_collection)
-
 CLEANFILES = $(etapebin_make_generated_file_list)
 
-%.beam: %.erl
-	$(ERLC) $(ERLC_FLAGS) $<
+%.beam: %.erl build_erl
+	@true
+
+build_erl:
+	@$(ESCRIPT) $(abs_top_srcdir)/bin/couch_erlc $(ERLC_FLAGS) \
+		$(etap_file_collection)

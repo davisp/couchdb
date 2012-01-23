@@ -409,6 +409,14 @@ if test x${ERLC} = x; then
     AC_MSG_ERROR([Could not find the `erlc' executable. Is Erlang installed?])
 fi
 
+AC_PATH_PROG([ESCRIPT], [escript])
+
+if test x${ESCRIPT} = x; then
+    AC_MSG_ERROR(
+        [Could not find the `escript' executable. Is Erlang installed?]
+    )
+fi
+
 OLD_CPPFLAGS="$CPPFLAGS"
 CPPFLAGS="$ERLANG_FLAGS $CPPFLAGS"
 AC_CHECK_HEADER([erl_driver.h], [], [
@@ -476,6 +484,7 @@ fi
 
 AC_ARG_VAR([ERL], [path to the `erl' executable])
 AC_ARG_VAR([ERLC], [path to the `erlc' executable])
+AC_ARG_VAR([ESCRIPT], [path to the `escript' executable])
 AC_ARG_VAR([HELP2MAN_EXECUTABLE], [path to the `help2man' program])
 
 if test -n "$HELP2MAN_EXECUTABLE"; then

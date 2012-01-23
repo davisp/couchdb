@@ -27,8 +27,10 @@ snappy_cxx_hdrs = \
 	google-snappy/snappy-stubs-internal.h \
 	google-snappy/snappy-stubs-public.h
 
+snappy_app_file = \
+    snappy.app.in
+
 snappy_file_collection = \
-    snappy.app.in \
     snappy.erl
 
 snappyebin_make_generated_file_list = \
@@ -37,6 +39,7 @@ snappyebin_make_generated_file_list = \
 
 EXTRA_DIST = \
 	$(snappy_cxx_hdrs) \
+	$(snappy_app_file) \
     $(snappy_file_collection)
 
 CLEANFILES = \
@@ -70,5 +73,9 @@ endif
 %.app: %.app.in
 	cp $< $@
 
-%.beam: %.erl
-	$(ERLC) $(ERLC_FLAGS) $<
+%.beam: %.erl build_erl
+	@true
+
+build_erl:
+	@$(ESCRIPT) $(abs_top_srcdir)/bin/couch_erlc $(ERLC_FLAGS) \
+		$(snappy_file_collection)
