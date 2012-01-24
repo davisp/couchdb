@@ -28,7 +28,7 @@ function runTestConsole(num, name, func) {
     func();
     print("ok " + num + " " + name);
   } catch(e) {
-    msg = e.toString();
+    msg = e.toSource();
     msg = msg.replace(/\n/g, "\n    ");
     print("not ok " + num + " " + name + " " + msg);
   }
