@@ -227,7 +227,7 @@ handle_info({update_docs, Client, GroupedDocs, NonRepDocs, MergeConflicts,
     try update_docs_int(Db, GroupedDocs3, NonRepDocs2, MergeConflicts,
                 FullCommit2) of
     {ok, Db2, UpdatedDDocIds} ->
-        {ok, Db3} = maybe_update_security(Db2, NonRepDocs2),
+        {ok, Db3} = maybe_update_security(Db2, NonRepDocs),
         ok = gen_server:call(Db#db.main_pid, {db_updated, Db3}),
         if Db3#db.update_seq /= Db#db.update_seq ->
             couch_db_update_notifier:notify({updated, Db3#db.name});
@@ -525,7 +525,7 @@ update_security(Db0) ->
     {ok, Db0#db{security=Doc}}.
 
 maybe_update_security(Db, Docs) ->
-    Ids = [Id || #doc{id=Id} <- Docs],
+    Ids = [Doc#doc.id || [{Doc, _}] <- Docs],
     case lists:member(?SECURITY_ID, Ids) of
         true -> update_security(Db);
         false -> {ok, Db}
