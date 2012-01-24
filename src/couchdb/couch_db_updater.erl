@@ -175,12 +175,8 @@ handle_call({compact_done, CompactFilepath}, _From, #db{filepath=Filepath}=Db) -
     case Db#db.update_seq == NewSeq of
     true ->
         % suck up all the local docs into memory and write them to the new db
-        {ok, _, LocalDocs} = couch_btree:foldl(Db#db.local_docs_btree,
-                fun(Value, _Offset, Acc) -> {ok, [Value | Acc]} end, []),
-        {ok, NewLocalBtree} = couch_btree:add(NewDb#db.local_docs_btree, LocalDocs),
-
-        NewDb2 = commit_data(NewDb#db{
-            local_docs_btree = NewLocalBtree,
+        {ok, NewDb1} = update_security(copy_local_docs(Db, NewDb)),
+        NewDb2 = commit_data(NewDb1#db{
             main_pid = Db#db.main_pid,
             filepath = Filepath,
             instance_start_time = Db#db.instance_start_time,
@@ -871,6 +867,31 @@ copy_docs(Db, #db{updater_fd = DestFd} = NewDb, InfoBySeq0, Retry) ->
               docinfo_by_seq_btree=DocInfoBTree}.
 
 
+copy_local_docs(Db, #db{revs_limit=Limit, updater_fd = DestFd}=NewDb) ->
+    FoldFun = fun(#full_doc_info{rev_tree=RevTree}=Info, Acc) ->
+        NewRevTree0 = couch_key_tree:map(fun
+            (_, _, branch) ->
+                ?REV_MISSING;
+            (_Rev, LeafVal, leaf) ->
+                IsDel = element(1, LeafVal),
+                Sp = element(2, LeafVal),
+                Seq = element(3, LeafVal),
+                {_Body, AttsInfo} = Summary = copy_doc_attachments(
+                    Db, Sp, DestFd),
+                SummaryChunk = make_doc_summary(NewDb, Summary),
+                {ok, Pos, SummarySize} = couch_file:append_raw_chunk(
+                    DestFd, SummaryChunk),
+                TotalLeafSize = lists:foldl(
+                    fun({_, _, _, AttLen, _, _, _, _}, S) -> S + AttLen end,
+                    SummarySize, AttsInfo),
+                {IsDel, Pos, Seq, TotalLeafSize}
+        end, RevTree),
+        NewRevTree = couch_key_tree:stem(NewRevTree0, Limit),
+        {ok, [Info#full_doc_info{rev_tree=NewRevTree} | Acc]}
+    end,
+    {ok, _, NewInfos} = couch_btree:foldl(Db#db.local_docs_btree, FoldFun, []),
+    {ok, LocalBtree} = couch_btree:add(NewDb#db.local_docs_btree, NewInfos),
+    NewDb#db{local_docs_btree=LocalBtree}.
 
 copy_compact(Db, NewDb0, Retry) ->
     FsyncOptions = [Op || Op <- NewDb0#db.fsync_options, Op == before_header],
@@ -930,12 +951,7 @@ copy_compact(Db, NewDb0, Retry) ->
     NewDb3 = copy_docs(Db, NewDb2, lists:reverse(Uncopied), Retry),
     TotalChanges = couch_task_status:get(changes_done),
 
-    NewDb4 = NewDb3#db{
-        security=Db#db.security,
-        security_ptr=Db#db.security_ptr
-    },
-
-    commit_data(NewDb4#db{update_seq=Db#db.update_seq}).
+    commit_data(NewDb3#db{update_seq=Db#db.update_seq}).
 
 start_copy_compact(#db{name=Name,filepath=Filepath,header=#db_header{purge_seq=PurgeSeq}}=Db) ->
     CompactFile = Filepath ++ ".compact",
