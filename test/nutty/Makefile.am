@@ -10,6 +10,17 @@
 ## License for the specific language governing permissions and limitations under
 ## the License.
 
-SUBDIRS = nutty
-EXTRA_DIST = random_port.ini
+noinst_SCRIPTS = run
+
+CLEANFILES = run *.pyc
+DISTCLEANFILES = temp.*
+
+EXTRA_DIST = \
+    run.tpl
+
+run: run.tpl
+	sed -e "s|%abs_top_srcdir%|@abs_top_srcdir@|g" \
+	    -e "s|%abs_top_builddir%|@abs_top_builddir@|g" > \
+	$@ < $<
+	chmod +x $@
 
