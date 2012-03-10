@@ -37,8 +37,16 @@
 
 -record(file, {
     fd,
-    eof = 0,
-    db_pid
+    db_pid,
+    eof,
+    pos,
+    rbuf=[],
+    rlen=0,
+    rmax,
+    wbuf=[],
+    wlen=0,
+    wmax,
+    wstart
 }).
 
 
@@ -88,15 +96,13 @@ pread_binary(Fd, Pos) ->
 
 pread_iolist(Fd, Pos) ->
     case gen_server:call(Fd, {pread_iolist, Pos}, infinity) of
-    {ok, IoList, <<>>} ->
-        {ok, IoList};
-    {ok, IoList, Md5} ->
+    {ok, Md5, IoList} ->
         case couch_util:md5(IoList) of
             Md5 -> {ok, IoList};
             _ -> exit({file_corruption, <<"md5 does not match content">>})
         end;
-    Error ->
-        Error
+    Else ->
+        Else
     end.
 
 
@@ -121,7 +127,7 @@ append_term_md5(Fd, Term, Options) ->
 append_binary(Fd, Bin) ->
     gen_server:call(Fd, {append_bin, assemble_file_chunk(Bin)}, infinity).
 
-    
+
 append_binary_md5(Fd, Bin) ->
     gen_server:call(Fd,
         {append_bin, assemble_file_chunk(Bin, couch_util:md5(Bin))}, infinity).
@@ -170,7 +176,7 @@ delete(RootDir, Filepath, Async) ->
             spawn(file, delete, [DelFile]),
             ok;
         ok ->
-            file:delete(DelFile)
+            file:delete(DelFile);
         Error ->
             Error
     end.
@@ -203,19 +209,23 @@ init({FileName, Options}) ->
         open_int(FileName, Options)
     catch
         throw:{error, eaccess} ->
-            {error, {invalid_permissions, FileName}}
+            {error, {invalid_permissions, FileName}};
         throw:{error, eexists} ->
-            {error, {file_exists, FileName}}
+            {error, {file_exists, FileName}};
         throw:Error ->
             Error
     end,
     case Resp of
         {ok, File} ->
+            RMax = proplists:get_value(read_buffer, Options, 100),
+            %WMax0 = proplists:get_value(write_buffer, Options, 0),
+            % WMax = case WMax0 of true -> 16#A00000; _ -> WMax0 end,
+            WMax = 16#A00000,
             maybe_track_open_os_files(Options),
             proc_lib:init_ack({ok, self()}),
-            gen_server:enter_loop(?MODULE, [], File);
-        Error ->
-            proc_lib:init_ack(Error)
+            gen_server:enter_loop(?MODULE, [], File#file{rmax=RMax, wmax=WMax});
+        Other ->
+            proc_lib:init_ack(Other)
     end.
 
 
@@ -231,78 +241,88 @@ handle_call({set_db_pid, Pid}, _From, #file{db_pid=OldPid}=File) ->
     link(Pid),
     {reply, ok, File#file{db_pid=Pid}, 0};
 
-handle_call(bytes, _From, #file{fd = Fd} = File) ->
-    {reply, file:position(Fd, eof), File};
+handle_call(bytes, _From, File) ->
+    {reply, {ok, File#file.eof}, File, 0};
 
-handle_call(sync, _From, #file{fd=Fd}=File) ->
-    {reply, file:sync(Fd), File};
+handle_call(sync, _From, File0) ->
+    File = flush(File0),
+    {reply, file:sync(File#file.fd), File, 0};
 
-handle_call({truncate, Pos}, _From, #file{fd=Fd}=File) ->
-    {ok, Pos} = file:position(Fd, Pos),
-    case file:truncate(Fd) of
-        ok -> {reply, ok, File#file{eof = Pos}};
-        Error -> {reply, Error, File}
+handle_call({truncate, Pos}, _From, File0) ->
+    File = flush(File0),
+    {ok, Pos} = file:position(File#file.fd, Pos),
+    case file:truncate(File#file.fd) of
+        ok -> {reply, ok, File#file{eof = Pos}, 0};
+        Error -> {reply, Error, File, 0}
     end;
 
-handle_call({pread_iolist, Pos}, _From, File) ->
-    {RawData, NextPos} = try
-        % up to 8Kbs of read ahead
-        read_raw_iolist_int(File, Pos, 2 * ?SIZE_BLOCK - (Pos rem ?SIZE_BLOCK))
-    catch
-    _:_ ->
-        read_raw_iolist_int(File, Pos, 4)
+handle_call({pread_iolist, {Pos, _Size}}, From, File) ->
+    % 0110 UPGRADE CODE
+    handle_call({pread_iolist, Pos}, From, File);
+handle_call({pread_iolist, Pos}, From, File0) ->
+    File1 = insert_read(File0#file.rbuf, Pos, From, File0#file{rbuf=[]}),
+    % If our read-ahead is beyond the end of the data written
+    % to disk we need to force the writes to flush
+    RPos = Pos + (2 * ?SIZE_BLOCK) - (Pos rem ?SIZE_BLOCK),
+    File2 = case RPos >= File1#file.pos of
+        true -> File1#file{wstart={0,0,0}};
+        false -> File1
     end,
-    <<Prefix:1/integer, Len:31/integer, RestRawData/binary>> =
-        iolist_to_binary(RawData),
-    case Prefix of
-    1 ->
-        {Md5, IoList} = extract_md5(
-            maybe_read_more_iolist(RestRawData, 16 + Len, NextPos, File)),
-        {reply, {ok, IoList, Md5}, File};
-    0 ->
-        IoList = maybe_read_more_iolist(RestRawData, Len, NextPos, File),
-        {reply, {ok, IoList, <<>>}, File}
-    end;
+    {noreply, maybe_flush(File2), 0};
 
-handle_call({append_bin, Bin}, _From, #file{fd = Fd, eof = Pos} = File) ->
-    Blocks = make_blocks(Pos rem ?SIZE_BLOCK, Bin),
-    Size = iolist_size(Blocks),
-    case file:write(Fd, Blocks) of
-    ok ->
-        {reply, {ok, Pos, Size}, File#file{eof = Pos + Size}};
-    Error ->
-        {reply, Error, File}
-    end;
+handle_call({append_bin, Bin}, _From, #file{wbuf=WB, wlen=WL, eof=Eof}=File0) ->
+    Bytes = iolist_size(Bin),
+    Size = total_read_len(Eof rem ?SIZE_BLOCK, Bytes),
+    File1 = File0#file{wbuf=[Bin | WB], wlen=WL+Size, eof=Eof+Size},
+    File2 = case File1#file.wstart of
+        undefined -> File1#file{wstart=erlang:now()};
+        _ -> File1
+    end,
+    {reply, {ok, Eof, Size}, maybe_flush(File2), 0};
 
-handle_call(read_header, _From, #file{fd = Fd, eof = Pos} = File) ->
-    {reply, find_header(Fd, Pos div ?SIZE_BLOCK), File};
+handle_call(read_header, _From, File0) ->
+    File = #file{fd = Fd, eof = Pos} = flush(File0),
+    {reply, find_header(Fd, Pos div ?SIZE_BLOCK), File, 0};
 
-handle_call({write_header, Bin}, _From, #file{fd = Fd, eof = Pos} = File) ->
+handle_call({write_header, Bin}, _From, File0) ->
+    File = #file{fd = Fd, eof = Eof} = flush(File0),
     BinSize = byte_size(Bin),
-    case Pos rem ?SIZE_BLOCK of
-    0 ->
-        Padding = <<>>;
-    BlockOffset ->
-        Padding = <<0:(8*(?SIZE_BLOCK-BlockOffset))>>
+    case Eof rem ?SIZE_BLOCK of
+        0 -> Padding = <<>>;
+        BlockOffset -> Padding = <<0:(8*(?SIZE_BLOCK-BlockOffset))>>
     end,
     FinalBin = [Padding, <<1, BinSize:32/integer>> | make_blocks(5, [Bin])],
+    NewEof = Eof + iolist_size(FinalBin),
     case file:write(Fd, FinalBin) of
-    ok ->
-        {reply, ok, File#file{eof = Pos + iolist_size(FinalBin)}};
-    Error ->
-        {reply, Error, File}
+        ok -> {reply, ok, File#file{eof = NewEof, pos = NewEof}, 0};
+        Error -> {reply, Error, File, 0}
     end;
 
-handle_call(Mesg, From, File) ->
-    {stop, {invalid_call, Mesg}, error, File}.
+handle_call(Mesg, _From, File) ->
+    {stop, {invalid_call, Mesg}, error, flush(File)}.
 
 
 handle_cast(close, File) ->
-    {stop, normal, File};
+    {stop, normal, flush(File)};
 
-handle_cast(Mesg, File)
-    {stop, {invalid_cast, Mesg}, File}.
+handle_cast(Mesg, File) ->
+    {stop, {invalid_cast, Mesg}, flush(File)}.
 
+
+handle_info(timeout, File0) ->
+    {File1, Timeout} = case File0#file.wstart of
+        undefined ->
+            {flush_reads(File0), infinity};
+        Started ->
+            Elapsed = timer:now_diff(now(), Started) div 1000,
+            case Elapsed >= 5000 of
+                true ->
+                    {flush(File0), infinity};
+                false ->
+                    {flush_reads(File0), 5000 - Elapsed}
+            end
+    end,
+    {noreply, File1, Timeout};
 
 handle_info(maybe_close, File) ->
     case is_idle() of
@@ -323,10 +343,10 @@ handle_info({'EXIT', _, normal}, File) ->
     {noreply, File};
 
 handle_info({'EXIT', _, Reason}, File) ->
-    {stop, Reason, File};
+    {stop, Reason, flush(File)};
 
 handle_info(Mesg, File) ->
-    {stop, {invalid_info, Mesg}, File}.
+    {stop, {invalid_info, Mesg}, flush(File)}.
 
 
 code_change(_OldVsn, State, _Extra) ->
@@ -344,9 +364,9 @@ open_int(FileName, Options) ->
 
 
 create_file(FileName, Options) ->
-    filelib:ensure_dir(Filepath),
+    filelib:ensure_dir(FileName),
     OpenOptions = file_open_options(Options),
-    case file:open(Filepath, OpenOptions) of
+    case file:open(FileName, OpenOptions) of
         {ok, Fd} ->
             {ok, Length} = file:position(Fd, eof),
             case Length > 0 of
@@ -359,29 +379,29 @@ create_file(FileName, Options) ->
                             {ok, 0} = file:position(Fd, 0),
                             ok = file:truncate(Fd),
                             ok = file:sync(Fd),
-                            {ok, #file{fd=Fd, eof=0}};
+                            {ok, #file{fd=Fd, eof=0, pos=0}};
                         false ->
                             ok = file:close(Fd),
                             throw({error, eexist})
                     end;
                 false ->
-                    {ok, #file{fd=Fd, eof=Length}}
+                    {ok, #file{fd=Fd, eof=Length, pos=Length}}
             end;
         {error, _} = Error ->
             throw(Error)
     end.
 
 
-open_file(FileName, Options)
+open_file(FileName, Options) ->
     OpenOptions = file_open_options(Options),
     % Open in read mode first, so we don't create the file if
     % it doesn't exist.
-    case file:open(Filepath, [read, raw]) of
-        {ok, Fd_Read} ->
-            {ok, Fd} = file:open(Filepath, OpenOptions),
-            ok = file:close(Fd_Read),
+    case file:open(FileName, [read, raw]) of
+        {ok, ReadFd} ->
+            {ok, Fd} = file:open(FileName, OpenOptions),
+            ok = file:close(ReadFd),
             {ok, Eof} = file:position(Fd, eof),
-            {ok, #file{fd=Fd, eof=Eof}};
+            {ok, #file{fd=Fd, eof=Eof, pos=Eof}};
         {error, _} = Error ->
             throw(Error)
     end.
@@ -403,73 +423,159 @@ maybe_track_open_os_files(FileOptions) ->
     end.
 
 
-flush(File0) ->
+maybe_flush(#file{wlen=WL, wmax=WM}=File) when WL >= WM ->
+    flush(File);
+maybe_flush(#file{rlen=RL, rmax=RM}=File) when RL >= RM ->
+    flush(File);
+maybe_flush(File) ->
+    File.
+
+
+flush(File) ->
     flush_reads(flush_writes(File)).
 
 
-flush_reads(File) ->
-    File.
+flush_writes(#file{wbuf=[], wlen=0}=File) ->
+    File#file{wstart=undefined};
+flush_writes(#file{fd=Fd, eof=Eof, pos=Pos, wbuf=WB}=File) ->
+    Blocks = make_blocks(Pos rem ?SIZE_BLOCK, lists:reverse(WB)),
+    ok = file:write(Fd, Blocks),
+    File#file{pos=Eof, wbuf=[], wlen=0, wstart=undefined}.
 
 
-flush_writes(File) ->
-    File.
+flush_reads(#file{rbuf=[], rlen=0}=File) ->
+    File;
+flush_reads(#file{rbuf=RBuf}=File0) ->
+    % Initial reads read up to 8KiB to do app level pre-fetch
+    Reads0 = [{P, (2 * ?SIZE_BLOCK) - (P rem ?SIZE_BLOCK)} || {P, _} <- RBuf],
+    Resps0 = lists:zip(do_read(File0#file.fd, Reads0), RBuf),
+
+    % Translate raw data from disk into binaries that have
+    % the block prefixes removed.
+    Lengths = lists:foldl(fun remove_prefixes/2, [], Resps0),
+
+    % Given the length data we go through and reply to
+    % anything that was satisfied by the pre-fetch as well
+    % as calculate what's required for the remaining
+    % read requests
+    {Reads1, Stats} = lists:foldl(fun make_reqs/2, {[], []}, Lengths),
+
+    % Check if we have to force a write flush to satisfy any of our
+    % reads
+    File1 = maybe_rflush(Reads1, File0),
+
+    % Construct and send the final response for anything that
+    % required multiple read calls and
+    Resps1 = lists:zip(do_read(File1#file.fd, Reads1), Stats),
+    lists:foreach(fun send_reply/1, Resps1),
+
+    % And we're done
+    File1#file{rbuf=[], rlen=0}.
 
 
+remove_prefixes({Bin, {Pos, Clients}}, Acc) when is_binary(Bin) ->
+    Offset = Pos rem ?SIZE_BLOCK,
+    Data = remove_block_prefixes(Offset, Bin),
+    [{iolist_to_binary(Data), Pos + byte_size(Bin), Clients} | Acc];
+remove_prefixes({Error, {_, Clients}}, Acc) ->
+    reply_all(Clients, Error),
+    Acc.
 
 
-find_header(_Fd, -1) ->
-    no_valid_header;
-find_header(Fd, Block) ->
-    case (catch load_header(Fd, Block)) of
-        {ok, Bin} -> {ok, Bin};
-        _Error -> find_header(Fd, Block - 1)
+make_reqs({<<0:1/integer, Len:31/integer, Rest/binary>>, Pos, Clients}, Acc) ->
+    case Len =< byte_size(Rest) of
+        true ->
+            % The app level pre-fetch was successful. Respond
+            % with the answer to each client
+            <<Data:Len/binary, _/binary>> = Rest,
+            reply_all(Clients, {ok, Data}),
+            Acc;
+        false ->
+            % We need to read more data from disk for this request
+            % so add the necessary data to our lists
+            O = Pos rem ?SIZE_BLOCK,
+            R = {Pos, total_read_len(O, Len - byte_size(Rest))},
+            S = {raw, Len, O, Rest, Clients},
+            {Reqs0, Stat0} = Acc,
+            {[R | Reqs0], [S | Stat0]}
+    end;
+make_reqs({<<1:1/integer, Len:31/integer, Rest/binary>>, Pos, Clients}, Acc) ->
+    case Len + 16 =< byte_size(Rest) of
+        true ->
+            % The app level pre-fetch was successful. Respond
+            % with the answer to each client
+            BLen = Len+16,
+            <<Data:BLen/binary, _/binary>> = Rest,
+            {Md5, IoList} = extract_md5(Data),
+            reply_all(Clients, {ok, Md5, IoList}),
+            Acc;
+        false ->
+            % We need to read more data from disk for this request
+            % so add the necessary data to our lists
+            O = Pos rem ?SIZE_BLOCK,
+            R = {Pos, total_read_len(O, (Len + 16) - byte_size(Rest))},
+            S = {md5, Len + 16, O, Rest, Clients},
+            {Reqs0, Stat0} = Acc,
+            {[R | Reqs0], [S | Stat0]}
+    end;
+make_reqs({Bin, _, Clients}, Acc) ->
+    reply_all(Clients, {invalid_length_data, Bin}),
+    Acc.
+
+
+maybe_rflush([], File) ->
+    File;
+maybe_rflush([{P, L} | _], #file{pos=Pos}=File) when (P + L) > Pos ->
+    flush_writes(File);
+maybe_rflush([_ | Rest], File) ->
+    maybe_rflush(Rest, File).
+
+
+send_reply({Rest0, {raw, L, O, Data, Clients}}) when is_binary(Rest0) ->
+    Rest = remove_block_prefixes(O, Rest0),
+    IoData = [Data | Rest],
+    case iolist_size(IoData) of
+        L -> reply_all(Clients, {ok, IoData});
+        _ -> reply_all(Clients, {error, not_enough_data})
+    end;
+send_reply({Rest0, {md5, L, O, Data, Clients}}) when is_binary(Rest0) ->
+    Rest = remove_block_prefixes(O, Rest0),
+    IoData = [Data | Rest],
+    case iolist_size(IoData) of
+        L ->
+            {Md5, Resp} = extract_md5(IoData),
+            reply_all(Clients, {ok, Md5, Resp});
+        _ ->
+            reply_all(Clients, {error, not_enough_data})
+    end;
+send_reply({Else, {_, _, _, _, Clients}}) ->
+    reply_all(Clients, Else).
+
+
+insert_read([], Pos, From, #file{rbuf=RB, rlen=RL}=File) ->
+    File#file{rbuf=[{Pos, [From]} | RB], rlen=RL+1};
+insert_read([{Pos, FList} | Rest], Pos, From, #file{rbuf=RB, rlen=RL}=File) ->
+    NewRBuf = [{Pos, [From | FList]} | Rest] ++ RB,
+    File#file{rbuf=NewRBuf, rlen=RL+1};
+insert_read([R | Rest], Pos, From, #file{rbuf=RB}=File) ->
+    insert_read(Rest, Pos, From, File#file{rbuf=[R | RB]}).
+
+
+do_read(Fd, Reads) ->
+    case file:pread(Fd, Reads) of
+        {ok, Ret} -> Ret;
+        Error -> [Error || _ <- Reads]
     end.
 
 
-load_header(Fd, Block) ->
-    {ok, <<1, HeaderLen:32/integer, RestBlock/binary>>} =
-        file:pread(Fd, Block * ?SIZE_BLOCK, ?SIZE_BLOCK),
-    TotalBytes = calculate_total_read_len(5, HeaderLen),
-    case TotalBytes > byte_size(RestBlock) of
-    false ->
-        <<RawBin:TotalBytes/binary, _/binary>> = RestBlock;
-    true ->
-        {ok, Missing} = file:pread(
-            Fd, (Block * ?SIZE_BLOCK) + 5 + byte_size(RestBlock),
-            TotalBytes - byte_size(RestBlock)),
-        RawBin = <<RestBlock/binary, Missing/binary>>
-    end,
-    <<Md5Sig:16/binary, HeaderBin/binary>> =
-        iolist_to_binary(remove_block_prefixes(5, RawBin)),
-    Md5Sig = couch_util:md5(HeaderBin),
-    {ok, HeaderBin}.
-
-
-maybe_read_more_iolist(Buffer, DataSize, _, _)
-    when DataSize =< byte_size(Buffer) ->
-    <<Data:DataSize/binary, _/binary>> = Buffer,
-    [Data];
-maybe_read_more_iolist(Buffer, DataSize, NextPos, File) ->
-    {Missing, _} =
-        read_raw_iolist_int(File, NextPos, DataSize - byte_size(Buffer)),
-    [Buffer, Missing].
-
-
-read_raw_iolist_int(#file{fd = Fd}, Pos, Len) ->
-    BlockOffset = Pos rem ?SIZE_BLOCK,
-    TotalBytes = calculate_total_read_len(BlockOffset, Len),
-    {ok, <<RawBin:TotalBytes/binary>>} = file:pread(Fd, Pos, TotalBytes),
-    {remove_block_prefixes(BlockOffset, RawBin), Pos + TotalBytes}.
-
-
 extract_md5(FullIoList) ->
-    {Md5List, IoList} = split_iolist(FullIoList, 16, []),
+    {Md5List, IoList} = split_iolist([FullIoList], 16, []),
     {iolist_to_binary(Md5List), IoList}.
 
 
-calculate_total_read_len(0, FinalLen) ->
-    calculate_total_read_len(1, FinalLen) + 1;
-calculate_total_read_len(BlockOffset, FinalLen) ->
+total_read_len(0, FinalLen) ->
+    total_read_len(1, FinalLen) + 1;
+total_read_len(BlockOffset, FinalLen) ->
     case ?SIZE_BLOCK - BlockOffset of
         BlockLeft when BlockLeft >= FinalLen ->
             FinalLen;
@@ -495,14 +601,20 @@ remove_block_prefixes(BlockOffset, Bin) ->
     end.
 
 
-make_blocks(_BlockOffset, []) ->
-    [];
 make_blocks(0, IoList) ->
-    [<<0>> | make_blocks(1, IoList)];
+    case iolist_size(IoList) of
+        0 -> [];
+        _ -> [<<0>> | make_blocks(1, IoList)]
+    end;
 make_blocks(BlockOffset, IoList) ->
-    case split_iolist(IoList, (?SIZE_BLOCK - BlockOffset), []) of
-        {Begin, End} -> [Begin | make_blocks(0, End)];
-        _SplitRemaining -> IoList
+    case iolist_size(IoList) of
+        0 ->
+            [];
+        _ ->
+            case split_iolist(IoList, (?SIZE_BLOCK - BlockOffset), []) of
+                {Begin, End} -> [Begin | make_blocks(0, End)];
+                _SplitRemaining -> IoList
+            end
     end.
 
 
@@ -513,7 +625,8 @@ split_iolist(List, 0, BeginAcc) ->
     {lists:reverse(BeginAcc), List};
 split_iolist([], SplitAt, _BeginAcc) ->
     SplitAt;
-split_iolist([<<Bin/binary>> | Rest], SplitAt, BeginAcc) when SplitAt > byte_size(Bin) ->
+split_iolist([<<Bin/binary>> | Rest], SplitAt, BeginAcc)
+        when SplitAt > byte_size(Bin) ->
     split_iolist(Rest, SplitAt - byte_size(Bin), [Bin | BeginAcc]);
 split_iolist([<<Bin/binary>> | Rest], SplitAt, BeginAcc) ->
     <<Begin:SplitAt/binary,End/binary>> = Bin,
@@ -522,11 +635,43 @@ split_iolist([Sublist| Rest], SplitAt, BeginAcc) when is_list(Sublist) ->
     case split_iolist(Sublist, SplitAt, BeginAcc) of
     {Begin, End} ->
         {Begin, [End | Rest]};
-    SplitRemaining ->
-        split_iolist(Rest, SplitAt - (SplitAt - SplitRemaining), [Sublist | BeginAcc])
+    SplitRem ->
+        split_iolist(Rest, SplitAt - (SplitAt - SplitRem), [Sublist | BeginAcc])
     end;
 split_iolist([Byte | Rest], SplitAt, BeginAcc) when is_integer(Byte) ->
     split_iolist(Rest, SplitAt - 1, [Byte | BeginAcc]).
+
+
+find_header(_Fd, -1) ->
+    no_valid_header;
+find_header(Fd, Block) ->
+    case (catch load_header(Fd, Block)) of
+        {ok, Bin} -> {ok, Bin};
+        _Error -> find_header(Fd, Block - 1)
+    end.
+
+
+load_header(Fd, Block) ->
+    {ok, <<1, HeaderLen:32/integer, RestBlock/binary>>} =
+        file:pread(Fd, Block * ?SIZE_BLOCK, ?SIZE_BLOCK),
+    TotalBytes = total_read_len(5, HeaderLen),
+    case TotalBytes > byte_size(RestBlock) of
+    false ->
+        <<RawBin:TotalBytes/binary, _/binary>> = RestBlock;
+    true ->
+        {ok, Missing} = file:pread(
+            Fd, (Block * ?SIZE_BLOCK) + 5 + byte_size(RestBlock),
+            TotalBytes - byte_size(RestBlock)),
+        RawBin = <<RestBlock/binary, Missing/binary>>
+    end,
+    <<Md5Sig:16/binary, HeaderBin/binary>> =
+        iolist_to_binary(remove_block_prefixes(5, RawBin)),
+    Md5Sig = couch_util:md5(HeaderBin),
+    {ok, HeaderBin}.
+
+
+reply_all(Clients, Resp) ->
+    [gen_server:reply(C, Resp) || C <- Clients].
 
 
 is_idle() ->

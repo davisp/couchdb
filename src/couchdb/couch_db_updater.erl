@@ -541,7 +541,7 @@ flush_trees(#db{fd = Fd} = Db,
                     throw(retry)
                 end,
                 {ok, NewSummaryPointer, SummarySize} =
-                    couch_file:append_raw_chunk(Fd, Summary),
+                    couch_file:append_raw_binary(Fd, Summary),
                 TotalSize = lists:foldl(
                     fun(#att{att_len = L}, A) -> A + L end,
                     SummarySize, Value#doc.atts),
@@ -862,7 +862,7 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, InfoBySeq0, Retry) ->
                     {_Body, AttsInfo} = Summary = copy_doc_attachments(
                         Db, Sp, DestFd),
                     SummaryChunk = make_doc_summary(NewDb, Summary),
-                    {ok, Pos, SummarySize} = couch_file:append_raw_chunk(
+                    {ok, Pos, SummarySize} = couch_file:append_raw_binary(
                         DestFd, SummaryChunk),
                     TotalLeafSize = lists:foldl(
                         fun({_, _, _, AttLen, _, _, _, _}, S) -> S + AttLen end,
