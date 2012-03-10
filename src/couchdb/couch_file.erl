@@ -13,16 +13,7 @@
 -module(couch_file).
 -behaviour(gen_server).
 
--include("couch_db.hrl").
 
--define(SIZE_BLOCK, 4096).
-
--record(file, {
-    fd,
-    eof = 0
-}).
-
-% public API
 -export([open/1, open/2, close/1]).
 -export([bytes/1, sync/1, truncate/2]).
 -export([pread_term/2, pread_binary/2, pread_iolist/2]).
@@ -32,40 +23,36 @@
 -export([read_header/1, write_header/2]).
 -export([init_delete_dir/1, delete/2, delete/3, nuke_dir/2]).
 
-% gen_server callbacks
+
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
 
 
-open(Filepath) ->
-    open(Filepath, []).
+-include("couch_db.hrl").
 
 
-open(Filepath, Options) ->
-    case gen_server:start_link(couch_file,
-            {Filepath, Options, self(), Ref = make_ref()}, []) of
-    {ok, Fd} ->
-        {ok, Fd};
-    ignore ->
-        % get the error
-        receive
-        {Ref, Pid, Error} ->
-            case process_info(self(), trap_exit) of
-            {trap_exit, true} -> receive {'EXIT', Pid, _} -> ok end;
-            {trap_exit, false} -> ok
-            end,
-            case Error of
-            {error, eacces} -> {file_permission_error, Filepath};
-            _ -> Error
-            end
-        end;
-    Error ->
-        Error
-    end.
+-define(SIZE_BLOCK, 4096).
+
+
+-record(file, {
+    fd,
+    eof=0
+}).
+
+
+open(FileName) ->
+    open(FileName, []).
+
+
+open(FileName, Options) ->
+    proc_lib:start_link(?MODULE, init, [{FileName, Options}]).
 
 
 close(Fd) ->
-    couch_util:shutdown_sync(Fd).
+    Ref = erlang:monitor(process, Fd),
+    ok = gen_server:cast(Fd, close),
+    receive {'DOWN', Ref, _, _, _} -> ok end,
+    ok.
 
 
 bytes(Fd) ->
@@ -201,58 +188,47 @@ nuke_dir(RootDelDir, Dir) ->
     end.
 
 
-% server functions
+% gen_server functions
 
-init({Filepath, Options, ReturnPid, Ref}) ->
+
+init({FileName, Options}) ->
     process_flag(trap_exit, true),
-    OpenOptions = file_open_options(Options),
-    case lists:member(create, Options) of
-    true ->
-        filelib:ensure_dir(Filepath),
-        case file:open(Filepath, OpenOptions) of
-        {ok, Fd} ->
-            {ok, Length} = file:position(Fd, eof),
-            case Length > 0 of
-            true ->
-                % this means the file already exists and has data.
-                % FYI: We don't differentiate between empty files and non-existant
-                % files here.
-                case lists:member(overwrite, Options) of
-                true ->
-                    {ok, 0} = file:position(Fd, 0),
-                    ok = file:truncate(Fd),
-                    ok = file:sync(Fd),
-                    maybe_track_open_os_files(Options),
-                    {ok, #file{fd=Fd}};
-                false ->
-                    ok = file:close(Fd),
-                    init_status_error(ReturnPid, Ref, file_exists)
-                end;
-            false ->
-                maybe_track_open_os_files(Options),
-                {ok, #file{fd=Fd}}
-            end;
-        Error ->
-            init_status_error(ReturnPid, Ref, Error)
-        end;
-    false ->
-        % open in read mode first, so we don't create the file if it doesn't exist.
-        case file:open(Filepath, [read, raw]) of
-        {ok, Fd_Read} ->
-            {ok, Fd} = file:open(Filepath, OpenOptions),
-            ok = file:close(Fd_Read),
+    Resp = try
+        open_int(FileName, Options)
+    catch
+        throw:{error, eaccess} ->
+            {error, {invalid_permissions, FileName}}
+        throw:{error, eexists} ->
+            {error, {file_exists, FileName}}
+        throw:Error ->
+            Error
+    end,
+    case Resp of
+        {ok, File} ->
             maybe_track_open_os_files(Options),
-            {ok, Eof} = file:position(Fd, eof),
-            {ok, #file{fd=Fd, eof=Eof}};
+            proc_lib:init_ack({ok, self()}),
+            gen_server:enter_loop(?MODULE, [], File);
         Error ->
-            init_status_error(ReturnPid, Ref, Error)
-        end
+            proc_lib:init_ack(Error)
     end.
 
 
 terminate(_Reason, #file{fd = Fd}) ->
     ok = file:close(Fd).
 
+
+handle_call(bytes, _From, #file{fd = Fd} = File) ->
+    {reply, file:position(Fd, eof), File};
+
+handle_call(sync, _From, #file{fd=Fd}=File) ->
+    {reply, file:sync(Fd), File};
+
+handle_call({truncate, Pos}, _From, #file{fd=Fd}=File) ->
+    {ok, Pos} = file:position(Fd, Pos),
+    case file:truncate(Fd) of
+        ok -> {reply, ok, File#file{eof = Pos}};
+        Error -> {reply, Error, File}
+    end;
 
 handle_call({pread_iolist, Pos}, _From, File) ->
     {RawData, NextPos} = try
@@ -274,21 +250,6 @@ handle_call({pread_iolist, Pos}, _From, File) ->
         {reply, {ok, IoList, <<>>}, File}
     end;
 
-handle_call(bytes, _From, #file{fd = Fd} = File) ->
-    {reply, file:position(Fd, eof), File};
-
-handle_call(sync, _From, #file{fd=Fd}=File) ->
-    {reply, file:sync(Fd), File};
-
-handle_call({truncate, Pos}, _From, #file{fd=Fd}=File) ->
-    {ok, Pos} = file:position(Fd, Pos),
-    case file:truncate(Fd) of
-    ok ->
-        {reply, ok, File#file{eof = Pos}};
-    Error ->
-        {reply, Error, File}
-    end;
-
 handle_call({append_bin, Bin}, _From, #file{fd = Fd, eof = Pos} = File) ->
     Blocks = make_blocks(Pos rem ?SIZE_BLOCK, Bin),
     Size = iolist_size(Blocks),
@@ -298,6 +259,9 @@ handle_call({append_bin, Bin}, _From, #file{fd = Fd, eof = Pos} = File) ->
     Error ->
         {reply, Error, File}
     end;
+
+handle_call(read_header, _From, #file{fd = Fd, eof = Pos} = File) ->
+    {reply, find_header(Fd, Pos div ?SIZE_BLOCK), File};
 
 handle_call({write_header, Bin}, _From, #file{fd = Fd, eof = Pos} = File) ->
     BinSize = byte_size(Bin),
@@ -315,18 +279,25 @@ handle_call({write_header, Bin}, _From, #file{fd = Fd, eof = Pos} = File) ->
         {reply, Error, File}
     end;
 
-handle_call(find_header, _From, #file{fd = Fd, eof = Pos} = File) ->
-    {reply, find_header(Fd, Pos div ?SIZE_BLOCK), File}.
+handle_call(Mesg, From, File) ->
+    {stop, {invalid_call, Mesg}, error, File}.
 
 
-handle_cast(close, Fd) ->
-    {stop,normal,Fd}.
+handle_cast(close, File) ->
+    {stop, normal, File};
+
+handle_cast(Mesg, File)
+    {stop, {invalid_cast, Mesg}, File}.
 
 
-handle_info({'EXIT', _, normal}, Fd) ->
-    {noreply, Fd};
-handle_info({'EXIT', _, Reason}, Fd) ->
-    {stop, Reason, Fd}.
+handle_info({'EXIT', _, normal}, File) ->
+    {noreply, File};
+
+handle_info({'EXIT', _, Reason}, File) ->
+    {stop, Reason, File};
+
+handle_info(Mesg, File) ->
+    {stop, {invalid_info, Mesg}, File}.
 
 
 code_change(_OldVsn, State, _Extra) ->
@@ -336,13 +307,59 @@ code_change(_OldVsn, State, _Extra) ->
 % Private API
 
 
-init_status_error(ReturnPid, Ref, Error) ->
-    ReturnPid ! {Ref, self(), Error},
-    ignore.
+open_int(FileName, Options) ->
+    case lists:member(create, Options) of
+        true -> create_file(FileName, Options);
+        false -> open_file(FileName, Options)
+    end.
+
+
+create_file(FileName, Options) ->
+    filelib:ensure_dir(Filepath),
+    OpenOptions = file_open_options(Options),
+    case file:open(Filepath, OpenOptions) of
+        {ok, Fd} ->
+            {ok, Length} = file:position(Fd, eof),
+            case Length > 0 of
+                true ->
+                    % This means the file already exists and has data.
+                    % FYI: We don't differentiate between empty files and
+                    % non-existant files here.
+                    case lists:member(overwrite, Options) of
+                        true ->
+                            {ok, 0} = file:position(Fd, 0),
+                            ok = file:truncate(Fd),
+                            ok = file:sync(Fd),
+                            {ok, #file{fd=Fd, eof=0}};
+                        false ->
+                            ok = file:close(Fd),
+                            throw({error, eexist})
+                    end;
+                false ->
+                    {ok, #file{fd=Fd, eof=Length}}
+            end;
+        {error, _} = Error ->
+            throw(Error)
+    end.
+
+
+open_file(FileName, Options)
+    OpenOptions = file_open_options(Options),
+    % Open in read mode first, so we don't create the file if
+    % it doesn't exist.
+    case file:open(Filepath, [read, raw]) of
+        {ok, Fd_Read} ->
+            {ok, Fd} = file:open(Filepath, OpenOptions),
+            ok = file:close(Fd_Read),
+            {ok, Eof} = file:position(Fd, eof),
+            {ok, #file{fd=Fd, eof=Eof}};
+        {error, _} = Error ->
+            throw(Error)
+    end.
 
 
 file_open_options(Options) ->
-    ReadOnly = case lists:member(read_only, Options) of
+    case lists:member(read_only, Options) of
         true -> [];
         false -> [append]
     end ++ [read, raw, binary].
@@ -355,6 +372,20 @@ maybe_track_open_os_files(FileOptions) ->
         false ->
             couch_stats_collector:track_process_count({couchdb, open_os_files})
     end.
+
+
+flush(File0) ->
+    flush_reads(flush_writes(File)).
+
+
+flush_reads(File) ->
+    File.
+
+
+flush_writes(File) ->
+    File.
+
+
 
 
 find_header(_Fd, -1) ->
@@ -395,8 +426,6 @@ maybe_read_more_iolist(Buffer, DataSize, NextPos, File) ->
     [Buffer, Missing].
 
 
-read_raw_iolist_int(Fd, {Pos, _Size}, Len) -> % 0110 UPGRADE CODE
-    read_raw_iolist_int(Fd, Pos, Len);
 read_raw_iolist_int(#file{fd = Fd}, Pos, Len) ->
     BlockOffset = Pos rem ?SIZE_BLOCK,
     TotalBytes = calculate_total_read_len(BlockOffset, Len),
@@ -413,12 +442,12 @@ calculate_total_read_len(0, FinalLen) ->
     calculate_total_read_len(1, FinalLen) + 1;
 calculate_total_read_len(BlockOffset, FinalLen) ->
     case ?SIZE_BLOCK - BlockOffset of
-    BlockLeft when BlockLeft >= FinalLen ->
-        FinalLen;
-    BlockLeft ->
-        FinalLen + ((FinalLen - BlockLeft) div (?SIZE_BLOCK -1)) +
-            if ((FinalLen - BlockLeft) rem (?SIZE_BLOCK -1)) =:= 0 -> 0;
-                true -> 1 end
+        BlockLeft when BlockLeft >= FinalLen ->
+            FinalLen;
+        BlockLeft ->
+            FinalLen + ((FinalLen - BlockLeft) div (?SIZE_BLOCK -1)) +
+                if ((FinalLen - BlockLeft) rem (?SIZE_BLOCK -1)) =:= 0 -> 0;
+                    true -> 1 end
     end.
 
 
@@ -429,11 +458,11 @@ remove_block_prefixes(0, <<_BlockPrefix,Rest/binary>>) ->
 remove_block_prefixes(BlockOffset, Bin) ->
     BlockBytesAvailable = ?SIZE_BLOCK - BlockOffset,
     case size(Bin) of
-    Size when Size > BlockBytesAvailable ->
-        <<DataBlock:BlockBytesAvailable/binary,Rest/binary>> = Bin,
-        [DataBlock | remove_block_prefixes(0, Rest)];
-    _Size ->
-        [Bin]
+        Size when Size > BlockBytesAvailable ->
+            <<DataBlock:BlockBytesAvailable/binary,Rest/binary>> = Bin,
+            [DataBlock | remove_block_prefixes(0, Rest)];
+        _Size ->
+            [Bin]
     end.
 
 
@@ -443,18 +472,14 @@ make_blocks(0, IoList) ->
     [<<0>> | make_blocks(1, IoList)];
 make_blocks(BlockOffset, IoList) ->
     case split_iolist(IoList, (?SIZE_BLOCK - BlockOffset), []) of
-    {Begin, End} ->
-        [Begin | make_blocks(0, End)];
-    _SplitRemaining ->
-        IoList
+        {Begin, End} -> [Begin | make_blocks(0, End)];
+        _SplitRemaining -> IoList
     end.
 
 
 %% @doc Returns a tuple where the first element contains the leading SplitAt
 %% bytes of the original iolist, and the 2nd element is the tail. If SplitAt
 %% is larger than byte_size(IoList), return the difference.
--spec split_iolist(IoList::iolist(), SplitAt::non_neg_integer(), Acc::list()) ->
-    {iolist(), iolist()} | non_neg_integer().
 split_iolist(List, 0, BeginAcc) ->
     {lists:reverse(BeginAcc), List};
 split_iolist([], SplitAt, _BeginAcc) ->
