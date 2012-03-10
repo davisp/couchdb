@@ -35,12 +35,6 @@
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
 
-%%----------------------------------------------------------------------
-%% Args:   Valid Options are [create] and [create,overwrite].
-%%  Files are opened in read/write mode.
-%% Returns: On success, {ok, Fd}
-%%  or {error, Reason} if the file could not be opened.
-%%----------------------------------------------------------------------
 
 open(Filepath) ->
     open(Filepath, []).
@@ -67,16 +61,6 @@ open(Filepath, Options) ->
         Error
     end.
 
-
-%%----------------------------------------------------------------------
-%% Purpose: To append an Erlang term to the end of the file.
-%% Args:    Erlang term to serialize and append to the file.
-%% Returns: {ok, Pos, NumBytesWritten} where Pos is the file offset to
-%%  the beginning the serialized  term. Use pread_term to read the term
-%%  back.
-%%  or {error, Reason}.
-%%----------------------------------------------------------------------
-
 append_term(Fd, Term) ->
     append_term(Fd, Term, []).
 
@@ -90,14 +74,6 @@ append_term_md5(Fd, Term) ->
 append_term_md5(Fd, Term, Options) ->
     Comp = couch_util:get_value(compression, Options, ?DEFAULT_COMPRESSION),
     append_binary_md5(Fd, couch_compress:compress(Term, Comp)).
-
-%%----------------------------------------------------------------------
-%% Purpose: To append an Erlang binary to the end of the file.
-%% Args:    Erlang term to serialize and append to the file.
-%% Returns: {ok, Pos, NumBytesWritten} where Pos is the file offset to the
-%%  beginning the serialized term. Use pread_term to read the term back.
-%%  or {error, Reason}.
-%%----------------------------------------------------------------------
 
 append_binary(Fd, Bin) ->
     gen_server:call(Fd, {append_bin, assemble_file_chunk(Bin)}, infinity).
@@ -116,25 +92,9 @@ assemble_file_chunk(Bin) ->
 assemble_file_chunk(Bin, Md5) ->
     [<<1:1/integer, (iolist_size(Bin)):31/integer>>, Md5, Bin].
 
-%%----------------------------------------------------------------------
-%% Purpose: Reads a term from a file that was written with append_term
-%% Args:    Pos, the offset into the file where the term is serialized.
-%% Returns: {ok, Term}
-%%  or {error, Reason}.
-%%----------------------------------------------------------------------
-
-
 pread_term(Fd, Pos) ->
     {ok, Bin} = pread_binary(Fd, Pos),
     {ok, couch_compress:decompress(Bin)}.
-
-
-%%----------------------------------------------------------------------
-%% Purpose: Reads a binrary from a file that was written with append_binary
-%% Args:    Pos, the offset into the file where the term is serialized.
-%% Returns: {ok, Term}
-%%  or {error, Reason}.
-%%----------------------------------------------------------------------
 
 pread_binary(Fd, Pos) ->
     {ok, L} = pread_iolist(Fd, Pos),
@@ -156,30 +116,11 @@ pread_iolist(Fd, Pos) ->
         Error
     end.
 
-%%----------------------------------------------------------------------
-%% Purpose: The length of a file, in bytes.
-%% Returns: {ok, Bytes}
-%%  or {error, Reason}.
-%%----------------------------------------------------------------------
-
-% length in bytes
 bytes(Fd) ->
     gen_server:call(Fd, bytes, infinity).
 
-%%----------------------------------------------------------------------
-%% Purpose: Truncate a file to the number of bytes.
-%% Returns: ok
-%%  or {error, Reason}.
-%%----------------------------------------------------------------------
-
 truncate(Fd, Pos) ->
     gen_server:call(Fd, {truncate, Pos}, infinity).
-
-%%----------------------------------------------------------------------
-%% Purpose: Ensure all bytes written to the file are flushed to disk.
-%% Returns: ok
-%%  or {error, Reason}.
-%%----------------------------------------------------------------------
 
 sync(Filepath) when is_list(Filepath) ->
     {ok, Fd} = file:open(Filepath, [append, raw]),
@@ -187,10 +128,6 @@ sync(Filepath) when is_list(Filepath) ->
 sync(Fd) ->
     gen_server:call(Fd, sync, infinity).
 
-%%----------------------------------------------------------------------
-%% Purpose: Close the file.
-%% Returns: ok
-%%----------------------------------------------------------------------
 close(Fd) ->
     couch_util:shutdown_sync(Fd).
 
