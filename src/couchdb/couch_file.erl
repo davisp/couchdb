@@ -23,13 +23,14 @@
 }).
 
 % public API
--export([open/1, open/2, close/1, bytes/1, sync/1, truncate/2]).
--export([pread_term/2, pread_iolist/2, pread_binary/2]).
--export([append_binary/2, append_binary_md5/2]).
--export([append_raw_chunk/2, assemble_file_chunk/1, assemble_file_chunk/2]).
+-export([open/1, open/2, close/1]).
+-export([bytes/1, sync/1, truncate/2]).
+-export([pread_term/2, pread_binary/2, pread_iolist/2]).
 -export([append_term/2, append_term/3, append_term_md5/2, append_term_md5/3]).
--export([write_header/2, read_header/1]).
--export([delete/2, delete/3, nuke_dir/2, init_delete_dir/1]).
+-export([append_binary/2, append_binary_md5/2, append_raw_binary/2]).
+-export([assemble_file_chunk/1, assemble_file_chunk/2]).
+-export([read_header/1, write_header/2]).
+-export([init_delete_dir/1, delete/2, delete/3, nuke_dir/2]).
 
 % gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -38,6 +39,7 @@
 
 open(Filepath) ->
     open(Filepath, []).
+
 
 open(Filepath, Options) ->
     case gen_server:start_link(couch_file,
@@ -61,40 +63,30 @@ open(Filepath, Options) ->
         Error
     end.
 
-append_term(Fd, Term) ->
-    append_term(Fd, Term, []).
 
-append_term(Fd, Term, Options) ->
-    Comp = couch_util:get_value(compression, Options, ?DEFAULT_COMPRESSION),
-    append_binary(Fd, couch_compress:compress(Term, Comp)).
-
-append_term_md5(Fd, Term) ->
-    append_term_md5(Fd, Term, []).
-
-append_term_md5(Fd, Term, Options) ->
-    Comp = couch_util:get_value(compression, Options, ?DEFAULT_COMPRESSION),
-    append_binary_md5(Fd, couch_compress:compress(Term, Comp)).
-
-append_binary(Fd, Bin) ->
-    gen_server:call(Fd, {append_bin, assemble_file_chunk(Bin)}, infinity).
-    
-append_binary_md5(Fd, Bin) ->
-    gen_server:call(Fd,
-        {append_bin, assemble_file_chunk(Bin, couch_util:md5(Bin))}, infinity).
-
-append_raw_chunk(Fd, Chunk) ->
-    gen_server:call(Fd, {append_bin, Chunk}, infinity).
+close(Fd) ->
+    couch_util:shutdown_sync(Fd).
 
 
-assemble_file_chunk(Bin) ->
-    [<<0:1/integer, (iolist_size(Bin)):31/integer>>, Bin].
+bytes(Fd) ->
+    gen_server:call(Fd, bytes, infinity).
 
-assemble_file_chunk(Bin, Md5) ->
-    [<<1:1/integer, (iolist_size(Bin)):31/integer>>, Md5, Bin].
+
+sync(Filepath) when is_list(Filepath) ->
+    {ok, Fd} = file:open(Filepath, [append, raw]),
+    try ok = file:sync(Fd) after ok = file:close(Fd) end;
+sync(Fd) ->
+    gen_server:call(Fd, sync, infinity).
+
+
+truncate(Fd, Pos) ->
+    gen_server:call(Fd, {truncate, Pos}, infinity).
+
 
 pread_term(Fd, Pos) ->
     {ok, Bin} = pread_binary(Fd, Pos),
     {ok, couch_compress:decompress(Bin)}.
+
 
 pread_binary(Fd, Pos) ->
     {ok, L} = pread_iolist(Fd, Pos),
@@ -116,20 +108,68 @@ pread_iolist(Fd, Pos) ->
         Error
     end.
 
-bytes(Fd) ->
-    gen_server:call(Fd, bytes, infinity).
 
-truncate(Fd, Pos) ->
-    gen_server:call(Fd, {truncate, Pos}, infinity).
+append_term(Fd, Term) ->
+    append_term(Fd, Term, []).
 
-sync(Filepath) when is_list(Filepath) ->
-    {ok, Fd} = file:open(Filepath, [append, raw]),
-    try ok = file:sync(Fd) after ok = file:close(Fd) end;
-sync(Fd) ->
-    gen_server:call(Fd, sync, infinity).
 
-close(Fd) ->
-    couch_util:shutdown_sync(Fd).
+append_term(Fd, Term, Options) ->
+    Comp = couch_util:get_value(compression, Options, ?DEFAULT_COMPRESSION),
+    append_binary(Fd, couch_compress:compress(Term, Comp)).
+
+
+append_term_md5(Fd, Term) ->
+    append_term_md5(Fd, Term, []).
+
+
+append_term_md5(Fd, Term, Options) ->
+    Comp = couch_util:get_value(compression, Options, ?DEFAULT_COMPRESSION),
+    append_binary_md5(Fd, couch_compress:compress(Term, Comp)).
+
+
+append_binary(Fd, Bin) ->
+    gen_server:call(Fd, {append_bin, assemble_file_chunk(Bin)}, infinity).
+
+    
+append_binary_md5(Fd, Bin) ->
+    gen_server:call(Fd,
+        {append_bin, assemble_file_chunk(Bin, couch_util:md5(Bin))}, infinity).
+
+
+append_raw_binary(Fd, Chunk) ->
+    gen_server:call(Fd, {append_bin, Chunk}, infinity).
+
+
+assemble_file_chunk(Bin) ->
+    [<<0:1/integer, (iolist_size(Bin)):31/integer>>, Bin].
+
+
+assemble_file_chunk(Bin, Md5) ->
+    [<<1:1/integer, (iolist_size(Bin)):31/integer>>, Md5, Bin].
+
+
+read_header(Fd) ->
+    case gen_server:call(Fd, read_header, infinity) of
+        {ok, Bin} -> {ok, binary_to_term(Bin)};
+        Else -> Else
+    end.
+
+
+write_header(Fd, Data) ->
+    Bin = term_to_binary(Data),
+    Md5 = couch_util:md5(Bin),
+    gen_server:call(Fd, {write_header, <<Md5/binary, Bin/binary>>}, infinity).
+
+
+init_delete_dir(RootDir) ->
+    Dir = filename:join(RootDir,".delete"),
+    % note: ensure_dir requires an actual filename companent, which is the
+    % reason for "foo".
+    filelib:ensure_dir(filename:join(Dir,"foo")),
+    filelib:fold_files(Dir, ".*", true,
+        fun(Filename, _) ->
+            ok = file:delete(Filename)
+        end, ok).
 
 
 delete(RootDir, Filepath) ->
@@ -168,39 +208,6 @@ nuke_dir(RootDelDir, Dir) ->
             ok
     end.
 
-
-init_delete_dir(RootDir) ->
-    Dir = filename:join(RootDir,".delete"),
-    % note: ensure_dir requires an actual filename companent, which is the
-    % reason for "foo".
-    filelib:ensure_dir(filename:join(Dir,"foo")),
-    filelib:fold_files(Dir, ".*", true,
-        fun(Filename, _) ->
-            ok = file:delete(Filename)
-        end, ok).
-
-
-read_header(Fd) ->
-    case gen_server:call(Fd, find_header, infinity) of
-    {ok, Bin} ->
-        {ok, binary_to_term(Bin)};
-    Else ->
-        Else
-    end.
-
-write_header(Fd, Data) ->
-    Bin = term_to_binary(Data),
-    Md5 = couch_util:md5(Bin),
-    % now we assemble the final header binary and write to disk
-    FinalBin = <<Md5/binary, Bin/binary>>,
-    gen_server:call(Fd, {write_header, FinalBin}, infinity).
-
-
-
-
-init_status_error(ReturnPid, Ref, Error) ->
-    ReturnPid ! {Ref, self(), Error},
-    ignore.
 
 % server functions
 
@@ -250,21 +257,6 @@ init({Filepath, Options, ReturnPid, Ref}) ->
         end
     end.
 
-file_open_options(Options) ->
-    [read, raw, binary] ++ case lists:member(read_only, Options) of
-    true ->
-        [];
-    false ->
-        [append]
-    end.
-
-maybe_track_open_os_files(FileOptions) ->
-    case lists:member(sys_db, FileOptions) of
-    true ->
-        ok;
-    false ->
-        couch_stats_collector:track_process_count({couchdb, open_os_files})
-    end.
 
 terminate(_Reason, #file{fd = Fd}) ->
     ok = file:close(Fd).
@@ -334,16 +326,46 @@ handle_call({write_header, Bin}, _From, #file{fd = Fd, eof = Pos} = File) ->
 handle_call(find_header, _From, #file{fd = Fd, eof = Pos} = File) ->
     {reply, find_header(Fd, Pos div ?SIZE_BLOCK), File}.
 
+
 handle_cast(close, Fd) ->
     {stop,normal,Fd}.
 
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
 
 handle_info({'EXIT', _, normal}, Fd) ->
     {noreply, Fd};
 handle_info({'EXIT', _, Reason}, Fd) ->
     {stop, Reason, Fd}.
+
+
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+
+% Private API
+
+
+init_status_error(ReturnPid, Ref, Error) ->
+    ReturnPid ! {Ref, self(), Error},
+    ignore.
+
+
+file_open_options(Options) ->
+    [read, raw, binary] ++ case lists:member(read_only, Options) of
+    true ->
+        [];
+    false ->
+        [append]
+    end.
+
+
+maybe_track_open_os_files(FileOptions) ->
+    case lists:member(sys_db, FileOptions) of
+    true ->
+        ok;
+    false ->
+        couch_stats_collector:track_process_count({couchdb, open_os_files})
+    end.
+
 
 
 find_header(_Fd, -1) ->
@@ -355,6 +377,7 @@ find_header(Fd, Block) ->
     _Error ->
         find_header(Fd, Block -1)
     end.
+
 
 load_header(Fd, Block) ->
     {ok, <<1, HeaderLen:32/integer, RestBlock/binary>>} =
@@ -374,6 +397,7 @@ load_header(Fd, Block) ->
     Md5Sig = couch_util:md5(HeaderBin),
     {ok, HeaderBin}.
 
+
 maybe_read_more_iolist(Buffer, DataSize, _, _)
     when DataSize =< byte_size(Buffer) ->
     <<Data:DataSize/binary, _/binary>> = Buffer,
@@ -383,8 +407,7 @@ maybe_read_more_iolist(Buffer, DataSize, NextPos, File) ->
         read_raw_iolist_int(File, NextPos, DataSize - byte_size(Buffer)),
     [Buffer, Missing].
 
--spec read_raw_iolist_int(#file{}, Pos::non_neg_integer(), Len::non_neg_integer()) ->
-    {Data::iolist(), CurPos::non_neg_integer()}.
+
 read_raw_iolist_int(Fd, {Pos, _Size}, Len) -> % 0110 UPGRADE CODE
     read_raw_iolist_int(Fd, Pos, Len);
 read_raw_iolist_int(#file{fd = Fd}, Pos, Len) ->
@@ -393,10 +416,11 @@ read_raw_iolist_int(#file{fd = Fd}, Pos, Len) ->
     {ok, <<RawBin:TotalBytes/binary>>} = file:pread(Fd, Pos, TotalBytes),
     {remove_block_prefixes(BlockOffset, RawBin), Pos + TotalBytes}.
 
--spec extract_md5(iolist()) -> {binary(), iolist()}.
+
 extract_md5(FullIoList) ->
     {Md5List, IoList} = split_iolist(FullIoList, 16, []),
     {iolist_to_binary(Md5List), IoList}.
+
 
 calculate_total_read_len(0, FinalLen) ->
     calculate_total_read_len(1, FinalLen) + 1;
@@ -409,6 +433,7 @@ calculate_total_read_len(BlockOffset, FinalLen) ->
             if ((FinalLen - BlockLeft) rem (?SIZE_BLOCK -1)) =:= 0 -> 0;
                 true -> 1 end
     end.
+
 
 remove_block_prefixes(_BlockOffset, <<>>) ->
     [];
@@ -424,6 +449,7 @@ remove_block_prefixes(BlockOffset, Bin) ->
         [Bin]
     end.
 
+
 make_blocks(_BlockOffset, []) ->
     [];
 make_blocks(0, IoList) ->
@@ -435,6 +461,7 @@ make_blocks(BlockOffset, IoList) ->
     _SplitRemaining ->
         IoList
     end.
+
 
 %% @doc Returns a tuple where the first element contains the leading SplitAt
 %% bytes of the original iolist, and the 2nd element is the tail. If SplitAt
