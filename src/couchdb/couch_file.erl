@@ -99,10 +99,8 @@ pread_iolist(Fd, Pos) ->
         {ok, IoList};
     {ok, IoList, Md5} ->
         case couch_util:md5(IoList) of
-        Md5 ->
-            {ok, IoList};
-        _ ->
-            exit({file_corruption, <<"file corruption">>})
+            Md5 -> {ok, IoList};
+            _ -> exit({file_corruption, <<"md5 does not match content">>})
         end;
     Error ->
         Error
@@ -163,13 +161,9 @@ write_header(Fd, Data) ->
 
 init_delete_dir(RootDir) ->
     Dir = filename:join(RootDir,".delete"),
-    % note: ensure_dir requires an actual filename companent, which is the
-    % reason for "foo".
     filelib:ensure_dir(filename:join(Dir,"foo")),
-    filelib:fold_files(Dir, ".*", true,
-        fun(Filename, _) ->
-            ok = file:delete(Filename)
-        end, ok).
+    RemFun = fun(Filename, _) -> ok = file:delete(Filename) end,
+    filelib:fold_files(Dir, ".*", true, RemFun, ok).
 
 
 delete(RootDir, Filepath) ->
@@ -179,15 +173,13 @@ delete(RootDir, Filepath) ->
 delete(RootDir, Filepath, Async) ->
     DelFile = filename:join([RootDir,".delete", ?b2l(couch_uuids:random())]),
     case file:rename(Filepath, DelFile) of
-    ok ->
-        if (Async) ->
+        ok when Async ->
             spawn(file, delete, [DelFile]),
             ok;
-        true ->
+        ok ->
             file:delete(DelFile)
-        end;
-    Error ->
-        Error
+        Error ->
+            Error
     end.
 
 
@@ -350,32 +342,27 @@ init_status_error(ReturnPid, Ref, Error) ->
 
 
 file_open_options(Options) ->
-    [read, raw, binary] ++ case lists:member(read_only, Options) of
-    true ->
-        [];
-    false ->
-        [append]
-    end.
+    ReadOnly = case lists:member(read_only, Options) of
+        true -> [];
+        false -> [append]
+    end ++ [read, raw, binary].
 
 
 maybe_track_open_os_files(FileOptions) ->
     case lists:member(sys_db, FileOptions) of
-    true ->
-        ok;
-    false ->
-        couch_stats_collector:track_process_count({couchdb, open_os_files})
+        true ->
+            ok;
+        false ->
+            couch_stats_collector:track_process_count({couchdb, open_os_files})
     end.
-
 
 
 find_header(_Fd, -1) ->
     no_valid_header;
 find_header(Fd, Block) ->
     case (catch load_header(Fd, Block)) of
-    {ok, Bin} ->
-        {ok, Bin};
-    _Error ->
-        find_header(Fd, Block -1)
+        {ok, Bin} -> {ok, Bin};
+        _Error -> find_header(Fd, Block - 1)
     end.
 
 
