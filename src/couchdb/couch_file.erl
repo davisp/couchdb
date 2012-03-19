@@ -43,7 +43,8 @@
     rmax,
     wbuf=[],
     wlen=0,
-    wmax
+    wmax,
+    force=false
 }).
 
 
@@ -245,7 +246,8 @@ handle_call({pread_iolist, {Pos, _Size}}, From, File) ->
     handle_call({pread_iolist, Pos}, From, File);
 handle_call({pread_iolist, Pos}, From, File0) ->
     File = insert_read(File0#file.rbuf, Pos, From, File0#file{rbuf=[]}),
-    {noreply, maybe_flush(File), 0};
+    Force = Pos + (2 * ?SIZE_BLOCK) - (Pos rem ?BLOCK_SIZE) > File#file.pos,
+    {noreply, maybe_flush(File#file{force=(Force orelse File#file.force)}), 0};
 
 handle_call({append_bin, Bin}, _From, #file{wbuf=WB, wlen=WL, eof=Eof}=File0) ->
     Bytes = iolist_size(Bin),
@@ -391,89 +393,111 @@ flush_writes(#file{fd=Fd, eof=Eof, pos=Pos, wbuf=WB}=File) ->
 
 flush_reads(#file{rbuf=[], rlen=0}=File) ->
     File;
-flush_reads(#file{fd=Fd, rbuf=RBuf}=File) ->
-    RemPref = fun
-        ({Bin, {P, Clients}}, Acc) when is_binary(Bin) ->
-            Offset = P rem ?SIZE_BLOCK,
-            Data = remove_block_prefixes(Offset, Bin),
-            [{iolist_to_binary(Data), P + byte_size(Bin), Clients} | Acc];
-        ({Error, {_, Clients}}, Acc) ->
-            reply_all(Clients, Error),
-            Acc
-    end,
-    MakeReqs = fun
-        ({<<Prefix:1/integer, Len:31/integer, Rest/binary>>, P, C}, Acc) ->
-            case Prefix of
-                % These first two cases are for when the pre-fetch
-                % was successful. Here we just chop off what we need
-                % and send it as a reply back to the waiting clients.
-                1 when Len + 16 =< byte_size(Rest) ->
-                    BLen = Len+16,
-                    <<Data:BLen/binary, _/binary>> = Rest,
-                    {Md5, IoList} = extract_md5(Data),
-                    reply_all(C, {ok, Md5, IoList}),
-                    Acc;
-                0 when Len =< byte_size(Rest) ->
-                    <<Data:Len/binary, _/binary>> = Rest,
-                    reply_all(C, {ok, Data}),
-                    Acc;
-                % We need to read more data from disk for this request
-                % so add the necessary data to our lists
-                1 ->
-                    O = P rem ?SIZE_BLOCK,
-                    R = {P, total_read_len(O, (Len + 16) - byte_size(Rest))},
-                    S = {md5, Len + 16, O, Rest, C},
-                    {Reqs0, Stat0} = Acc,
-                    {[R | Reqs0], [S | Stat0]};
-                0 ->
-                    O = P rem ?SIZE_BLOCK,
-                    R = {P, total_read_len(O, Len - byte_size(Rest))},
-                    S = {raw, Len, O, Rest, C},
-                    {Reqs0, Stat0} = Acc,
-                    {[R | Reqs0], [S | Stat0]}
-            end;
-        ({B, _, C}, Acc) ->
-            reply_all(C, {invalid_length_data, B}),
-            Acc
-    end,
-    Reply = fun
-        ({Rest0, {md5, L, O, Data, Clients}}) when is_binary(Rest0) ->
-            Rest = remove_block_prefixes(O, Rest0),
-            IoData = [Data | Rest],
-            case iolist_size(IoData) of
-                L ->
-                    {Md5, Data} = extract_md5(IoData),
-                    reply_all(Clients, {ok, Md5, Data});
-                _ ->
-                    reply_all(Clients, {error, not_enough_data})
-            end;
-        ({Rest0, {raw, L, O, Data, Clients}}) when is_binary(Rest0) ->
-            Rest = remove_block_prefixes(O, Rest0),
-            IoData = [Data | Rest],
-            case iolist_size(IoData) of
-                L -> reply_all(Clients, {ok, IoData});
-                _ -> reply_all(Clients, {error, not_enough_data})
-            end;
-        ({Else, {_, _, _, _, Clients}}) ->
-            reply_all(Clients, Else)
-    end,
+flush_reads(#file{rbuf=RBuf}=File0) ->
     % Initial reads read up to 8KiB to do app level pre-fetch
     Reads0 = [{P, (2 * ?SIZE_BLOCK) - (P rem ?SIZE_BLOCK)} || {P, _} <- RBuf],
-    Resps0 = lists:zip(do_read(Fd, Reads0), RBuf),
+    Resps0 = lists:zip(do_read(File0#file.fd, Reads0), RBuf),
+
     % Translate raw data from disk into binaries that have
     % the block prefixes removed.
-    Lengths = lists:foldl(RemPref, [], Resps0),
+    Lengths = lists:foldl(fun remove_prefixes/2, [], Resps0),
+
     % Given the length data we go through and reply to
     % anything that was satisfied by the pre-fetch as well
     % as calculate what's required for the remaining
     % read requests
-    {Reads1, Stats} = lists:foldl(MakeReqs, {[], []}, Lengths),
+    {Reads1, Stats} = lists:foldl(fun make_reqs/2, {[], []}, Lengths),
+
+    % Check if we have to force a write flush to satisfy any of our
+    % reads
+    File1 = maybe_rflush(Reads1, File0),
+
     % Construct and send the final response for anything that
     % required multiple read calls and
-    Resps1 = lists:zip(do_read(Fd, Reads1), Stats),
-    lists:foreach(Reply, Resps1),
-    % And we're flushed
-    File#file{rbuf=[], rlen=0}.
+    Resps1 = lists:zip(do_read(File1#file.fd, Reads1), Stats),
+    lists:foreach(fun send_reply/1, Resps1),
+
+    % And we're done
+    File1#file{rbuf=[], rlen=0, force=false}.
+
+
+remove_prefixes({Bin, {Pos, Clients}}, Acc) when is_binary(Bin) ->
+    Offset = P rem ?SIZE_BLOCK,
+    Data = remove_block_prefixes(Offset, Bin),
+    [{iolist_to_binary(Data), P + byte_size(Bin), Clients} | Acc];
+remove_prefixes({Error, {_, Clients}}, Acc) ->
+    reply_all(Clients, Error),
+    Acc.
+
+
+make_reqs({<<0:1/integer, Len:31/integer, Rest/binary>>, Pos, Clients}, Acc) ->
+    case Len =< byte_size(Rest) of
+        true ->
+            % The app level pre-fetch was successful. Respond
+            % with the answer to each client
+            <<Data:Len/binary, _/binary>> = Rest,
+            reply_all(Clients, {ok, Data}),
+            Acc;
+        false ->
+            % We need to read more data from disk for this request
+            % so add the necessary data to our lists
+            O = P rem ?SIZE_BLOCK,
+            R = {P, total_read_len(O, Len - byte_size(Rest))},
+            S = {raw, Len, O, Rest, C},
+            {Reqs0, Stat0} = Acc,
+            {[R | Reqs0], [S | Stat0]}
+    end;
+make_reqs({<<1:1/integer, Len:31/integer, Rest/binary>>, Pos, Clients}, Acc) ->
+    case Len + 16 =< byte_size(Rest) of
+        true ->
+            % The app level pre-fetch was successful. Respond
+            % with the answer to each client
+            BLen = Len+16,
+            <<Data:BLen/binary, _/binary>> = Rest,
+            {Md5, IoList} = extract_md5(Data),
+            reply_all(Clients, {ok, Md5, IoList}),
+            Acc;
+        false ->
+            % We need to read more data from disk for this request
+            % so add the necessary data to our lists
+            O = P rem ?SIZE_BLOCK,
+            R = {P, total_read_len(O, (Len + 16) - byte_size(Rest))},
+            S = {md5, Len + 16, O, Rest, C},
+            {Reqs0, Stat0} = Acc
+            {[R | Reqs0], [S | Stat0]}
+    end;
+make_reqs({Bin, _, Clients}, Acc) ->
+    reply_all(Clients, {invalid_length_data, Bin}),
+    Acc.
+
+
+maybe_rflush([], File) ->
+    File;
+needs_force([{P, L} | _], #file{pos=Pos}=File) when (P + L) > Pos ->
+    flush_writes(File);
+needs_force([_ | Rest], File) ->
+    needs_force(Rest, File).
+
+
+send_reply({Rest0, {raw, L, O, Data, Clients}}) when is_binary(Rest0) ->
+    Rest = remove_block_prefixes(O, Rest0),
+    IoData = [Data | Rest],
+    case iolist_size(IoData) of
+        L -> reply_all(Clients, {ok, IoData});
+        _ -> reply_all(Clients, {error, not_enough_data})
+    end;
+send_reply({Rest0, {md5, L, O, Data, Clients}}) when is_binary(Rest0) ->
+    Rest = remove_block_prefixes(O, Rest0),
+    IoData = [Data | Rest],
+    case iolist_size(IoData) of
+        L ->
+            {Md5, Data} = extract_md5(IoData),
+            reply_all(Clients, {ok, Md5, Data});
+        _ ->
+            reply_all(Clients, {error, not_enough_data})
+    end;
+send_reply({Else, {_, _, _, _, Clients}}) ->
+    reply_all(Clients, Else).
 
 
 insert_read([], Pos, From, #file{rbuf=RB, rlen=RL}=File) ->
