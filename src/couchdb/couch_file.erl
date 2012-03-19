@@ -89,15 +89,13 @@ pread_binary(Fd, Pos) ->
 
 pread_iolist(Fd, Pos) ->
     case gen_server:call(Fd, {pread_iolist, Pos}, infinity) of
-    {ok, IoList, <<>>} ->
-        {ok, IoList};
-    {ok, IoList, Md5} ->
+    {ok, Md5, IoList} ->
         case couch_util:md5(IoList) of
             Md5 -> {ok, IoList};
             _ -> exit({file_corruption, <<"md5 does not match content">>})
         end;
-    Error ->
-        Error
+    Else ->
+        Else
     end.
 
 
@@ -228,7 +226,7 @@ terminate(_Reason, #file{fd = Fd}) ->
 
 
 handle_call(bytes, _From, File) ->
-    {reply, File#file.eof, File, 0};
+    {reply, {ok, File#file.eof}, File, 0};
 
 handle_call(sync, _From, File0) ->
     File = flush(File0),
@@ -242,6 +240,9 @@ handle_call({truncate, Pos}, _From, File0) ->
         Error -> {reply, Error, File, 0}
     end;
 
+handle_call({pread_iolist, {Pos, _Size}}, From, File) ->
+    % 0110 UPGRADE CODE
+    handle_call({pread_iolist, Pos}, From, File);
 handle_call({pread_iolist, Pos}, From, File0) ->
     File = insert_read(File0#file.rbuf, Pos, From, File0#file{rbuf=[]}),
     {noreply, maybe_flush(File), 0};
@@ -250,11 +251,7 @@ handle_call({append_bin, Bin}, _From, #file{wbuf=WB, wlen=WL, eof=Eof}=File0) ->
     Bytes = iolist_size(Bin),
     Size = total_read_len(Eof rem ?SIZE_BLOCK, Bytes),
     File = File0#file{wbuf=[Bin | WB], wlen=WL+Size, eof=Eof+Size},
-    Start = case Eof rem ?SIZE_BLOCK of
-        0 -> Eof + 1;
-        _ -> Eof
-    end,
-    {reply, {ok, Start, Size}, maybe_flush(File), 0};
+    {reply, {ok, Eof, Size}, maybe_flush(File), 0};
 
 handle_call(read_header, _From, File0) ->
     File = #file{fd = Fd, eof = Pos} = flush(File0),
@@ -411,7 +408,8 @@ flush_reads(#file{fd=Fd, rbuf=RBuf}=File) ->
                 % was successful. Here we just chop off what we need
                 % and send it as a reply back to the waiting clients.
                 1 when Len + 16 =< byte_size(Rest) ->
-                    <<Data:Len/binary, _/binary>> = Rest,
+                    BLen = Len+16,
+                    <<Data:BLen/binary, _/binary>> = Rest,
                     {Md5, IoList} = extract_md5(Data),
                     reply_all(C, {ok, Md5, IoList}),
                     Acc;
@@ -453,14 +451,14 @@ flush_reads(#file{fd=Fd, rbuf=RBuf}=File) ->
             Rest = remove_block_prefixes(O, Rest0),
             IoData = [Data | Rest],
             case iolist_size(IoData) of
-                L -> reply_all(Clients, {ok, [Data | Rest]});
+                L -> reply_all(Clients, {ok, IoData});
                 _ -> reply_all(Clients, {error, not_enough_data})
             end;
         ({Else, {_, _, _, _, Clients}}) ->
             reply_all(Clients, Else)
     end,
     % Initial reads read up to 8KiB to do app level pre-fetch
-    Reads0 = [{P, 2 * ?SIZE_BLOCK - (P rem ?SIZE_BLOCK)} || {P, _} <- RBuf],
+    Reads0 = [{P, (2 * ?SIZE_BLOCK) - (P rem ?SIZE_BLOCK)} || {P, _} <- RBuf],
     Resps0 = lists:zip(do_read(Fd, Reads0), RBuf),
     % Translate raw data from disk into binaries that have
     % the block prefixes removed.
@@ -495,7 +493,7 @@ do_read(Fd, Reads) ->
 
 
 extract_md5(FullIoList) ->
-    {Md5List, IoList} = split_iolist(FullIoList, 16, []),
+    {Md5List, IoList} = split_iolist([FullIoList], 16, []),
     {iolist_to_binary(Md5List), IoList}.
 
 
