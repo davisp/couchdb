@@ -246,7 +246,7 @@ handle_call({pread_iolist, {Pos, _Size}}, From, File) ->
     handle_call({pread_iolist, Pos}, From, File);
 handle_call({pread_iolist, Pos}, From, File0) ->
     File = insert_read(File0#file.rbuf, Pos, From, File0#file{rbuf=[]}),
-    Force = Pos + (2 * ?SIZE_BLOCK) - (Pos rem ?BLOCK_SIZE) > File#file.pos,
+    Force = Pos + (2 * ?SIZE_BLOCK) - (Pos rem ?SIZE_BLOCK) > File#file.pos,
     {noreply, maybe_flush(File#file{force=(Force orelse File#file.force)}), 0};
 
 handle_call({append_bin, Bin}, _From, #file{wbuf=WB, wlen=WL, eof=Eof}=File0) ->
@@ -285,7 +285,11 @@ handle_cast(Mesg, File) ->
 
 
 handle_info(timeout, File) ->
+    erlang:send_after(5000, self(), flush),
     {noreply, flush(File)};
+
+handle_info(flush, File) ->
+    {noreply, force_flush(File)};
 
 handle_info({'EXIT', _, normal}, File) ->
     {noreply, File};
@@ -379,7 +383,15 @@ maybe_flush(File) ->
     File.
 
 
-flush(File) ->
+flush(File0) ->
+    File1 = case File0#file.force of
+        true -> flush_writes(File0);
+        false -> File0
+    end,
+    flush_reads(File1).
+
+
+force_flush(File) ->
     flush_reads(flush_writes(File)).
 
 
@@ -392,7 +404,7 @@ flush_writes(#file{fd=Fd, eof=Eof, pos=Pos, wbuf=WB}=File) ->
 
 
 flush_reads(#file{rbuf=[], rlen=0}=File) ->
-    File;
+    File#file{force=false};
 flush_reads(#file{rbuf=RBuf}=File0) ->
     % Initial reads read up to 8KiB to do app level pre-fetch
     Reads0 = [{P, (2 * ?SIZE_BLOCK) - (P rem ?SIZE_BLOCK)} || {P, _} <- RBuf],
@@ -422,9 +434,9 @@ flush_reads(#file{rbuf=RBuf}=File0) ->
 
 
 remove_prefixes({Bin, {Pos, Clients}}, Acc) when is_binary(Bin) ->
-    Offset = P rem ?SIZE_BLOCK,
+    Offset = Pos rem ?SIZE_BLOCK,
     Data = remove_block_prefixes(Offset, Bin),
-    [{iolist_to_binary(Data), P + byte_size(Bin), Clients} | Acc];
+    [{iolist_to_binary(Data), Pos + byte_size(Bin), Clients} | Acc];
 remove_prefixes({Error, {_, Clients}}, Acc) ->
     reply_all(Clients, Error),
     Acc.
@@ -441,9 +453,9 @@ make_reqs({<<0:1/integer, Len:31/integer, Rest/binary>>, Pos, Clients}, Acc) ->
         false ->
             % We need to read more data from disk for this request
             % so add the necessary data to our lists
-            O = P rem ?SIZE_BLOCK,
-            R = {P, total_read_len(O, Len - byte_size(Rest))},
-            S = {raw, Len, O, Rest, C},
+            O = Pos rem ?SIZE_BLOCK,
+            R = {Pos, total_read_len(O, Len - byte_size(Rest))},
+            S = {raw, Len, O, Rest, Clients},
             {Reqs0, Stat0} = Acc,
             {[R | Reqs0], [S | Stat0]}
     end;
@@ -460,10 +472,10 @@ make_reqs({<<1:1/integer, Len:31/integer, Rest/binary>>, Pos, Clients}, Acc) ->
         false ->
             % We need to read more data from disk for this request
             % so add the necessary data to our lists
-            O = P rem ?SIZE_BLOCK,
-            R = {P, total_read_len(O, (Len + 16) - byte_size(Rest))},
-            S = {md5, Len + 16, O, Rest, C},
-            {Reqs0, Stat0} = Acc
+            O = Pos rem ?SIZE_BLOCK,
+            R = {Pos, total_read_len(O, (Len + 16) - byte_size(Rest))},
+            S = {md5, Len + 16, O, Rest, Clients},
+            {Reqs0, Stat0} = Acc,
             {[R | Reqs0], [S | Stat0]}
     end;
 make_reqs({Bin, _, Clients}, Acc) ->
@@ -473,10 +485,10 @@ make_reqs({Bin, _, Clients}, Acc) ->
 
 maybe_rflush([], File) ->
     File;
-needs_force([{P, L} | _], #file{pos=Pos}=File) when (P + L) > Pos ->
+maybe_rflush([{P, L} | _], #file{pos=Pos}=File) when (P + L) > Pos ->
     flush_writes(File);
-needs_force([_ | Rest], File) ->
-    needs_force(Rest, File).
+maybe_rflush([_ | Rest], File) ->
+    maybe_rflush(Rest, File).
 
 
 send_reply({Rest0, {raw, L, O, Data, Clients}}) when is_binary(Rest0) ->
