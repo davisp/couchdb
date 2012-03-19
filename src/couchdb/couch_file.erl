@@ -171,7 +171,7 @@ delete(RootDir, Filepath, Async) ->
             spawn(file, delete, [DelFile]),
             ok;
         ok ->
-            file:delete(DelFile)
+            file:delete(DelFile);
         Error ->
             Error
     end.
@@ -204,9 +204,9 @@ init({FileName, Options}) ->
         open_int(FileName, Options)
     catch
         throw:{error, eaccess} ->
-            {error, {invalid_permissions, FileName}}
+            {error, {invalid_permissions, FileName}};
         throw:{error, eexists} ->
-            {error, {file_exists, FileName}}
+            {error, {file_exists, FileName}};
         throw:Error ->
             Error
     end,
@@ -218,8 +218,8 @@ init({FileName, Options}) ->
             maybe_track_open_os_files(Options),
             proc_lib:init_ack({ok, self()}),
             gen_server:enter_loop(?MODULE, [], File#file{rmax=RMax, wmax=WMax});
-        Error ->
-            proc_lib:init_ack(Error)
+        Other ->
+            proc_lib:init_ack(Other)
     end.
 
 
@@ -231,13 +231,13 @@ handle_call(bytes, _From, File) ->
     {reply, File#file.eof, File, 0};
 
 handle_call(sync, _From, File0) ->
-    File = flush(File),
+    File = flush(File0),
     {reply, file:sync(File#file.fd), File, 0};
 
 handle_call({truncate, Pos}, _From, File0) ->
     File = flush(File0),
     {ok, Pos} = file:position(File#file.fd, Pos),
-    case file:truncate(Fd) of
+    case file:truncate(File#file.fd) of
         ok -> {reply, ok, File#file{eof = Pos}, 0};
         Error -> {reply, Error, File, 0}
     end;
@@ -246,9 +246,9 @@ handle_call({pread_iolist, Pos}, From, File0) ->
     File = insert_read(File0#file.rbuf, Pos, From, File0#file{rbuf=[]}),
     {noreply, maybe_flush(File), 0};
 
-handle_call({append_bin, Bin}, From, #file{wbuf=WB, wlen=WL, eof=Eof}=File0) ->
+handle_call({append_bin, Bin}, _From, #file{wbuf=WB, wlen=WL, eof=Eof}=File0) ->
     Bytes = iolist_size(Bin),
-    Size = total_read_len(Eof rem ?SIZE_BLOCK)
+    Size = total_read_len(Eof rem ?SIZE_BLOCK, Bytes),
     File = File0#file{wbuf=[Bin | WB], wlen=WL+Size, eof=Eof+Size},
     {reply, {ok, Eof, Size}, maybe_flush(File), 0};
 
@@ -269,14 +269,14 @@ handle_call({write_header, Bin}, _From, File0) ->
         Error -> {reply, Error, File, 0}
     end;
 
-handle_call(Mesg, From, File) ->
+handle_call(Mesg, _From, File) ->
     {stop, {invalid_call, Mesg}, error, flush(File)}.
 
 
 handle_cast(close, File) ->
     {stop, normal, flush(File)};
 
-handle_cast(Mesg, File)
+handle_cast(Mesg, File) ->
     {stop, {invalid_cast, Mesg}, flush(File)}.
 
 
@@ -308,7 +308,7 @@ open_int(FileName, Options) ->
 
 
 create_file(FileName, Options) ->
-    filelib:ensure_dir(Filepath),
+    filelib:ensure_dir(FileName),
     OpenOptions = file_open_options(Options),
     case file:open(Filepath, OpenOptions) of
         {ok, Fd} ->
@@ -336,11 +336,11 @@ create_file(FileName, Options) ->
     end.
 
 
-open_file(FileName, Options)
+open_file(FileName, Options) ->
     OpenOptions = file_open_options(Options),
     % Open in read mode first, so we don't create the file if
     % it doesn't exist.
-    case file:open(Filepath, [read, raw]) of
+    case file:open(FileName, [read, raw]) of
         {ok, ReadFd} ->
             {ok, Fd} = file:open(Filepath, OpenOptions),
             ok = file:close(ReadFd),
@@ -375,7 +375,7 @@ maybe_flush(File) ->
     File.
 
 
-flush(File0) ->
+flush(File) ->
     flush_reads(flush_writes(File)).
 
 
@@ -424,7 +424,7 @@ flush_reads(#file{fd=Fd, rbuf=RBuf}=File) ->
                     {[R | Reqs0], [S | Stat0]};
                 0 ->
                     O = P rem ?SIZE_BLOCK,
-                    R = {P, total_read_len(Len - byte_size(Rest))},
+                    R = {P, total_read_len(O, Len - byte_size(Rest))},
                     S = {raw, Len, O, Rest, C},
                     {Reqs0, Stat0} = Acc,
                     {[R | Reqs0], [S | Stat0]}
@@ -444,7 +444,7 @@ flush_reads(#file{fd=Fd, rbuf=RBuf}=File) ->
                 _ ->
                     reply_all({error, not_enough_data}, Clients)
             end;
-        ({{ok, Rest0}, {raw, O, Data, Clients}}) ->
+        ({{ok, Rest0}, {raw, L, O, Data, Clients}}) ->
             Rest = remove_block_prefixes(O, Rest0),
             IoData = [Data | Rest],
             case iolist_size(IoData) of
@@ -459,7 +459,7 @@ flush_reads(#file{fd=Fd, rbuf=RBuf}=File) ->
     Resps0 = lists:zip(file:pread(Fd, Reads0), RBuf),
     % Translate raw data from disk into binaries that have
     % the block prefixes removed.
-    Lengths = lists:foldl(RemPref, [], Resps),
+    Lengths = lists:foldl(RemPref, [], Resps0),
     % Given the length data we go through and reply to
     % anything that was satisfied by the pre-fetch as well
     % as calculate what's required for the remaining
@@ -488,7 +488,7 @@ extract_md5(FullIoList) ->
 
 
 total_read_len(0, FinalLen) ->
-    calculate_total_read_len(1, FinalLen) + 1;
+    total_read_len(1, FinalLen) + 1;
 total_read_len(BlockOffset, FinalLen) ->
     case ?SIZE_BLOCK - BlockOffset of
         BlockLeft when BlockLeft >= FinalLen ->
@@ -562,7 +562,7 @@ find_header(Fd, Block) ->
 load_header(Fd, Block) ->
     {ok, <<1, HeaderLen:32/integer, RestBlock/binary>>} =
         file:pread(Fd, Block * ?SIZE_BLOCK, ?SIZE_BLOCK),
-    TotalBytes = calculate_total_read_len(5, HeaderLen),
+    TotalBytes = total_read_len(5, HeaderLen),
     case TotalBytes > byte_size(RestBlock) of
     false ->
         <<RawBin:TotalBytes/binary, _/binary>> = RestBlock;
