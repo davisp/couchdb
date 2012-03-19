@@ -357,7 +357,7 @@ handle_call({create, DbName, Options}, From, Server) ->
     [] ->
         open_db(DbName, Server, [create | Options], From);
     [_AlreadyRunningDb] ->
-        {reply, file_exists, Server}
+        {reply, {error,eexist}, Server}
     end;
 handle_call({delete, DbName, _Options}, _From, Server) ->
     DbNameList = binary_to_list(DbName),
