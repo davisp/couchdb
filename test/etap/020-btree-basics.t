@@ -15,7 +15,7 @@
 % the License.
 
 filename() -> test_util:build_file("test/etap/temp.020").
-rows() -> 250.
+rows() -> 500.
 
 -record(btree, {
     fd,

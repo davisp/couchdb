@@ -250,22 +250,27 @@ handle_call({append_bin, Bin}, _From, #file{wbuf=WB, wlen=WL, eof=Eof}=File0) ->
     Bytes = iolist_size(Bin),
     Size = total_read_len(Eof rem ?SIZE_BLOCK, Bytes),
     File = File0#file{wbuf=[Bin | WB], wlen=WL+Size, eof=Eof+Size},
-    {reply, {ok, Eof, Size}, maybe_flush(File), 0};
+    Start = case Eof rem ?SIZE_BLOCK of
+        0 -> Eof + 1;
+        _ -> Eof
+    end,
+    {reply, {ok, Start, Size}, maybe_flush(File), 0};
 
 handle_call(read_header, _From, File0) ->
     File = #file{fd = Fd, eof = Pos} = flush(File0),
     {reply, find_header(Fd, Pos div ?SIZE_BLOCK), File, 0};
 
 handle_call({write_header, Bin}, _From, File0) ->
-    File = #file{fd = Fd, eof = Pos} = flush(File0),
+    File = #file{fd = Fd, eof = Eof} = flush(File0),
     BinSize = byte_size(Bin),
-    case Pos rem ?SIZE_BLOCK of
+    case Eof rem ?SIZE_BLOCK of
         0 -> Padding = <<>>;
         BlockOffset -> Padding = <<0:(8*(?SIZE_BLOCK-BlockOffset))>>
     end,
     FinalBin = [Padding, <<1, BinSize:32/integer>> | make_blocks(5, [Bin])],
+    NewEof = Eof + iolist_size(FinalBin),
     case file:write(Fd, FinalBin) of
-        ok -> {reply, ok, File#file{eof = Pos + iolist_size(FinalBin)}, 0};
+        ok -> {reply, ok, File#file{eof = NewEof, pos = NewEof}, 0};
         Error -> {reply, Error, File, 0}
     end;
 
@@ -391,7 +396,7 @@ flush_reads(#file{rbuf=[], rlen=0}=File) ->
     File;
 flush_reads(#file{fd=Fd, rbuf=RBuf}=File) ->
     RemPref = fun
-        ({{ok, Bin}, {P, Clients}}, Acc) ->
+        ({Bin, {P, Clients}}, Acc) when is_binary(Bin) ->
             Offset = P rem ?SIZE_BLOCK,
             Data = remove_block_prefixes(Offset, Bin),
             [{iolist_to_binary(Data), P + byte_size(Bin), Clients} | Acc];
@@ -405,14 +410,14 @@ flush_reads(#file{fd=Fd, rbuf=RBuf}=File) ->
                 % These first two cases are for when the pre-fetch
                 % was successful. Here we just chop off what we need
                 % and send it as a reply back to the waiting clients.
-                1 when Len + 16 < byte_size(Rest) ->
+                1 when Len + 16 =< byte_size(Rest) ->
                     <<Data:Len/binary, _/binary>> = Rest,
                     {Md5, IoList} = extract_md5(Data),
-                    reply_all({ok, Md5, IoList}, C),
+                    reply_all(C, {ok, Md5, IoList}),
                     Acc;
-                0 when Len < byte_size(Rest) ->
+                0 when Len =< byte_size(Rest) ->
                     <<Data:Len/binary, _/binary>> = Rest,
-                    reply_all({ok, Data}, C),
+                    reply_all(C, {ok, Data}),
                     Acc;
                 % We need to read more data from disk for this request
                 % so add the necessary data to our lists
@@ -434,29 +439,29 @@ flush_reads(#file{fd=Fd, rbuf=RBuf}=File) ->
             Acc
     end,
     Reply = fun
-        ({{ok, Rest0}, {md5, L, O, Data, Clients}}) ->
+        ({Rest0, {md5, L, O, Data, Clients}}) when is_binary(Rest0) ->
             Rest = remove_block_prefixes(O, Rest0),
             IoData = [Data | Rest],
             case iolist_size(IoData) of
                 L ->
                     {Md5, Data} = extract_md5(IoData),
-                    reply_all({ok, Md5, Data}, Clients);
+                    reply_all(Clients, {ok, Md5, Data});
                 _ ->
-                    reply_all({error, not_enough_data}, Clients)
+                    reply_all(Clients, {error, not_enough_data})
             end;
-        ({{ok, Rest0}, {raw, L, O, Data, Clients}}) ->
+        ({Rest0, {raw, L, O, Data, Clients}}) when is_binary(Rest0) ->
             Rest = remove_block_prefixes(O, Rest0),
             IoData = [Data | Rest],
             case iolist_size(IoData) of
-                L -> reply_all({ok, [Data | Rest]}, Clients);
-                _ -> reply_all({error, not_enough_data}, Clients)
+                L -> reply_all(Clients, {ok, [Data | Rest]});
+                _ -> reply_all(Clients, {error, not_enough_data})
             end;
-        ({Else, {_, _, Clients}}) ->
-            reply_all(Else, Clients)
+        ({Else, {_, _, _, _, Clients}}) ->
+            reply_all(Clients, Else)
     end,
     % Initial reads read up to 8KiB to do app level pre-fetch
     Reads0 = [{P, 2 * ?SIZE_BLOCK - (P rem ?SIZE_BLOCK)} || {P, _} <- RBuf],
-    Resps0 = lists:zip(file:pread(Fd, Reads0), RBuf),
+    Resps0 = lists:zip(do_read(Fd, Reads0), RBuf),
     % Translate raw data from disk into binaries that have
     % the block prefixes removed.
     Lengths = lists:foldl(RemPref, [], Resps0),
@@ -467,7 +472,7 @@ flush_reads(#file{fd=Fd, rbuf=RBuf}=File) ->
     {Reads1, Stats} = lists:foldl(MakeReqs, {[], []}, Lengths),
     % Construct and send the final response for anything that
     % required multiple read calls and
-    Resps1 = lists:zip(file:pread(Fd, Reads1), Stats),
+    Resps1 = lists:zip(do_read(Fd, Reads1), Stats),
     lists:foreach(Reply, Resps1),
     % And we're flushed
     File#file{rbuf=[], rlen=0}.
@@ -480,6 +485,13 @@ insert_read([{Pos, FList} | Rest], Pos, From, #file{rbuf=RB, rlen=RL}=File) ->
     File#file{rbuf=NewRBuf, rlen=RL+1};
 insert_read([R | Rest], Pos, From, #file{rbuf=RB}=File) ->
     insert_read(Rest, Pos, From, File#file{rbuf=[R | RB]}).
+
+
+do_read(Fd, Reads) ->
+    case file:pread(Fd, Reads) of
+        {ok, Ret} -> Ret;
+        Error -> [Error || _ <- Reads]
+    end.
 
 
 extract_md5(FullIoList) ->
@@ -515,14 +527,20 @@ remove_block_prefixes(BlockOffset, Bin) ->
     end.
 
 
-make_blocks(_BlockOffset, []) ->
-    [];
 make_blocks(0, IoList) ->
-    [<<0>> | make_blocks(1, IoList)];
+    case iolist_size(IoList) of
+        0 -> [];
+        _ -> [<<0>> | make_blocks(1, IoList)]
+    end;
 make_blocks(BlockOffset, IoList) ->
-    case split_iolist(IoList, (?SIZE_BLOCK - BlockOffset), []) of
-        {Begin, End} -> [Begin | make_blocks(0, End)];
-        _SplitRemaining -> IoList
+    case iolist_size(IoList) of
+        0 ->
+            [];
+        _ ->
+            case split_iolist(IoList, (?SIZE_BLOCK - BlockOffset), []) of
+                {Begin, End} -> [Begin | make_blocks(0, End)];
+                _SplitRemaining -> IoList
+            end
     end.
 
 
@@ -578,5 +596,5 @@ load_header(Fd, Block) ->
     {ok, HeaderBin}.
 
 
-reply_all(Resp, Clients) ->
-    [gen_server:reply(Resp, C) || C <- Clients].
+reply_all(Clients, Resp) ->
+    [gen_server:reply(C, Resp) || C <- Clients].
