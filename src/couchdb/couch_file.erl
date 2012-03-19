@@ -31,7 +31,7 @@
 -include("couch_db.hrl").
 
 
--define(SIZE_BLOCK, 16#1000). % 4 KiB 
+-define(SIZE_BLOCK, 16#1000). % 4 KiB
 
 
 -record(file, {
@@ -122,7 +122,7 @@ append_term_md5(Fd, Term, Options) ->
 append_binary(Fd, Bin) ->
     gen_server:call(Fd, {append_bin, assemble_file_chunk(Bin)}, infinity).
 
-    
+
 append_binary_md5(Fd, Bin) ->
     gen_server:call(Fd,
         {append_bin, assemble_file_chunk(Bin, couch_util:md5(Bin))}, infinity).
@@ -466,7 +466,7 @@ flush_reads(#file{fd=Fd, rbuf=RBuf}=File) ->
     % read requests
     {Reads1, Stats} = lists:foldl(MakeReqs, {[], []}, Lengths),
     % Construct and send the final response for anything that
-    % required multiple read calls and 
+    % required multiple read calls and
     Resps1 = lists:zip(file:pread(Fd, Reads1), Stats),
     lists:foreach(Reply, Resps1),
     % And we're flushed
