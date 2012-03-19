@@ -310,7 +310,7 @@ open_int(FileName, Options) ->
 create_file(FileName, Options) ->
     filelib:ensure_dir(FileName),
     OpenOptions = file_open_options(Options),
-    case file:open(Filepath, OpenOptions) of
+    case file:open(FileName, OpenOptions) of
         {ok, Fd} ->
             {ok, Length} = file:position(Fd, eof),
             case Length > 0 of
@@ -342,7 +342,7 @@ open_file(FileName, Options) ->
     % it doesn't exist.
     case file:open(FileName, [read, raw]) of
         {ok, ReadFd} ->
-            {ok, Fd} = file:open(Filepath, OpenOptions),
+            {ok, Fd} = file:open(FileName, OpenOptions),
             ok = file:close(ReadFd),
             {ok, Eof} = file:position(Fd, eof),
             {ok, #file{fd=Fd, eof=Eof, pos=Eof}};
