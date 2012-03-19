@@ -44,7 +44,7 @@
     wbuf=[],
     wlen=0,
     wmax,
-    force=false
+    wstart
 }).
 
 
@@ -245,15 +245,25 @@ handle_call({pread_iolist, {Pos, _Size}}, From, File) ->
     % 0110 UPGRADE CODE
     handle_call({pread_iolist, Pos}, From, File);
 handle_call({pread_iolist, Pos}, From, File0) ->
-    File = insert_read(File0#file.rbuf, Pos, From, File0#file{rbuf=[]}),
-    Force = Pos + (2 * ?SIZE_BLOCK) - (Pos rem ?SIZE_BLOCK) > File#file.pos,
-    {noreply, maybe_flush(File#file{force=(Force orelse File#file.force)}), 0};
+    File1 = insert_read(File0#file.rbuf, Pos, From, File0#file{rbuf=[]}),
+    % If our read-ahead is beyond the end of the data written
+    % to disk we need to force the writes to flush
+    RPos = (2 * ?SIZE_BLOCK) - (Pos rem ?SIZE_BLOCK),
+    File2 = case RPos >= File1#file.pos of
+        true -> File1#file{wstart={0,0,0}};
+        false -> File1
+    end,
+    {noreply, maybe_flush(File2), 0};
 
 handle_call({append_bin, Bin}, _From, #file{wbuf=WB, wlen=WL, eof=Eof}=File0) ->
     Bytes = iolist_size(Bin),
     Size = total_read_len(Eof rem ?SIZE_BLOCK, Bytes),
-    File = File0#file{wbuf=[Bin | WB], wlen=WL+Size, eof=Eof+Size},
-    {reply, {ok, Eof, Size}, maybe_flush(File), 0};
+    File1 = File0#file{wbuf=[Bin | WB], wlen=WL+Size, eof=Eof+Size},
+    File2 = case File1#file.wstart of
+        undefined -> File1#file{wstart=erlang:now()};
+        _ -> File1
+    end,
+    {reply, {ok, Eof, Size}, maybe_flush(File2), 0};
 
 handle_call(read_header, _From, File0) ->
     File = #file{fd = Fd, eof = Pos} = flush(File0),
@@ -284,12 +294,20 @@ handle_cast(Mesg, File) ->
     {stop, {invalid_cast, Mesg}, flush(File)}.
 
 
-handle_info(timeout, File) ->
-    erlang:send_after(5000, self(), flush),
-    {noreply, flush(File)};
-
-handle_info(flush, File) ->
-    {noreply, force_flush(File)};
+handle_info(timeout, File0) ->
+    {File1, Timeout} = case File0#file.wstart of
+        undefined ->
+            {flush_reads(File0), infinity};
+        Started ->
+            Remaining = timer:diff(now(), Started) div 1000,
+            case Remaining >= 5000 of
+                true ->
+                    {flush(File0), infinity};
+                false ->
+                    {flush_reads(File0), Remaining}
+            end
+    end,
+    {noreply, File1, Timeout};
 
 handle_info({'EXIT', _, normal}, File) ->
     {noreply, File};
@@ -383,28 +401,20 @@ maybe_flush(File) ->
     File.
 
 
-flush(File0) ->
-    File1 = case File0#file.force of
-        true -> flush_writes(File0);
-        false -> File0
-    end,
-    flush_reads(File1).
-
-
-force_flush(File) ->
+flush(File) ->
     flush_reads(flush_writes(File)).
 
 
 flush_writes(#file{wbuf=[], wlen=0}=File) ->
-    File;
+    File#file{wstart=undefined};
 flush_writes(#file{fd=Fd, eof=Eof, pos=Pos, wbuf=WB}=File) ->
     Blocks = make_blocks(Pos rem ?SIZE_BLOCK, lists:reverse(WB)),
     ok = file:write(Fd, Blocks),
-    File#file{pos=Eof, wbuf=[], wlen=0}.
+    File#file{pos=Eof, wbuf=[], wlen=0, wstart=undefined}.
 
 
 flush_reads(#file{rbuf=[], rlen=0}=File) ->
-    File#file{force=false};
+    File;
 flush_reads(#file{rbuf=RBuf}=File0) ->
     % Initial reads read up to 8KiB to do app level pre-fetch
     Reads0 = [{P, (2 * ?SIZE_BLOCK) - (P rem ?SIZE_BLOCK)} || {P, _} <- RBuf],
@@ -430,7 +440,7 @@ flush_reads(#file{rbuf=RBuf}=File0) ->
     lists:foreach(fun send_reply/1, Resps1),
 
     % And we're done
-    File1#file{rbuf=[], rlen=0, force=false}.
+    File1#file{rbuf=[], rlen=0}.
 
 
 remove_prefixes({Bin, {Pos, Clients}}, Acc) when is_binary(Bin) ->
