@@ -15,7 +15,7 @@
 % the License.
 
 filename() -> test_util:build_file("test/etap/temp.020").
-rows() -> 10000.
+rows() -> 500.
 
 -record(btree, {
     fd,
@@ -59,7 +59,7 @@ test_kvs(KeyValues) ->
 
     Keys = [K || {K, _} <- KeyValues],
 
-    {ok, Fd} = couch_file:open(filename(), [create,overwrite,write_buffer]),
+    {ok, Fd} = couch_file:open(filename(), [create,overwrite]),
     {ok, Btree} = couch_btree:open(nil, Fd, [{compression, none}]),
     etap:ok(is_record(Btree, btree), "Created btree is really a btree record"),
     etap:is(Btree#btree.fd, Fd, "Btree#btree.fd is set correctly."),
