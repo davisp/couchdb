@@ -322,6 +322,13 @@ handle_call({open_result, DbName, {ok, OpenedDbPid}, Options}, _From, Server) ->
     false ->
         ok
     end,
+    case lists:member(sys_db, Options) of
+    false ->
+        Stat = {couchdb, open_databases},
+        couch_stats_collector:track_process_count(OpenedDbPid, Stat);
+    true ->
+        ok
+    end,
     {reply, ok, Server};
 handle_call({open_result, DbName, Error, Options}, _From, Server) ->
     [{DbName, {opening,Opener,Froms}}] = ets:lookup(couch_dbs_by_name, DbName),

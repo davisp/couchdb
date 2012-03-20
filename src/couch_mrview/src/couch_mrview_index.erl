@@ -81,12 +81,10 @@ open(Db, State) ->
                 {ok, {Sig, Header}} ->
                     % Matching view signatures.
                     NewSt = couch_mrview_util:init_state(Db, Fd, State, Header),
-                    {ok, RefCounter} = couch_ref_counter:start([Fd]),
-                    {ok, NewSt#mrst{refc=RefCounter}};
+                    {ok, NewSt#mrst{fd_monitor=erlang:monitor(process, Fd)}};
                 _ ->
                     NewSt = couch_mrview_util:reset_index(Db, Fd, State),
-                    {ok, RefCounter} = couch_ref_counter:start([Fd]),
-                    {ok, NewSt#mrst{refc=RefCounter}}
+                    {ok, NewSt#mrst{fd_monitor=erlang:monitor(process, Fd)}}
             end;
         Error ->
             (catch couch_mrview_util:delete_files(DbName, Sig)),
@@ -95,6 +93,7 @@ open(Db, State) ->
 
 
 close(State) ->
+    erlang:demonitor(State#mrst.fd_monitor, [flush]),
     couch_file:close(State#mrst.fd).
 
 
