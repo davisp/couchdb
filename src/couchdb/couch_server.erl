@@ -371,8 +371,8 @@ handle_info({'EXIT', Pid, Reason}, #server{dbs_open=DbsOpen}=Server) ->
     [#db{name = DbName, compactor_pid=Froms}] ->
         if Reason /= snappy_nif_not_loaded -> ok; true ->
             Msg = io_lib:format("To open the database `~s`, Apache CouchDB "
-                "must be built with Erlang OTP R13B04 or higher.", [Db]),
-            ?LOG_ERROR(Msg, []),
+                "must be built with Erlang OTP R13B04 or higher.", [DbName]),
+            ?LOG_ERROR(Msg, [])
         end,
         ?LOG_INFO("db ~s died with reason ~p", [DbName, Reason]),
         % icky hack of field values - compactor_pid used to store clients
