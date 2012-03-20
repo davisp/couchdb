@@ -212,8 +212,9 @@ init({FileName, Options}) ->
     case Resp of
         {ok, File} ->
             RMax = proplists:get_value(read_buffer, Options, 100),
-            WMax0 = proplists:get_value(write_buffer, Options, 0),
-            WMax = case WMax0 of true -> 16#A00000; _ -> WMax0 end,
+            %WMax0 = proplists:get_value(write_buffer, Options, 0),
+            % WMax = case WMax0 of true -> 16#A00000; _ -> WMax0 end,
+            WMax = 16#A00000,
             maybe_track_open_os_files(Options),
             proc_lib:init_ack({ok, self()}),
             gen_server:enter_loop(?MODULE, [], File#file{rmax=RMax, wmax=WMax});
@@ -248,7 +249,7 @@ handle_call({pread_iolist, Pos}, From, File0) ->
     File1 = insert_read(File0#file.rbuf, Pos, From, File0#file{rbuf=[]}),
     % If our read-ahead is beyond the end of the data written
     % to disk we need to force the writes to flush
-    RPos = (2 * ?SIZE_BLOCK) - (Pos rem ?SIZE_BLOCK),
+    RPos = Pos + (2 * ?SIZE_BLOCK) - (Pos rem ?SIZE_BLOCK),
     File2 = case RPos >= File1#file.pos of
         true -> File1#file{wstart={0,0,0}};
         false -> File1
@@ -299,12 +300,12 @@ handle_info(timeout, File0) ->
         undefined ->
             {flush_reads(File0), infinity};
         Started ->
-            Remaining = timer:diff(now(), Started) div 1000,
-            case Remaining >= 5000 of
+            Elapsed = timer:now_diff(now(), Started) div 1000,
+            case Elapsed >= 5000 of
                 true ->
                     {flush(File0), infinity};
                 false ->
-                    {flush_reads(File0), Remaining}
+                    {flush_reads(File0), 5000 - Elapsed}
             end
     end,
     {noreply, File1, Timeout};
@@ -513,8 +514,8 @@ send_reply({Rest0, {md5, L, O, Data, Clients}}) when is_binary(Rest0) ->
     IoData = [Data | Rest],
     case iolist_size(IoData) of
         L ->
-            {Md5, Data} = extract_md5(IoData),
-            reply_all(Clients, {ok, Md5, Data});
+            {Md5, Resp} = extract_md5(IoData),
+            reply_all(Clients, {ok, Md5, Resp});
         _ ->
             reply_all(Clients, {error, not_enough_data})
     end;
