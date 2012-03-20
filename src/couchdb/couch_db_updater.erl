@@ -58,6 +58,9 @@ handle_call(full_commit, _From, #db{waiting_delayed_commit=nil}=Db) ->
     {reply, ok, Db}; % no data waiting, return ok immediately
 handle_call(full_commit, _From,  Db) ->
     {reply, ok, commit_data(Db)}; % commit the data and return ok
+handle_call(start_compact, _From, Db) ->
+    {noreply, NewDb} = handle_cast(start_compact, Db),
+    {reply, {ok, NewDb#db.compactor_pid}, NewDb};
 handle_call(increment_update_seq, _From, Db) ->
     Db2 = commit_data(Db#db{update_seq=Db#db.update_seq+1}),
     ok = gen_server:call(couch_server, {db_updated, Db2}, infinity),
@@ -148,7 +151,17 @@ handle_call({purge_docs, IdRevs}, _From, Db) ->
     ok = gen_server:call(couch_server, {db_updated, Db2}, infinity),
     couch_db_update_notifier:notify({updated, Db#db.name}),
     {reply, {ok, (Db2#db.header)#db_header.purge_seq, IdRevsPurged}, Db2};
-handle_call(start_compact, _From, Db) ->
+handle_call(cancel_compact, _From, #db{compactor_pid = nil} = Db) ->
+    {reply, ok, Db};
+handle_call(cancel_compact, _From, #db{compactor_pid = Pid} = Db) ->
+    unlink(Pid),
+    exit(Pid, kill),
+    RootDir = couch_config:get("couchdb", "database_dir", "."),
+    ok = couch_file:delete(RootDir, Db#db.filepath ++ ".compact"),
+    {reply, ok, Db#db{compactor_pid = nil}}.
+
+
+handle_cast(start_compact, Db) ->
     case Db#db.compactor_pid of
     nil ->
         ?LOG_INFO("Starting compaction for db \"~s\"", [Db#db.name]),
@@ -160,17 +173,7 @@ handle_call(start_compact, _From, Db) ->
         % compact currently running, this is a no-op
         {reply, {ok, Db#db.compactor_pid}, Db}
     end;
-handle_call(cancel_compact, _From, #db{compactor_pid = nil} = Db) ->
-    {reply, ok, Db};
-handle_call(cancel_compact, _From, #db{compactor_pid = Pid} = Db) ->
-    unlink(Pid),
-    exit(Pid, kill),
-    RootDir = couch_config:get("couchdb", "database_dir", "."),
-    ok = couch_file:delete(RootDir, Db#db.filepath ++ ".compact"),
-    {reply, ok, Db#db{compactor_pid = nil}};
-
-
-handle_call({compact_done, CompactFilepath}, _From, #db{filepath=Filepath}=Db) ->
+handle_cast({compact_done, CompactFilepath}, #db{filepath=Filepath}=Db) ->
     {ok, NewFd} = couch_file:open(CompactFilepath),
     {ok, NewHeader} = couch_file:read_header(NewFd),
     #db{update_seq=NewSeq} = NewDb =
@@ -201,13 +204,15 @@ handle_call({compact_done, CompactFilepath}, _From, #db{filepath=Filepath}=Db) -
         ok = gen_server:call(couch_server, {db_updated, NewDb3}, infinity),
         couch_db_update_notifier:notify({compacted, NewDb3#db.name}),
         ?LOG_INFO("Compaction for db \"~s\" completed.", [Db#db.name]),
-        {reply, ok, NewDb3#db{compactor_pid=nil}};
+        {noreply, NewDb3#db{compactor_pid=nil}};
     false ->
         ?LOG_INFO("Compaction file still behind main file "
             "(update seq=~p. compact update seq=~p). Retrying.",
             [Db#db.update_seq, NewSeq]),
         close_db(NewDb),
-        {reply, {retry, Db}, Db}
+        Pid = spawn_link(fun() -> start_copy_compact(Db) end),
+        Db2 = Db#db{compactor_pid=Pid},
+        {noreply, Db2}
     end.
 
 
@@ -986,7 +991,7 @@ start_copy_compact(#db{name=Name,filepath=Filepath,header=#db_header{purge_seq=P
     NewDb3 = copy_compact(Db, NewDb2, Retry),
     close_db(NewDb3),
     case gen_server:call(
-        Db#db.update_pid, {compact_done, CompactFile}, infinity) of
+        Db#db.main_pid, {compact_done, CompactFile}, infinity) of
     ok ->
         ok;
     {retry, CurrentDb} ->
