@@ -47,7 +47,7 @@ get_view(Db, DDoc, ViewName, Args0) ->
         {ok, _} = Resp -> Resp;
         Error -> throw(Error)
     end,
-    couch_ref_counter:add(State#mrst.refc),
+    erlang:monitor(process, State#mrst.fd),
     if Args2#mrargs.stale == update_after ->
         spawn(fun() -> catch couch_index:get_state(Pid, DbUpdateSeq) end);
         true -> ok
