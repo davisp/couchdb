@@ -217,6 +217,7 @@ init({FileName, Options}) ->
             WMax = 16#A00000,
             maybe_track_open_os_files(Options),
             proc_lib:init_ack({ok, self()}),
+            erlang:send_after(60000, self(), maybe_close),
             gen_server:enter_loop(?MODULE, [], File#file{rmax=RMax, wmax=WMax});
         Other ->
             proc_lib:init_ack(Other)
@@ -309,6 +310,19 @@ handle_info(timeout, File0) ->
             end
     end,
     {noreply, File1, Timeout};
+
+handle_info(maybe_close, File) ->
+    case process_info(self(), monitored_by) of
+    {monitored_by, [_StatsCollector]} ->
+        {stop, normal, File};
+    {monitored_by, []} ->
+        ?LOG_ERROR("~p ~p is un-monitored, maybe stats collector died",
+            [?MODULE, self()]),
+        {stop, normal, File};
+    _Else ->
+        erlang:send_after(10000, self(), maybe_close),
+        {noreply, File}
+    end;
 
 handle_info({'EXIT', _, normal}, File) ->
     {noreply, File};
