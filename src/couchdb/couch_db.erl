@@ -828,7 +828,7 @@ collect_results(Pid, MRef, ResultsAcc) ->
         exit(Reason)
     end.
 
-write_and_commit(#db{main_pid=Pid}=Db, DocBuckets1,
+write_and_commit(#db{main_pid=Pid, user_ctx=Ctx}=Db, DocBuckets1,
         NonRepDocs, Options0) ->
     DocBuckets = prepare_doc_summaries(Db, DocBuckets1),
     Options = set_commit_option(Options0),

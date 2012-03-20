@@ -213,8 +213,7 @@ handle_cast({compact_done, CompactFilepath}, #db{filepath=Filepath}=Db) ->
         Pid = spawn_link(fun() -> start_copy_compact(Db) end),
         Db2 = Db#db{compactor_pid=Pid},
         {noreply, Db2}
-    end.
-
+    end;
 
 handle_cast(Msg, #db{name = Name} = Db) ->
     ?LOG_ERROR("Database `~s` updater received unexpected cast: ~p", [Name, Msg]),
