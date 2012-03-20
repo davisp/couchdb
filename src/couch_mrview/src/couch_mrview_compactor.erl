@@ -170,4 +170,4 @@ swap_compacted(OldState, NewState) ->
     unlink(OldState#mrst.fd),
     erlang:demonitor(OldState#mrst.fd_monitor, [flush]),
     
-    {ok, NewState#mrst{fd_monitor=NewRefCounter}}.
+    {ok, NewState}.

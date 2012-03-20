@@ -196,6 +196,7 @@ init_state(Db, Fd, State, Header) ->
 
     State#mrst{
         fd=Fd,
+        fd_monitor=erlang:monitor(process, Fd),
         update_seq=Seq,
         purge_seq=PurgeSeq,
         id_btree=IdBtree,
