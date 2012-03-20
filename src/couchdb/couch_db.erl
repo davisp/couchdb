@@ -122,7 +122,8 @@ monitor(#db{main_pid=MainPid}) ->
     erlang:monitor(process, MainPid).
 
 start_compact(#db{main_pid=Pid}) ->
-    gen_server:call(Pid, start_compact).
+    {ok, _} = gen_server:call(Pid, start_compact),
+    ok.
 
 cancel_compact(#db{main_pid=Pid}) ->
     gen_server:call(Pid, cancel_compact).

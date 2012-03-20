@@ -990,13 +990,7 @@ start_copy_compact(#db{name=Name,filepath=Filepath,header=#db_header{purge_seq=P
 
     NewDb3 = copy_compact(Db, NewDb2, Retry),
     close_db(NewDb3),
-    case gen_server:call(
-        Db#db.main_pid, {compact_done, CompactFile}, infinity) of
-    ok ->
-        ok;
-    {retry, CurrentDb} ->
-        start_copy_compact(CurrentDb)
-    end.
+    gen_server:cast(Db#db.main_pid, {compact_done, CompactFile}).
 
 update_compact_task(NumChanges) ->
     [Changes, Total] = couch_task_status:get([changes_done, total_changes]),
