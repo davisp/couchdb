@@ -31,6 +31,8 @@
 -include("couch_db.hrl").
 
 
+-define(INITIAL_WAIT, 60000).
+-define(MONITOR_CHECK, 10000).
 -define(SIZE_BLOCK, 16#1000). % 4 KiB
 
 
@@ -217,7 +219,7 @@ init({FileName, Options}) ->
             WMax = 16#A00000,
             maybe_track_open_os_files(Options),
             proc_lib:init_ack({ok, self()}),
-            erlang:send_after(60000, self(), maybe_close),
+            erlang:send_after(?INITIAL_WAIT, self(), maybe_close),
             gen_server:enter_loop(?MODULE, [], File#file{rmax=RMax, wmax=WMax});
         Other ->
             proc_lib:init_ack(Other)
@@ -320,7 +322,7 @@ handle_info(maybe_close, File) ->
             [?MODULE, self()]),
         {stop, normal, File};
     _Else ->
-        erlang:send_after(10000, self(), maybe_close),
+        erlang:send_after(?MONITOR_CHECK, self(), maybe_close),
         {noreply, File}
     end;
 

@@ -81,31 +81,30 @@ test() ->
     etap:is(is_process_alive(IndexerPid), true, "view group pid is alive"),
 
     query_view(3, null, false),
-    check_db_ref_count(),
+    check_db_monitor(),
     etap:is(is_process_alive(IndexerPid), true, "view group pid is alive"),
 
     create_new_doc(<<"doc1000">>),
     query_view(4, null, false),
-    check_db_ref_count(),
+    check_db_monitor(),
     etap:is(is_process_alive(IndexerPid), true, "view group pid is alive"),
 
-    Ref1 = get_db_ref_counter(),
+    Ref1 = get_db_monitor(),
     compact_db(),
-    check_db_ref_count(),
-    Ref2 = get_db_ref_counter(),
-    etap:isnt(Ref1, Ref2,  "DB ref counter changed"),
-    etap:is(false, is_process_alive(Ref1), "old DB ref counter is not alive"),
+    check_db_monitor(),
+    Ref2 = get_db_monitor(),
+    etap:isnt(Ref1, Ref2,  "DB monitor changed"),
     etap:is(is_process_alive(IndexerPid), true, "view group pid is alive"),
 
     compact_view_group(),
-    check_db_ref_count(),
-    Ref3 = get_db_ref_counter(),
-    etap:is(Ref3, Ref2,  "DB ref counter didn't change"),
+    check_db_monitor(),
+    Ref3 = get_db_monitor(),
+    etap:is(Ref3, Ref2,  "DB monitor didn't change"),
     etap:is(is_process_alive(IndexerPid), true, "view group pid is alive"),
 
     create_new_doc(<<"doc1001">>),
     query_view(5, null, false),
-    check_db_ref_count(),
+    check_db_monitor(),
     etap:is(is_process_alive(IndexerPid), true, "view group pid is alive"),
 
     etap:diag("updating the design document with a new view definition"),
@@ -202,16 +201,17 @@ wait_view_compact_done(N) ->
         wait_view_compact_done(N - 1)
     end.
 
-get_db_ref_counter() ->
-    {ok, #db{fd_ref_counter = Ref} = Db} = couch_db:open_int(test_db_name(), []),
+get_db_monitor() ->
+    {ok, #db{fd_monitor = Ref} = Db} = couch_db:open_int(test_db_name(), []),
     ok = couch_db:close(Db),
     Ref.
 
-check_db_ref_count() ->
-    {ok, #db{fd_ref_counter = Ref} = Db} = couch_db:open_int(test_db_name(), []),
+check_db_monitor() ->
+    {ok, #db{fd=Fd} = Db} = couch_db:open_int(test_db_name(), []),
+    {monitored_by, Monitors} = process_info(Fd, monitored_by),
     ok = couch_db:close(Db),
-    etap:is(couch_ref_counter:count(Ref), 2,
-        "DB ref counter is only held by couch_db and couch_db_updater"),
+    etap:is(length(Monitors), 2,
+        "DB fd is only monitored by couch_db_updater and couch_stats"),
     ok.
 
 create_docs() ->

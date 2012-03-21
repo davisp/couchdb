@@ -200,8 +200,17 @@ compact_db(Type, #db{name = Name}) ->
 
 
 check_fd(Type, #db{name = Name, fd = Fd, fd_moniotr=OldMonRef}) ->
-    MonRef = erlang:monitor(process, Fd),
-    receive {'DOWN', MonRef, process, Fd, _} ->
+    {_, MonRef} = spawn_monitor(fun() ->
+        link(Fd),
+        MC = fun(F) ->
+            % Speed up the close after the switch
+            Fd ! maybe_close,
+            receive _ -> ok after 1000 -> ok end,
+            F()
+        end,
+        MC(MC)
+    end),
+    receive {'DOWN', MonRef, process, _, _} ->
         etap:diag("Old " ++ Type ++ " database fd terminated")
     after 30000 ->
         etap:bail("Old " ++ Type ++ " database fd didn't terminate")
