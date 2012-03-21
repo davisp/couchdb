@@ -61,6 +61,18 @@ handle_call(full_commit, _From,  Db) ->
 handle_call(start_compact, _From, Db) ->
     {noreply, NewDb} = handle_cast(start_compact, Db),
     {reply, {ok, NewDb#db.compactor_pid}, NewDb};
+handle_call(compactor_pid, _From, #db{compactor_pid = Pid} = Db) ->
+    {reply, Pid, Db};
+handle_call(cancel_compact, _From, #db{compactor_pid = nil} = Db) ->
+    {reply, ok, Db};
+handle_call(cancel_compact, _From, #db{compactor_pid = Pid} = Db) ->
+    unlink(Pid),
+    exit(Pid, kill),
+    RootDir = couch_config:get("couchdb", "database_dir", "."),
+    ok = couch_file:delete(RootDir, Db#db.filepath ++ ".compact"),
+    Db2 = Db#db{compactor_pid = nil},
+    ok = gen_server:call(couch_server, {db_updated, Db2}, infinity),
+    {reply, ok, Db2};
 handle_call(increment_update_seq, _From, Db) ->
     Db2 = commit_data(Db#db{update_seq=Db#db.update_seq+1}),
     ok = gen_server:call(couch_server, {db_updated, Db2}, infinity),
@@ -150,15 +162,7 @@ handle_call({purge_docs, IdRevs}, _From, Db) ->
 
     ok = gen_server:call(couch_server, {db_updated, Db2}, infinity),
     couch_db_update_notifier:notify({updated, Db#db.name}),
-    {reply, {ok, (Db2#db.header)#db_header.purge_seq, IdRevsPurged}, Db2};
-handle_call(cancel_compact, _From, #db{compactor_pid = nil} = Db) ->
-    {reply, ok, Db};
-handle_call(cancel_compact, _From, #db{compactor_pid = Pid} = Db) ->
-    unlink(Pid),
-    exit(Pid, kill),
-    RootDir = couch_config:get("couchdb", "database_dir", "."),
-    ok = couch_file:delete(RootDir, Db#db.filepath ++ ".compact"),
-    {reply, ok, Db#db{compactor_pid = nil}}.
+    {reply, {ok, (Db2#db.header)#db_header.purge_seq, IdRevsPurged}, Db2}.
 
 
 handle_cast(start_compact, Db) ->
@@ -168,10 +172,10 @@ handle_cast(start_compact, Db) ->
         Pid = spawn_link(fun() -> start_copy_compact(Db) end),
         Db2 = Db#db{compactor_pid=Pid},
         ok = gen_server:call(couch_server, {db_updated, Db2}, infinity),
-        {reply, {ok, Pid}, Db2};
+        {noreply, Db2};
     _ ->
         % compact currently running, this is a no-op
-        {reply, {ok, Db#db.compactor_pid}, Db}
+        {noreply, Db}
     end;
 handle_cast({compact_done, CompactFilepath}, #db{filepath=Filepath}=Db) ->
     {ok, NewFd} = couch_file:open(CompactFilepath),
@@ -212,6 +216,7 @@ handle_cast({compact_done, CompactFilepath}, #db{filepath=Filepath}=Db) ->
         close_db(NewDb),
         Pid = spawn_link(fun() -> start_copy_compact(Db) end),
         Db2 = Db#db{compactor_pid=Pid},
+        ok = gen_server:call(couch_server, {db_updated, Db2}, infinity),
         {noreply, Db2}
     end;
 

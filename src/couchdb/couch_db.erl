@@ -14,6 +14,7 @@
 
 -export([open/2,open_int/2,close/1,create/2,get_db_info/1,get_design_docs/1]).
 -export([start_compact/1, cancel_compact/1]).
+-export([wait_for_compaction/1, wait_for_compaction/2]).
 -export([is_idle/1,monitor/1,count_changes_since/2]).
 -export([update_doc/3,update_doc/4,update_docs/4,update_docs/2,update_docs/3,delete_doc/3]).
 -export([get_doc_info/2,get_full_doc_info/2,get_full_doc_infos/2]).
@@ -106,7 +107,8 @@ ensure_full_commit(#db{main_pid=Pid, instance_start_time=StartTime}) ->
     {ok, StartTime}.
 
 close(#db{fd_monitor=RefCntr}) ->
-    erlang:demonitor(RefCntr).
+    erlang:demonitor(RefCntr),
+    ok.
 
 is_idle(#db{compactor_pid=nil, waiting_delayed_commit=nil} = Db) ->
     case erlang:process_info(Db#db.fd, monitored_by) of
@@ -122,11 +124,28 @@ monitor(#db{main_pid=MainPid}) ->
     erlang:monitor(process, MainPid).
 
 start_compact(#db{main_pid=Pid}) ->
-    {ok, _} = gen_server:call(Pid, start_compact),
-    ok.
+    gen_server:call(Pid, start_compact).
 
 cancel_compact(#db{main_pid=Pid}) ->
     gen_server:call(Pid, cancel_compact).
+
+wait_for_compaction(Db) ->
+    wait_for_compaction(Db, infinity).
+
+wait_for_compaction(#db{main_pid=Pid}=Db, Timeout) ->
+    Start = erlang:now(),
+    case gen_server:call(Pid, compactor_pid) of
+        CPid when is_pid(CPid) ->
+            Ref = erlang:monitor(process, CPid),
+            receive {'DOWN', Ref, _, _, _} ->
+                Elapsed = timer:now_diff(now(), Start) div 1000,
+                wait_for_compaction(Db, Timeout - Elapsed)
+            after Timeout ->
+                timeout
+            end;
+        _ ->
+            ok
+    end.
 
 delete_doc(Db, Id, Revisions) ->
     DeletedDocs = [#doc{id=Id, revs=[Rev], deleted=true} || Rev <- Revisions],
