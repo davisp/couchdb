@@ -39,7 +39,6 @@ close_int({Lru, DbName, Iter}, {Tree, Dict} = Cache) ->
             {gb_trees:delete(Lru, Tree), dict:erase(DbName, Dict)};
         false ->
             true = ets:update_element(couch_dbs, DbName, {#db.fd_monitor, nil}),
-            twig:log(warn, "~p old active ~s", [?MODULE, Db#db.name]),
             close_int(gb_trees:next(Iter), update(DbName, Cache))
         end;
     false ->
