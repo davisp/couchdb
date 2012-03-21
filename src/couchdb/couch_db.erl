@@ -94,7 +94,7 @@ reopen(#db{main_pid = Pid, fd = Fd, fd_monitor = OldRef, user_ctx = UserCtx}) ->
     true ->
         {ok, NewDb#db{user_ctx = UserCtx}};
     false ->
-        erlang:demonitor(OldRef),
+        erlang:demonitor(OldRef, [flush]),
         NewRef = erlang:monitor(process, NewFd),
         {ok, NewDb#db{user_ctx = UserCtx, fd_monitor = NewRef}}
     end.
