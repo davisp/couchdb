@@ -810,7 +810,7 @@ error_info({forbidden, Msg}) ->
     {403, <<"forbidden">>, Msg};
 error_info({unauthorized, Msg}) ->
     {401, <<"unauthorized">>, Msg};
-error_info({error,eexist}) ->
+error_info(file_exists) ->
     {412, <<"file_exists">>, <<"The file already exists.">>};
 error_info({bad_ctype, Reason}) ->
     {415, <<"bad_content_type">>, Reason};

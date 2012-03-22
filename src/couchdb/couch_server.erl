@@ -265,6 +265,8 @@ handle_call({open_result, DbName, {ok, Db}}, _From, Server) ->
     [gen_server:reply(From, {ok, Db}) || From <- Froms],
     true = ets:insert(couch_dbs, Db),
     {reply, ok, Server#server{lru = couch_lru:insert(DbName, Server#server.lru)}};
+handle_call({open_result, DbName, {error, eexist}}, From, Server) ->
+    handle_call({open_result, DbName, file_exists}, From, Server);
 handle_call({open_result, DbName, Error}, _From, Server) ->
     % icky hack of field values - compactor_pid used to store clients
     [#db{compactor_pid=Froms}] = ets:lookup(couch_dbs, DbName),
