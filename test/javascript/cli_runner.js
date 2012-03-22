@@ -31,10 +31,11 @@ var fmtStack = function(stack) {
     var match = re.exec(line);
     if(!match) continue
     var source = match[1].substr(0, 70);
-    var file = match[2].substr(0, 70);
+    var file = match[2];
     var lnum = match[3];
-    console.log("  " + lnum + ": " + file);
-    console.log("    " + source);
+    while(lnum.length < 3) lnum = " " + lnum;
+    console.log(" " + lnum + ": " + file);
+    console.log("      " + source);
   }
 }
 
