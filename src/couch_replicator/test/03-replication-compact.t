@@ -199,14 +199,20 @@ compact_db(Type, #db{name = Name}) ->
     ok = couch_db:close(Db).
 
 
-check_fd(Type, #db{name = Name, fd = Fd, fd_moniotr=OldMonRef}) ->
+check_fd(Type, #db{name = Name, fd = Fd, fd_monitor=OldMonRef}) ->
     {_, MonRef} = spawn_monitor(fun() ->
-        link(Fd),
         MC = fun(F) ->
             % Speed up the close after the switch
             Fd ! maybe_close,
-            receive _ -> ok after 1000 -> ok end,
-            F()
+            {ok, Db} = couch_db:open_int(Name, []),
+            couch_db:close(Db),
+            case Db#db.fd of
+                Fd ->
+                    receive _ -> ok after 1000 -> ok end,
+                    F(F);
+                _ ->
+                    ok
+            end
         end,
         MC(MC)
     end),
