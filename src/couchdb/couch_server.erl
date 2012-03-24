@@ -340,15 +340,22 @@ handle_call({delete, DbName, _Options}, _From, Server) ->
         Server2 =
         case ets:lookup(couch_dbs, DbName) of
         [] -> Server;
-        [#db{main_pid=Pid, compactor_pid=Froms} = Db] when is_list(Froms) ->
+        [#db{main_pid=Pid, fd=Fd, compactor_pid=Froms} = Db] ->
+            true = ets:delete(couch_dbs, DbName),
+            exit(Pid, kill),
+            % Close couch_file's faster rather than wait for
+            % their timeout
+            if is_pid(Fd) ->
+                couch_file:close(Fd);
+            true ->
+                ok
+            end,
             % icky hack of field values - compactor_pid used to store clients
-            true = ets:delete(couch_dbs, DbName),
-            exit(Pid, kill),
-            [gen_server:reply(F, not_found) || F <- Froms],
-            db_closed(Server, Db#db.options);
-        [#db{main_pid=Pid} = Db] ->
-            true = ets:delete(couch_dbs, DbName),
-            exit(Pid, kill),
+            if is_list(Froms) ->
+                [gen_server:reply(F, not_found) || F <- Froms];
+            true ->
+                ok
+            end,
             db_closed(Server, Db#db.options)
         end,
 
