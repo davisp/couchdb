@@ -85,7 +85,6 @@ track_process_count(Stat) ->
     track_process_count(self(), Stat).
 
 track_process_count(Pid, Stat) ->
-    io:format("INC: ~p~n", [Stat]),
     ok = couch_stats_collector:increment(Stat),
     gen_server:cast(?MODULE, {track_process_count, Pid, Stat}).
 
