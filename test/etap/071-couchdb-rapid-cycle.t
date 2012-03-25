@@ -22,7 +22,7 @@ main(_) ->
     catch T:R ->
         Stack = erlang:get_stacktrace(),
         etap:diag("Test died abnormally: ~p~n    ~p", [{T, R}, Stack]),
-        timer:sleep(1000),
+        timer:sleep(250),
         etap:bail(io_lib:format("Error: ~p", [{T, R}]))
     end,
     ok.
@@ -34,6 +34,8 @@ test() ->
     timer:sleep(500),
 
     couch_server:delete(dbname(), []),
+    etap:diag("Test starting"),
+    timer:sleep(250),
 
     Pid = spawn_link(fun() -> open_loop() end),
 
