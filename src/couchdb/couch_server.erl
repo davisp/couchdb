@@ -289,8 +289,12 @@ handle_call({open_result, DbName, {ok, Db}}, _From, Server) ->
     end,
     true = ets:insert(couch_dbs, Db),
     Lru = case couch_db:is_system_db(Db) of
-        false -> couch_lru:insert(DbName, Server#server.lru);
-        true -> Server#server.lru
+        false ->
+            Stat = {couchdb, open_databases},
+            couch_stats_collector:track_process_count(Db#db.main_pid, Stat),
+            couch_lru:insert(DbName, Server#server.lru);
+        true ->
+            Server#server.lru
     end,
     {reply, ok, Server#server{lru = Lru}};
 handle_call({open_result, DbName, {error, eexist}}, From, Server) ->
