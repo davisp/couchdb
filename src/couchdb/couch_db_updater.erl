@@ -469,6 +469,7 @@ init_db(DbName, Filepath, Fd, Header0, Options) ->
     {MegaSecs, Secs, MicroSecs} = now(),
     StartTime = ?l2b(io_lib:format("~p",
             [(MegaSecs*1000000*1000000) + (Secs*1000000) + MicroSecs])),
+    ok = couch_file:set_db_pid(Fd, self()),
     #db{
         fd=Fd,
         fd_monitor = erlang:monitor(process, Fd),

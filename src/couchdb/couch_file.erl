@@ -14,7 +14,7 @@
 -behaviour(gen_server).
 
 
--export([open/1, open/2, close/1]).
+-export([open/1, open/2, close/1, set_db_pid/2]).
 -export([bytes/1, sync/1, truncate/2]).
 -export([pread_term/2, pread_binary/2, pread_iolist/2]).
 -export([append_term/2, append_term/3, append_term_md5/2, append_term_md5/3]).
@@ -38,6 +38,7 @@
 
 -record(file, {
     fd,
+    db_pid,
     eof,
     pos,
     rbuf=[],
@@ -63,6 +64,10 @@ close(Fd) ->
     ok = gen_server:cast(Fd, close),
     receive {'DOWN', Ref, _, _, _} -> ok end,
     ok.
+
+
+set_db_pid(Fd, Pid) ->
+    gen_server:call(Fd, {set_db_pid, Pid}).
 
 
 bytes(Fd) ->
@@ -230,6 +235,14 @@ terminate(_Reason, #file{fd = Fd}) ->
     ok = file:close(Fd).
 
 
+handle_call({set_db_pid, Pid}, _From, #file{db_pid=OldPid}=File) ->
+    case is_pid(OldPid) of
+        true -> unlink(OldPid);
+        false -> ok
+    end,
+    link(Pid),
+    {reply, ok, File#file{db_pid=Pid}, 0};
+
 handle_call(bytes, _From, File) ->
     {reply, {ok, File#file.eof}, File, 0};
 
@@ -314,16 +327,18 @@ handle_info(timeout, File0) ->
     {noreply, File1, Timeout};
 
 handle_info(maybe_close, File) ->
-    case process_info(self(), monitored_by) of
-    {monitored_by, [_StatsCollector]} ->
-        {stop, normal, File};
-    {monitored_by, []} ->
-        ?LOG_ERROR("~p ~p is un-monitored, maybe stats collector died",
-            [?MODULE, self()]),
-        {stop, normal, File};
-    _Else ->
-        erlang:send_after(?MONITOR_CHECK, self(), maybe_close),
-        {noreply, File}
+    case is_idle() of
+        true ->
+            {stop, normal, File};
+        false ->
+            erlang:send_after(?MONITOR_CHECK, self(), maybe_close),
+            {noreply, File}
+    end;
+
+handle_info({'EXIT', Pid, _}, #file{db_pid=Pid}=File) ->
+    case is_idle() of
+        true -> {stop, normal, File};
+        false -> {noreply, File}
     end;
 
 handle_info({'EXIT', _, normal}, File) ->
@@ -659,3 +674,11 @@ load_header(Fd, Block) ->
 
 reply_all(Clients, Resp) ->
     [gen_server:reply(C, Resp) || C <- Clients].
+
+
+is_idle() ->
+    case process_info(self(), monitored_by) of
+        {monitored_by, []} -> true;
+        {monitored_by, [_]} -> true;
+        _ -> false
+    end.
