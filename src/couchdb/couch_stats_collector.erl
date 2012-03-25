@@ -20,7 +20,7 @@
 
 -export([start/0, stop/0]).
 -export([all/0, all/1, get/1, increment/1, decrement/1, record/2, clear/1]).
--export([track_process_count/1, track_process_count/2, track_process_count/3]).
+-export([track_process_count/1, track_process_count/2]).
 
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
@@ -82,16 +82,12 @@ clear(Key) ->
     catch ets:delete(?ABS_TABLE, make_key(Key)).
 
 track_process_count(Stat) ->
-    track_process_count(self(), Stat, []).
+    track_process_count(self(), Stat).
 
 track_process_count(Pid, Stat) ->
-    track_process_count(Pid, Stat, []).
-
-track_process_count(Pid, Stat, Options)  when is_pid(Pid) ->
-    case lists:member(sync, Options) of
-        true -> gen_server:call(?MODULE, {track_process_count, Stat, Pid});
-        false -> gen_server:cast(?MODULE, {track_process_count, Stat, Pid})
-    end.
+    io:format("INC: ~p~n", [Stat]),
+    ok = couch_stats_collector:increment(Stat),
+    gen_server:cast(?MODULE, {track_process_count, Pid, Stat}).
 
 
 init(_) ->
@@ -102,14 +98,10 @@ init(_) ->
 terminate(_Reason, _State) ->
     ok.
 
-handle_call({track_process_count, _, _} = Msg, _From, State) ->
-    {noreply, NewState} = handle_cast(Msg, State),
-    {reply, ok, NewState};
 handle_call(stop, _, State) ->
     {stop, normal, stopped, State}.
 
-handle_cast({track_process_count, Stat, Pid}, State) ->
-    ok = couch_stats_collector:increment(Stat),
+handle_cast({track_process_count, Pid, Stat}, State) ->
     Ref = erlang:monitor(process, Pid),
     {noreply, [{Ref, Stat} | State]}.
 
