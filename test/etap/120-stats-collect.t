@@ -75,7 +75,7 @@ test_abs_values() ->
 test_proc_counting() ->
     Self = self(),
     OnePid = spawn(fun() ->
-        couch_stats_collector:track_process_count(self(), hoopla, [sync]),
+        couch_stats_collector:track_process_count(hoopla),
         Self ! reporting,
         receive sepuku -> ok end
     end),
@@ -88,8 +88,8 @@ test_proc_counting() ->
     ),
     
     TwicePid = spawn(fun() ->
-        couch_stats_collector:track_process_count(self(), hoopla, [sync]),
-        couch_stats_collector:track_process_count(self(), hoopla, [sync]),
+        couch_stats_collector:track_process_count(hoopla),
+        couch_stats_collector:track_process_count(hoopla),
         Self ! reporting,
         receive sepuku -> ok end
     end),
