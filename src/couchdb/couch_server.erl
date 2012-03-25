@@ -58,7 +58,6 @@ open(DbName, Options) ->
     Ctx = couch_util:get_value(user_ctx, Options, #user_ctx{}),
     case ets:lookup(couch_dbs, DbName) of
     [#db{fd=Fd, fd_monitor=Lock} = Db] when Lock =/= locked ->
-        io:format("XKCD: cached ~s~n", [Db#db.name]),
         update_lru(DbName, Options),
         {ok, Db#db{user_ctx=Ctx, fd_monitor=erlang:monitor(process,Fd)}};
     _ ->
@@ -310,7 +309,6 @@ handle_call({open_result, DbName, Error}, _From, Server) ->
     end,
     {reply, ok, db_closed(NewServer, Db#db.options)};
 handle_call({open, DbName, Options}, From, Server) ->
-    io:format("XKCD: open ~s~n", [DbName]),
     case ets:lookup(couch_dbs, DbName) of
     [] ->
         DbNameList = binary_to_list(DbName),
@@ -335,7 +333,6 @@ handle_call({open, DbName, Options}, From, Server) ->
         {reply, {ok, Db}, Server}
     end;
 handle_call({create, DbName, Options}, From, Server) ->
-    io:format("XKCD: create ~s~n", [DbName]),
     DbNameList = binary_to_list(DbName),
     Filepath = get_full_filename(Server, DbNameList),
     case check_dbname(Server, DbNameList) of
@@ -365,7 +362,6 @@ handle_call({create, DbName, Options}, From, Server) ->
         {reply, Error, Server}
     end;
 handle_call({delete, DbName, _Options}, _From, Server) ->
-    io:format("XKCD: delete ~s~n", [DbName]),
     DbNameList = binary_to_list(DbName),
     case check_dbname(Server, DbNameList) of
     ok ->
