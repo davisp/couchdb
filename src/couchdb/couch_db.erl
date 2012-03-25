@@ -107,7 +107,7 @@ ensure_full_commit(#db{main_pid=Pid, instance_start_time=StartTime}) ->
     {ok, StartTime}.
 
 close(#db{fd_monitor=RefCntr}) ->
-    erlang:demonitor(RefCntr),
+    erlang:demonitor(RefCntr, [flush]),
     ok.
 
 is_idle(#db{compactor_pid=nil, waiting_delayed_commit=nil} = Db) ->
