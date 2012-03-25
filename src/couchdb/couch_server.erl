@@ -58,6 +58,7 @@ open(DbName, Options) ->
     Ctx = couch_util:get_value(user_ctx, Options, #user_ctx{}),
     case ets:lookup(couch_dbs, DbName) of
     [#db{fd=Fd, fd_monitor=Lock} = Db] when Lock =/= locked ->
+        io:format("XKCD: cached ~s~n", [Db#db.name]),
         update_lru(DbName, Options),
         {ok, Db#db{user_ctx=Ctx, fd_monitor=erlang:monitor(process,Fd)}};
     _ ->
@@ -242,9 +243,15 @@ open_async(Server, From, DbName, Filepath, Options) ->
         gen_server:call(Parent, {open_result, DbName, Res}, infinity),
         unlink(Parent)
     end),
+    ReqType = case lists:member(create, Options) of
+        true -> create;
+        false -> open
+    end,
     % icky hack of field values - compactor_pid used to store clients
+    % and fd used for opening request info
     true = ets:insert(couch_dbs, #db{
         name = DbName,
+        fd = ReqType,
         main_pid = Opener,
         compactor_pid = [From],
         fd_monitor = locked,
@@ -271,8 +278,16 @@ handle_call({open_result, DbName, {ok, Db}}, _From, Server) ->
             DbName])
     end,
     % icky hack of field values - compactor_pid used to store clients
-    [#db{compactor_pid=Froms}] = ets:lookup(couch_dbs, DbName),
+    % and fd used to possibly store a creation request
+    [#db{fd=ReqType, compactor_pid=Froms}] = ets:lookup(couch_dbs, DbName),
     [gen_server:reply(From, {ok, Db}) || From <- Froms],
+    % Cancel the creation request if it exists.
+    case ReqType of
+        {create, DbName, _Filepath, _Options, CrFrom} ->
+            gen_server:reply(CrFrom, file_exists);
+        _ ->
+            ok
+    end,
     true = ets:insert(couch_dbs, Db),
     Lru = case couch_db:is_system_db(Db) of
         false -> couch_lru:insert(DbName, Server#server.lru);
@@ -283,12 +298,19 @@ handle_call({open_result, DbName, {error, eexist}}, From, Server) ->
     handle_call({open_result, DbName, file_exists}, From, Server);
 handle_call({open_result, DbName, Error}, _From, Server) ->
     % icky hack of field values - compactor_pid used to store clients
-    [#db{compactor_pid=Froms, options=Options}] = ets:lookup(couch_dbs, DbName),
+    [#db{fd=ReqType, compactor_pid=Froms}=Db] = ets:lookup(couch_dbs, DbName),
     [gen_server:reply(From, Error) || From <- Froms],
     ?LOG_INFO("open_result error ~p for ~s", [Error, DbName]),
     true = ets:delete(couch_dbs, DbName),
-    {reply, ok, db_closed(Server, Options)};
+    NewServer = case ReqType of
+        {create, DbName, Filepath, Options, CrFrom} ->
+            open_async(Server, CrFrom, DbName, Filepath, Options);
+        _ ->
+            Server
+    end,
+    {reply, ok, db_closed(NewServer, Db#db.options)};
 handle_call({open, DbName, Options}, From, Server) ->
+    io:format("XKCD: open ~s~n", [DbName]),
     case ets:lookup(couch_dbs, DbName) of
     [] ->
         DbNameList = binary_to_list(DbName),
@@ -313,19 +335,29 @@ handle_call({open, DbName, Options}, From, Server) ->
         {reply, {ok, Db}, Server}
     end;
 handle_call({create, DbName, Options}, From, Server) ->
+    io:format("XKCD: create ~s~n", [DbName]),
     DbNameList = binary_to_list(DbName),
+    Filepath = get_full_filename(Server, DbNameList),
     case check_dbname(Server, DbNameList) of
     ok ->
         case ets:lookup(couch_dbs, DbName) of
         [] ->
             case make_room(Server, Options) of
             {ok, Server2} ->
-                Filepath = get_full_filename(Server, DbNameList),
                 {noreply, open_async(Server2, From, DbName, Filepath,
                         [create | Options])};
             CloseError ->
                 {reply, CloseError, Server}
             end;
+        [#db{fd=open}=Db] ->
+            % We're trying to create a database while someone is in
+            % the middle of trying to open it. We allow one creator
+            % to wait while we figure out if it'll succeed.
+            % icky hack of field values - fd used to store create request
+            CrOptions = [create | Options],
+            NewDb = Db#db{fd={create, DbName, Filepath, CrOptions, From}},
+            true = ets:insert(couch_dbs, NewDb),
+            {noreply, Server};
         [_AlreadyRunningDb] ->
             {reply, file_exists, Server}
         end;
@@ -333,6 +365,7 @@ handle_call({create, DbName, Options}, From, Server) ->
         {reply, Error, Server}
     end;
 handle_call({delete, DbName, _Options}, _From, Server) ->
+    io:format("XKCD: delete ~s~n", [DbName]),
     DbNameList = binary_to_list(DbName),
     case check_dbname(Server, DbNameList) of
     ok ->
