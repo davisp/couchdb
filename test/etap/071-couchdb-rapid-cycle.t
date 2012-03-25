@@ -44,9 +44,9 @@ test() ->
         ok = couch_db:close(Db),
         ok = couch_server:delete(dbname(), []),
         N + 1
-    end, 0, lists:seq(1, 1000)),
+    end, 0, lists:seq(1, 100)),
 
-    etap:is(Result, 1000, "Cycled the database 1000 times successfully."),
+    etap:is(Result, 100, "Cycled the database 1000 times successfully."),
     etap:is(is_process_alive(Pid), true, "The open loop lives"),
 
     Pid ! {self(), close},
