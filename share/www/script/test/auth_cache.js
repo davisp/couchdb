@@ -61,6 +61,12 @@ couchTests.auth_cache = function(debug) {
     return misses.current || 0;
   }
 
+  function wait(ms) {
+    var t0 = new Date(), t1;
+    do {
+      t1 = new Date();
+    } while ((t1 - t0) <= ms);
+  }
 
   function testFun() {
     var hits_before,
@@ -190,6 +196,7 @@ couchTests.auth_cache = function(debug) {
     fdmanana.password_sha = new_passwd;
 
     T(authDb.save(fdmanana).ok);
+    wait(500);
 
     // cache was refreshed
     T(CouchDB.login("fdmanana", "qwerty").error === "unauthorized");
@@ -212,6 +219,7 @@ couchTests.auth_cache = function(debug) {
     fdmanana.password_sha = new_passwd;
 
     T(authDb.save(fdmanana).ok);
+    wait(500);
 
     // cache was refreshed
     T(CouchDB.login("fdmanana", "foobar").error === "unauthorized");
@@ -225,6 +233,7 @@ couchTests.auth_cache = function(debug) {
     T(hits_after === (hits_before + 2));
 
     T(authDb.deleteDoc(fdmanana).ok);
+    wait(500);
 
     hits_before = hits_after;
     misses_before = misses_after;
