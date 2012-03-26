@@ -71,6 +71,8 @@ function runAllTestsConsole() {
     testId += 1;
     if(runTestConsole(testId, t, couchTests[t])) {
       numPassed++;
+    } else {
+      quit(3);
     }
   }
   if(numPassed != numTests) {
