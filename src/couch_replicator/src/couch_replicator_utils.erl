@@ -19,8 +19,8 @@
 -export([sum_stats/2]).
 
 -include_lib("couchdb/include/couch_db.hrl").
--include("couch_replicator_api_wrap.hrl").
--include("couch_replicator.hrl").
+-include_lib("couch_replicator_api_wrap.hrl").
+-include_lib("couch_replicator.hrl").
 -include_lib("ibrowse/include/ibrowse.hrl").
 
 -import(couch_util, [
@@ -345,8 +345,9 @@ ssl_verify_options(false, _OTPVersion) ->
     [{verify, 0}].
 
 
-open_db(#db{name = Name, user_ctx = UserCtx, options = Options}) ->
-    {ok, Db} = couch_db:open(Name, [{user_ctx, UserCtx} | Options]),
+%% New db record has Options field removed here to enable smoother dbcore migration
+open_db(#db{name = Name, user_ctx = UserCtx}) ->
+    {ok, Db} = couch_db:open(Name, [{user_ctx, UserCtx} | []]),
     Db;
 open_db(HttpDb) ->
     HttpDb.
