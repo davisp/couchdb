@@ -22,8 +22,8 @@
 -export([code_change/3, terminate/2]).
 
 -include_lib("couchdb/include/couch_db.hrl").
--include_lib("couch_replicator.hrl").
--include_lib("couch_replicator_js_functions.hrl").
+-include("couch_replicator.hrl").
+-include("couch_replicator_js_functions.hrl").
 
 -define(DOC_TO_REP, couch_rep_doc_id_to_rep_id).
 -define(REP_TO_STATE, couch_rep_id_to_rep_state).

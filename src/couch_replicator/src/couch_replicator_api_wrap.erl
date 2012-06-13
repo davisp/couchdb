@@ -19,7 +19,7 @@
 % Many options and apis aren't yet supported here, they are added as needed.
 
 -include_lib("couchdb/include/couch_db.hrl").
--include_lib("couch_replicator_api_wrap.hrl").
+-include("couch_replicator_api_wrap.hrl").
 
 -export([
     db_open/2,
