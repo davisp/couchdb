@@ -92,11 +92,11 @@ init({{_, DbName, _} = InitArgs, ReturnPid, Ref}) ->
             couch_db:monitor(Db),
             couch_db:close(Db),
             {ok, RefCounter} = couch_ref_counter:start([Fd]),
-            {ok, #group_state{
+            {ok, vs(#group_state{
                     db_name=DbName,
                     init_args=InitArgs,
                     group=Group,
-                    ref_counter=RefCounter}}
+                    ref_counter=RefCounter})}
         end;
     Error ->
         ReturnPid ! {Ref, self(), Error},
@@ -132,10 +132,10 @@ handle_call({request_group, RequestSeq}, From,
     Owner = self(),
     Pid = spawn_link(fun()-> couch_view_updater:update(Owner, Group, DbName) end),
 
-    {noreply, State#group_state{
+    {noreply, vs(State#group_state{
         updater_pid=Pid,
         waiting_list=[{From,RequestSeq}|WaitList]
-        }, infinity};
+        }), infinity};
 
 
 % If the request seqence is less than or equal to the seq_id of a known Group,
@@ -144,19 +144,19 @@ handle_call({request_group, RequestSeq}, _From, #group_state{
             group = #group{current_seq=GroupSeq} = Group,
             ref_counter = RefCounter
         } = State) when RequestSeq =< GroupSeq  ->
-    {reply, {ok, Group, RefCounter}, State};
+    {reply, {ok, Group, RefCounter}, vs(State)};
 
 % Otherwise: TargetSeq => RequestSeq > GroupSeq
 % We've already initiated the appropriate action, so just hold the response until the group is up to the RequestSeq
 handle_call({request_group, RequestSeq}, From,
         #group_state{waiting_list=WaitList}=State) ->
-    {noreply, State#group_state{
+    {noreply, vs(State#group_state{
         waiting_list=[{From, RequestSeq}|WaitList]
-        }, infinity};
+        }), infinity};
 
 handle_call(request_group_info, _From, State) ->
     GroupInfo = get_group_info(State),
-    {reply, {ok, GroupInfo}, State};
+    {reply, {ok, GroupInfo}, vs(State)};
 
 handle_call({start_compact, CompactFun}, _From, #group_state{compactor_pid=nil}
         = State) ->
@@ -175,10 +175,10 @@ handle_call({start_compact, CompactFun}, _From, #group_state{compactor_pid=nil}
         CompactFun(Group, NewGroup, DbName),
         unlink(Fd)
     end),
-    {reply, {ok, Pid}, State#group_state{compactor_pid = Pid}};
+    {reply, {ok, Pid}, vs(State#group_state{compactor_pid = Pid})};
 handle_call({start_compact, _}, _From, State) ->
     %% compact already running, this is a no-op
-    {reply, {ok, State#group_state.compactor_pid}, State};
+    {reply, {ok, State#group_state.compactor_pid}, vs(State)};
 
 handle_call({compact_done, #group{current_seq=NewSeq} = NewGroup}, _From,
         #group_state{group = #group{current_seq=OldSeq}} = State)
@@ -216,12 +216,12 @@ handle_call({compact_done, #group{current_seq=NewSeq} = NewGroup}, _From,
     {ok, NewRefCounter} = couch_ref_counter:start([NewGroup#group.fd]),
 
     self() ! delayed_commit,
-    {reply, ok, State#group_state{
+    {reply, ok, vs(State#group_state{
         group=NewGroup,
         ref_counter=NewRefCounter,
         compactor_pid=nil,
         updater_pid=NewUpdaterPid
-    }};
+    })};
 handle_call({compact_done, NewGroup}, _From, State) ->
     #group_state{
         group = #group{name = GroupId, current_seq = CurrentSeq},
@@ -229,10 +229,10 @@ handle_call({compact_done, NewGroup}, _From, State) ->
     } = State,
     ?LOG_INFO("View index compaction still behind for ~s ~s -- current: ~p " ++
         "compact: ~p", [DbName, GroupId, CurrentSeq, NewGroup#group.current_seq]),
-    {reply, update, State};
+    {reply, update, vs(State)};
 
 handle_call(cancel_compact, _From, #group_state{compactor_pid = nil} = State) ->
-    {reply, ok, State};
+    {reply, ok, vs(State)};
 handle_call(cancel_compact, _From, #group_state{compactor_pid = Pid} = State) ->
     unlink(Pid),
     exit(Pid, kill),
@@ -242,7 +242,7 @@ handle_call(cancel_compact, _From, #group_state{compactor_pid = Pid} = State) ->
     } = State,
     CompactFile = index_file_name(compact, RootDir, DbName, GroupSig),
     ok = couch_file:delete(RootDir, CompactFile),
-    {reply, ok, State#group_state{compactor_pid = nil}}.
+    {reply, ok, vs(State#group_state{compactor_pid = nil})}.
 
 
 handle_cast({partial_update, Pid, NewGroup}, #group_state{updater_pid=Pid}
@@ -263,13 +263,13 @@ handle_cast({partial_update, Pid, NewGroup}, #group_state{updater_pid=Pid}
             erlang:send_after(1000, self(), delayed_commit);
         true -> ok
         end,
-        {noreply, State#group_state{group=NewGroup, waiting_commit=true}};
+        {noreply, vs(State#group_state{group=NewGroup, waiting_commit=true})};
     false ->
-        {noreply, State}
+        {noreply, vs(State)}
     end;
 handle_cast({partial_update, _, _}, State) ->
     %% message from an old (probably pre-compaction) updater; ignore
-    {noreply, State};
+    {noreply, vs(State)};
 handle_cast(ddoc_updated, State) ->
     #group_state{
         db_name = DbName,
@@ -286,13 +286,13 @@ handle_cast(ddoc_updated, State) ->
     couch_db:close(Db),
     case NewSig of
     CurSig ->
-        {noreply, State#group_state{shutdown = false}};
+        {noreply, vs(State#group_state{shutdown = false})};
     _ ->
         case Waiters of
         [] ->
-            {stop, normal, State};
+            {stop, normal, vs(State)};
         _ ->
-            {noreply, State#group_state{shutdown = true}}
+            {noreply, vs(State#group_state{shutdown = true})}
         end
     end.
 
@@ -305,7 +305,7 @@ handle_info(delayed_commit, #group_state{db_name=DbName,group=Group}=State) ->
         % save the header
         Header = {Group#group.sig, get_index_header_data(Group)},
         ok = couch_file:write_header(Group#group.fd, Header),
-        {noreply, State#group_state{waiting_commit=false}};
+        {noreply, vs(State#group_state{waiting_commit=false})};
     true ->
         % We can't commit the header because the database seq that's fully
         % committed to disk is still behind us. If we committed now and the
@@ -313,7 +313,7 @@ handle_info(delayed_commit, #group_state{db_name=DbName,group=Group}=State) ->
         % with the database. But a crash before we commit these changes, no big
         % deal, we only lose incremental changes since last committal.
         erlang:send_after(1000, self(), delayed_commit),
-        {noreply, State#group_state{waiting_commit=true}}
+        {noreply, vs(State#group_state{waiting_commit=true})}
     end;
 
 handle_info({'EXIT', FromPid, {new_group, Group}},
@@ -331,21 +331,21 @@ handle_info({'EXIT', FromPid, {new_group, Group}},
     [] ->
         case Shutdown of
         true ->
-            {stop, normal, State};
+            {stop, normal, vs(State)};
         false ->
-            {noreply, State#group_state{waiting_commit=true, waiting_list=[],
-                group=Group, updater_pid=nil}}
+            {noreply, vs(State#group_state{waiting_commit=true, waiting_list=[],
+                    group=Group, updater_pid=nil})}
         end;
     StillWaiting ->
         % we still have some waiters, reopen the database and reupdate the index
         Owner = self(),
         Pid = spawn_link(fun() -> couch_view_updater:update(Owner, Group, DbName) end),
-        {noreply, State#group_state{waiting_commit=true,
-                waiting_list=StillWaiting, updater_pid=Pid}}
+        {noreply, vs(State#group_state{waiting_commit=true,
+                waiting_list=StillWaiting, updater_pid=Pid})}
     end;
 handle_info({'EXIT', _, {new_group, _}}, State) ->
     %% message from an old (probably pre-compaction) updater; ignore
-    {noreply, State};
+    {noreply, vs(State)};
 
 handle_info({'EXIT', UpPid, reset},
         #group_state{init_args=InitArgs, updater_pid=UpPid} = State) ->
@@ -356,40 +356,41 @@ handle_info({'EXIT', UpPid, reset},
         Pid = spawn_link(fun() ->
             couch_view_updater:update(Owner, ResetGroup, Db#db.name)
         end),
-        {noreply, State#group_state{
+        {noreply, vs(State#group_state{
                 updater_pid=Pid,
-                group=ResetGroup}};
+                group=ResetGroup})};
     Error ->
-        {stop, normal, reply_all(State, Error)}
+        {stop, normal, vs(reply_all(State, Error))}
     end;
 handle_info({'EXIT', _, reset}, State) ->
     %% message from an old (probably pre-compaction) updater; ignore
-    {noreply, State};
+    {noreply, vs(State)};
 
 handle_info({'EXIT', _FromPid, normal}, State) ->
-    {noreply, State};
+    {noreply, vs(State)};
 
 handle_info({'EXIT', FromPid, {{nocatch, Reason}, _Trace}}, State) ->
     ?LOG_DEBUG("Uncaught throw() in linked pid: ~p", [{FromPid, Reason}]),
-    {stop, Reason, State};
+    {stop, Reason, vs(State)};
 
 handle_info({'EXIT', FromPid, Reason}, State) ->
     ?LOG_DEBUG("Exit from linked pid: ~p", [{FromPid, Reason}]),
-    {stop, Reason, State};
+    {stop, Reason, vs(State)};
 
 handle_info({'DOWN',_,_,_,_}, State) ->
     ?LOG_INFO("Shutting down view group server, monitored db is closing.", []),
-    {stop, normal, reply_all(State, shutdown)}.
+    {stop, normal, vs(reply_all(State, shutdown))}.
 
 
 terminate(Reason, #group_state{updater_pid=Update, compactor_pid=Compact}=S) ->
     reply_all(S, Reason),
+    vs(S),
     couch_util:shutdown_sync(Update),
     couch_util:shutdown_sync(Compact),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+    {ok, vs(State)}.
 
 %% Local Functions
 
@@ -697,3 +698,12 @@ init_group(Db, Fd, #group{def_lang=Lang,views=Views}=
         ViewStates2, Views),
     Group#group{fd=Fd, current_seq=Seq, purge_seq=PurgeSeq,
         id_btree=IdBtree, views=Views2}.
+
+
+vs(#group_state{init_args={_, _, Old}, group=New}=St) ->
+    case Old#group.sig == New#group.sig of
+        true -> ok;
+        _ -> throw({mismatched_groups, Old, New})
+    end,
+    St.
+
