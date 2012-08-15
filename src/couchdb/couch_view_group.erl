@@ -317,7 +317,7 @@ handle_info(delayed_commit, #group_state{db_name=DbName,group=Group}=State) ->
         {noreply, State#group_state{waiting_commit=true}}
     end;
 
-handle_info({'EXIT', FromPid, {new_group, #group{sig=GroupSig} = Group}},
+handle_info({'EXIT', _, {new_group, FromPid, #group{sig=GroupSig} = Group}},
         #group_state{db_name=DbName,
             group=#group{sig=GroupSig},
             updater_pid=UpPid,
@@ -345,7 +345,7 @@ handle_info({'EXIT', FromPid, {new_group, #group{sig=GroupSig} = Group}},
         {noreply, State#group_state{waiting_commit=true,
                 waiting_list=StillWaiting, updater_pid=Pid}}
     end;
-handle_info({'EXIT', _, {new_group, _}}, State) ->
+handle_info({'EXIT', _, {new_group, _, _}}, State) ->
     %% message from an old (probably pre-compaction) updater; ignore
     {noreply, State};
 
