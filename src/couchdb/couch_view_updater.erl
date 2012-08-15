@@ -93,7 +93,7 @@ update(Owner, Group, #db{name = DbName} = Db) ->
             ok, []),
     couch_work_queue:close(MapQueue),
     receive {new_group, NewGroup0} ->
-        NewGroup = NewGroup0#group{current_seq=couch_db:get_update_seq(Db)}}),
+        NewGroup = NewGroup0#group{current_seq=couch_db:get_update_seq(Db)},
         exit({new_group, self(), NewGroup})
     end.
 
