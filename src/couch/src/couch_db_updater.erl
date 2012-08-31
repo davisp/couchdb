@@ -979,7 +979,7 @@ copy_compact(Db, NewDb0, Retry) ->
         {changes_done, 0},
         {total_changes, TotalChanges}
     ],
-    case Retry and couch_task_status:is_task_added() of
+    case (Retry =/= nil) and couch_task_status:is_task_added() of
     true ->
         couch_task_status:update([
             {retry, true},
