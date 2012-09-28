@@ -787,10 +787,6 @@ update_local_docs(#db{local_tree=Btree}=Db, Docs) ->
 
     {ok, Db#db{local_tree = Btree2}}.
 
-
-commit_data(Db) ->
-    commit_data(Db, false).
-
 db_to_header(Db, Header) ->
     Header#db_header{
         update_seq = Db#db.update_seq,
@@ -800,40 +796,49 @@ db_to_header(Db, Header) ->
         security_ptr = Db#db.security_ptr,
         revs_limit = Db#db.revs_limit}.
 
+commit_data(Db) ->
+    commit_data(Db, false).
+
 commit_data(#db{waiting_delayed_commit=nil} = Db, true) ->
-    Db#db{waiting_delayed_commit=erlang:send_after(1000,self(),delayed_commit)};
+    TRef = erlang:send_after(1000,self(),delayed_commit),
+    Db#db{waiting_delayed_commit=TRef};
 commit_data(Db, true) ->
     Db;
 commit_data(Db, _) ->
     #db{
-        fd = Fd,
-        filepath = Filepath,
         header = OldHeader,
-        fsync_options = FsyncOptions,
         waiting_delayed_commit = Timer
     } = Db,
     if is_reference(Timer) -> erlang:cancel_timer(Timer); true -> ok end,
     case db_to_header(Db, OldHeader) of
-    OldHeader ->
-        Db#db{waiting_delayed_commit=nil};
-    Header ->
-        case lists:member(before_header, FsyncOptions) of
-        true -> ok = couch_file:sync(Filepath);
-        _    -> ok
-        end,
-
-        ok = couch_file:write_header(Fd, Header),
-
-        case lists:member(after_header, FsyncOptions) of
-        true -> ok = couch_file:sync(Filepath);
-        _    -> ok
-        end,
-
-        Db#db{waiting_delayed_commit=nil,
-            header=Header,
-            committed_update_seq=Db#db.update_seq}
+        OldHeader -> Db#db{waiting_delayed_commit=nil};
+        NewHeader -> sync_header(Db, NewHeader)
     end.
 
+sync_header(Db, NewHeader) ->
+    #db{
+        fd = Fd,
+        filepath = FilePath,
+        fsync_options = FsyncOptions,
+        waiting_delayed_commit = Timer
+    } = Db,
+
+    if is_reference(Timer) -> erlang:cancel_timer(Timer); true -> ok end,
+
+    Before = lists:member(before_header, FsyncOptions),
+    After = lists:member(after_header, FsyncOptions),
+
+    if Before -> couch_file:sync(FilePath); true -> ok end,
+    ok = couch_file:write_header(Fd, NewHeader),
+    if After -> couch_file:sync(FilePath); true -> ok end,
+
+    Db2 = Db#db{
+        header=NewHeader,
+        committed_update_seq=Db#db.update_seq,
+        waiting_delayed_commit=nil
+    },
+    tally:update(Db2),
+    Db2.
 
 copy_doc_attachments(#db{fd = SrcFd} = SrcDb, SrcSp, DestFd) ->
     {ok, {BodyData, BinInfos0}} = couch_db:read_doc(SrcDb, SrcSp),
@@ -1031,7 +1036,7 @@ start_copy_compact(#db{}=Db) ->
     NewDb3 = sort_meta_data(NewDb2),
     NewDb4 = commit_compaction_data(NewDb3),
     NewDb5 = copy_meta_data(NewDb4),
-    NewDb6 = commit_data(NewDb5),
+    NewDb6 = sync_header(NewDb5, db_to_header(NewDb5, NewDb5#db.header)),
     close_db(NewDb6),
 
     ok = couch_file:close(MFd),
