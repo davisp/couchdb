@@ -568,13 +568,12 @@ doc_from_multi_part_stream(ContentType, DataFun) ->
         {<<"--",_/binary>>, _, _} = couch_httpd:parse_multipart_request(
             ContentType, DataFun,
             fun(Next) -> mp_parse_doc(Next, []) end),
-        unlink(Parent),
-        Parent ! {self(), finished}
+        unlink(Parent)
         end),
-    Ref = make_ref(),
-    Parser ! {get_doc_bytes, Ref, self()},
+    ParserRef = erlang:monitor(process, Parser),
+    Parser ! {get_doc_bytes, self()},
     receive
-    {doc_bytes, Ref, DocBytes} ->
+    {doc_bytes, DocBytes} ->
         Doc = from_json_obj(?JSON_DECODE(DocBytes)),
         % we'll send the Parser process ID to the remote nodes so they can
         % retrieve their own copies of the attachment data
@@ -585,7 +584,7 @@ doc_from_multi_part_stream(ContentType, DataFun) ->
                 A
             end, Doc#doc.atts),
         WaitFun = fun() ->
-            receive {Parser, finished} -> ok end,
+            receive {'DOWN', ParserRef, _, _, _} -> ok end,
             erlang:put(mochiweb_request_recv, true)
         end,
         {ok, Doc#doc{atts=Atts2}, WaitFun, Parser}
@@ -615,8 +614,12 @@ mp_parse_atts({headers, _}, Acc) ->
 mp_parse_atts(body_end, Acc) ->
     fun(Next) -> mp_parse_atts(Next, Acc) end;
 mp_parse_atts({body, Bytes}, {DataList, Offset, Counters, Waiting}) ->
-    NewAcc = maybe_send_data({DataList ++ [Bytes], Offset, Counters, Waiting}),
-    fun(Next) -> mp_parse_atts(Next, NewAcc) end;
+    case maybe_send_data({DataList++[Bytes], Offset, Counters, Waiting}) of
+        abort_parsing ->
+            fun(Next) -> mp_abort_parse_atts(Next, nil) end;
+        NewAcc ->
+            fun(Next) -> mp_parse_atts(Next, NewAcc) end
+    end;
 mp_parse_atts(eof, {DataList, Offset, Counters, Waiting}) ->
     N = list_to_integer(couch_config:get("cluster", "n", "3")),
     M = length(Counters),
@@ -624,7 +627,10 @@ mp_parse_atts(eof, {DataList, Offset, Counters, Waiting}) ->
     true ->
         ok;
     false ->
-        receive {get_bytes, From} ->
+        receive
+        abort_parsing ->
+            ok;
+        {get_bytes, From} ->
             C2 = orddict:update_counter(From, 1, Counters),
             NewAcc = maybe_send_data({DataList, Offset, C2, [From|Waiting]}),
             mp_parse_atts(eof, NewAcc)
@@ -632,6 +638,11 @@ mp_parse_atts(eof, {DataList, Offset, Counters, Waiting}) ->
             ok
         end
     end.
+
+mp_abort_parse_atts(eof, _) ->
+    ok;
+mp_abort_parse_atts(_, _) ->
+    fun(Next) -> mp_abort_parse_atts(Next, nil) end.
 
 maybe_send_data({ChunkList, Offset, Counters, Waiting}) ->
     receive {get_bytes, From} ->
@@ -673,7 +684,10 @@ maybe_send_data({ChunkList, Offset, Counters, Waiting}) ->
             % someone has written all possible chunks, keep moving
             {NewChunkList, NewOffset, Counters, NewWaiting};
         true ->
-            receive {get_bytes, X} ->
+            receive
+            abort_parsing ->
+                abort_parsing;
+            {get_bytes, X} ->
                 C2 = orddict:update_counter(X, 1, Counters),
                 maybe_send_data({NewChunkList, NewOffset, C2, [X|NewWaiting]})
             end
@@ -682,20 +696,18 @@ maybe_send_data({ChunkList, Offset, Counters, Waiting}) ->
 
 
 abort_multi_part_stream(Parser) ->
-    abort_multi_part_stream(Parser, erlang:monitor(process, Parser)).
-
-abort_multi_part_stream(Parser, MonRef) ->
-    case is_process_alive(Parser) of
-    true ->
-        Parser ! {get_bytes, nil, self()},
-        receive
-        {bytes, nil, _Bytes} ->
-             abort_multi_part_stream(Parser, MonRef);
-        {'DOWN', MonRef, _, _, _} ->
-             ok
-        end;
-    false ->
-        erlang:demonitor(MonRef, [flush])
+    MonRef = erlang:monitor(process, Parser),
+    Parser ! abort_parsing,
+    receive
+        {'DOWN', MonRef, _, _, _} -> ok
+    after 60000 ->
+        % One minute is quite on purpose for this timeout. We
+        % want to try and read data to keep the socket open
+        % when possible but we also don't want to just make
+        % this a super long timeout because people have to
+        % wait this long to see if they just had an error
+        % like a validate_doc_update failure.
+        throw(multi_part_abort_timeout)
     end.
 
 
