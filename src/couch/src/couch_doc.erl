@@ -565,6 +565,8 @@ atts_to_mp([Att | RestAtts], Boundary, WriteFun,
 doc_from_multi_part_stream(ContentType, DataFun) ->
     Parent = self(),
     Parser = spawn_link(fun() ->
+        ParentRef = erlang:monitor(process, Parent),
+        put(mp_parent_ref, ParentRef),
         {<<"--",_/binary>>, _, _} = couch_httpd:parse_multipart_request(
             ContentType, DataFun,
             fun(Next) -> mp_parse_doc(Next, []) end),
@@ -627,13 +629,16 @@ mp_parse_atts(eof, {DataList, Offset, Counters, Waiting}) ->
     true ->
         ok;
     false ->
+        ParentRef = get(mp_parent_ref),
         receive
         abort_parsing ->
             ok;
         {get_bytes, From} ->
             C2 = orddict:update_counter(From, 1, Counters),
             NewAcc = maybe_send_data({DataList, Offset, C2, [From|Waiting]}),
-            mp_parse_atts(eof, NewAcc)
+            mp_parse_atts(eof, NewAcc);
+        {'DOWN', ParentRef, _, _, _} ->
+            exit(mp_reader_coordinator_died)
         after 3600000 ->
             ok
         end
@@ -684,9 +689,12 @@ maybe_send_data({ChunkList, Offset, Counters, Waiting}) ->
             % someone has written all possible chunks, keep moving
             {NewChunkList, NewOffset, Counters, NewWaiting};
         true ->
+            ParentRef = get(mp_parent_ref),
             receive
             abort_parsing ->
                 abort_parsing;
+            {'DOWN', ParentRef, _, _, _} ->
+                exit(mp_reader_coordinator_died);
             {get_bytes, X} ->
                 C2 = orddict:update_counter(X, 1, Counters),
                 maybe_send_data({NewChunkList, NewOffset, C2, [X|NewWaiting]})
