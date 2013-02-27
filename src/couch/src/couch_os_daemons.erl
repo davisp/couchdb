@@ -11,11 +11,15 @@
 % the License.
 -module(couch_os_daemons).
 -behaviour(gen_server).
+-behaviour(config_listener).
 
--export([start_link/0, info/0, info/1, config_change/2]).
+-export([start_link/0, info/0, info/1]).
 
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
+
+% config_listener api
+-export([handle_config_change/5]).
 
 -include_lib("couch/include/couch_db.hrl").
 
@@ -42,12 +46,9 @@ info() ->
 info(Options) ->
     gen_server:call(?MODULE, {daemon_info, Options}).
 
-config_change(Section, Key) ->
-    gen_server:cast(?MODULE, {config_change, Section, Key}).
-
 init(_) ->
     process_flag(trap_exit, true),
-    ok = config:register(fun ?MODULE:config_change/2),
+    ok = config:listen_for_changes(?MODULE, nil),
     Table = ets:new(?MODULE, [protected, set, {keypos, #daemon.port}]),
     reload_daemons(Table),
     {ok, Table}.
@@ -80,6 +81,12 @@ handle_cast(Msg, Table) ->
     ?LOG_ERROR("Unknown cast message to ~p: ~p", [?MODULE, Msg]),
     {stop, error, Table}.
 
+handle_info({gen_event_EXIT, {config_listener, ?MODULE}, _Reason}, State) ->
+    erlang:send_after(5000, self(), restart_config_listener),
+    {noreply, State};
+handle_info(restart_config_listener, State) ->
+    ok = config:listen_for_changes(?MODULE, nil),
+    {noreply, State};
 handle_info({'EXIT', Port, Reason}, Table) ->
     case ets:lookup(Table, Port) of
         [] ->
@@ -185,6 +192,12 @@ handle_info(Msg, Table) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+
+handle_config_change(Section, Key, _, _, _) ->
+    gen_server:cast(?MODULE, {config_change, Section, Key}),
+    {ok, nil}.
+
 
 % Internal API
 

@@ -13,8 +13,7 @@
 -module(couch_httpd).
 -include_lib("couch/include/couch_db.hrl").
 
--export([start_link/0, start_link/1, stop/0, config_change/2,
-        handle_request/5]).
+-export([start_link/0, start_link/1, stop/0, handle_request/5]).
 
 -export([header_value/2,header_value/3,qs_value/2,qs_value/3,qs/1,qs_json_value/3]).
 -export([path/1,absolute_uri/2,body_length/1]).
@@ -92,11 +91,6 @@ start_link(https) ->
     end,
     start_link(https, Options).
 start_link(Name, Options) ->
-    % read config and register for configuration changes
-
-    % just stop if one of the config settings change. couch_server_sup
-    % will restart us and then we will pick up the new settings.
-
     BindAddress = config:get("httpd", "bind_address", any),
     validate_bind_address(BindAddress),
     DefaultSpec = "{couch_httpd_db, handle_request}",
@@ -152,40 +146,19 @@ start_link(Name, Options) ->
             {ip, BindAddress}]]),
 
     % launch mochiweb
-    {ok, Pid} = case mochiweb_http:start(FinalOptions) of
+    case mochiweb_http:start(FinalOptions) of
         {ok, MochiPid} ->
             {ok, MochiPid};
         {error, Reason} ->
             io:format("Failure to start Mochiweb: ~s~n",[Reason]),
             throw({error, Reason})
-    end,
-
-    ok = config:register(fun ?MODULE:config_change/2, Pid),
-    {ok, Pid}.
+    end.
 
 
 stop() ->
     mochiweb_http:stop(couch_httpd),
     mochiweb_http:stop(https).
 
-config_change("httpd", "bind_address") ->
-    ?MODULE:stop();
-config_change("httpd", "port") ->
-    ?MODULE:stop();
-config_change("httpd", "default_handler") ->
-    ?MODULE:stop();
-config_change("httpd", "server_options") ->
-    ?MODULE:stop();
-config_change("httpd", "socket_options") ->
-    ?MODULE:stop();
-config_change("httpd", "authentication_handlers") ->
-    set_auth_handlers();
-config_change("httpd_global_handlers", _) ->
-    ?MODULE:stop();
-config_change("httpd_db_handlers", _) ->
-    ?MODULE:stop();
-config_change("ssl", _) ->
-    ?MODULE:stop().
 
 set_auth_handlers() ->
     AuthenticationSrcs = make_fun_spec_strs(

@@ -12,13 +12,17 @@
 
 -module(couch_compaction_daemon).
 -behaviour(gen_server).
+-behaviour(config_listener).
 
 % public API
--export([start_link/0, config_change/3]).
+-export([start_link/0]).
 
 % gen_server callbacks
 -export([init/1, handle_call/3, handle_info/2, handle_cast/2]).
 -export([code_change/3, terminate/2]).
+
+% config_listener api
+-export([handle_config_change/5]).
 
 -include_lib("couch/include/couch_db.hrl").
 
@@ -49,15 +53,11 @@ start_link() ->
 init(_) ->
     process_flag(trap_exit, true),
     ?CONFIG_ETS = ets:new(?CONFIG_ETS, [named_table, set, protected]),
-    ok = config:register(fun ?MODULE:config_change/3),
+    ok = config:listen_for_changes(?MODULE, nil),
     load_config(),
     Server = self(),
     Loop = spawn_link(fun() -> compact_loop(Server) end),
     {ok, #state{loop_pid = Loop}}.
-
-
-config_change("compactions", DbName, NewValue) ->
-    ok = gen_server:cast(?MODULE, {config_update, DbName, NewValue}).
 
 
 handle_cast({config_update, DbName, deleted}, State) ->
@@ -85,6 +85,12 @@ handle_call(Msg, _From, State) ->
     {stop, {unexpected_call, Msg}, State}.
 
 
+handle_info({gen_event_EXIT, {config_listener, ?MODULE}, _Reason}, State) ->
+    erlang:send_after(5000, self(), restart_config_listener),
+    {noreply, State};
+handle_info(restart_config_listener, State) ->
+    ok = config:listen_for_changes(?MODULE, nil),
+    {noreply, State};
 handle_info({'EXIT', Pid, Reason}, #state{loop_pid = Pid} = State) ->
     {stop, {compaction_loop_died, Reason}, State}.
 
@@ -95,6 +101,12 @@ terminate(_Reason, _State) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+
+handle_config_change("compactions", DbName, Value, _, _) ->
+    {ok, gen_server:cast(?MODULE, {config_update, DbName, Value})};
+handle_config_change(_, _, _, _, _) ->
+    {ok, nil}.
 
 
 compact_loop(Parent) ->

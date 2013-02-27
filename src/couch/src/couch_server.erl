@@ -12,13 +12,17 @@
 
 -module(couch_server).
 -behaviour(gen_server).
+-behaviour(config_listener).
 
 -export([open/2,create/2,delete/2,get_version/0,get_uuid/0]).
 -export([all_databases/0, all_databases/2]).
 -export([init/1, handle_call/3,sup_start_link/0]).
 -export([handle_cast/2,code_change/3,handle_info/2,terminate/2]).
--export([dev_start/0,is_admin/2,has_admins/0,get_stats/0,config_change/4]).
+-export([dev_start/0,is_admin/2,has_admins/0,get_stats/0]).
 -export([close_lru/0]).
+
+% config_listener api
+-export([handle_config_change/5]).
 
 -include_lib("couch/include/couch_db.hrl").
 
@@ -172,7 +176,7 @@ init([]) ->
     RootDir = config:get("couchdb", "database_dir", "."),
     MaxDbsOpen = list_to_integer(
             config:get("couchdb", "max_dbs_open")),
-    ok = config:register(fun ?MODULE:config_change/4),
+    ok = config:listen_for_changes(?MODULE, nil),
     ok = couch_file:init_delete_dir(RootDir),
     hash_admin_passwords(),
     {ok, RegExp} = re:compile(
@@ -191,13 +195,29 @@ terminate(_Reason, _Srv) ->
         nil, couch_dbs),
     ok.
 
-config_change("couchdb", "database_dir", _, _) ->
-    exit(whereis(couch_server), config_change);
-config_change("couchdb", "max_dbs_open", Max, _) ->
-    gen_server:call(couch_server, {set_max_dbs_open, list_to_integer(Max)});
-config_change("admins", _, _, Persist) ->
+handle_config_change("couchdb", "database_dir", _, _, _) ->
+    exit(whereis(couch_server), config_change),
+    remove_handler;
+handle_config_change("couchdb", "max_dbs_open", Max, _, _) ->
+    {ok, gen_server:call(couch_server,{set_max_dbs_open,list_to_integer(Max)})};
+handle_config_change("admins", _, _, Persist, _) ->
     % spawn here so couch event manager doesn't deadlock
-    spawn(fun() -> hash_admin_passwords(Persist) end).
+    spawn(fun() -> hash_admin_passwords(Persist) end);
+handle_config_change("httpd", "bind_address", _, _, _) ->
+    {ok, couch_httpd:stop()};
+handle_config_change("httpd", "port", _, _, _) ->
+    {ok, couch_httpd:stop()};
+handle_config_change("httpd", "max_connections", _, _, _) ->
+    {ok, couch_httpd:stop()};
+handle_config_change("httpd", "default_handler", _, _, _) ->
+    {ok, couch_httpd:stop()};
+handle_config_change("httpd_db_handlers", _, _, _, _) ->
+    {ok, couch_httpd:stop()};
+handle_config_change("vhosts", _, _, _, _) ->
+    {ok, couch_httpd:stop()};
+handle_config_change(_, _, _, _, _) ->
+    {ok, nil}.
+
 
 all_databases() ->
     {ok, DbList} = all_databases(

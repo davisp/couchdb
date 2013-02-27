@@ -12,15 +12,19 @@
 
 -module(couch_server_sup).
 -behaviour(supervisor).
+-behaviour(config_listener).
 
 
 -export([start_link/1,stop/0, couch_config_start_link_wrapper/2,
-        restart_core_server/0, config_change/2]).
+        restart_core_server/0]).
 
 -include_lib("couch/include/couch_db.hrl").
 
 %% supervisor callbacks
 -export([init/1]).
+
+% config_listener api
+-export([handle_config_change/5]).
 
 start_link(IniFiles) ->
     case whereis(couch_server_sup) of
@@ -98,9 +102,7 @@ start_server(IniFiles) ->
     {ok, Pid} = supervisor:start_link(
         {local, couch_server_sup}, couch_server_sup, BaseChildSpecs),
 
-    % launch the icu bridge
-    % just restart if one of the config settings change.
-    config:register(fun ?MODULE:config_change/2, Pid),
+    ok = config:listen_for_changes(?MODULE, nil),
 
     unlink(ConfigPid),
 
@@ -135,13 +137,17 @@ start_server(IniFiles) ->
 stop() ->
     catch exit(whereis(couch_server_sup), normal).
 
-config_change("daemons", _) ->
-    supervisor:terminate_child(couch_server_sup, couch_secondary_services),
-    supervisor:restart_child(couch_server_sup, couch_secondary_services);
-config_change("couchdb", "util_driver_dir") ->
+
+handle_config_change("daemons", _, _, _, _) ->
+    exit(whereis(couch_server_sup), shutdown),
+    remove_handler;
+handle_config_change("couchdb", "util_driver_dir", _, _, _) ->
     [Pid] = [P || {collation_driver, P, _, _}
         <- supervisor:which_children(couch_primary_services)],
-    Pid ! reload_driver.
+    Pid ! reload_driver,
+    {ok, nil};
+handle_config_change(_, _, _, _, _) ->
+    {ok, nil}.
 
 init(ChildSpecs) ->
     {ok, ChildSpecs}.

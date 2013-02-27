@@ -12,6 +12,7 @@
 
 -module(couch_auth_cache).
 -behaviour(gen_server).
+-behaviour(config_listener).
 
 % public API
 -export([get_user_creds/1]).
@@ -19,6 +20,8 @@
 % gen_server API
 -export([start_link/0, init/1, handle_call/3, handle_info/2, handle_cast/2]).
 -export([code_change/3, terminate/2]).
+
+-export([handle_config_change/5]).
 
 -include_lib("couch/include/couch_db.hrl").
 -include("couch_js_functions.hrl").
@@ -120,14 +123,7 @@ init(_) ->
     ?BY_USER = ets:new(?BY_USER, [set, protected, named_table]),
     ?BY_ATIME = ets:new(?BY_ATIME, [ordered_set, private, named_table]),
     process_flag(trap_exit, true),
-    ok = config:register(
-        fun("couch_httpd_auth", "auth_cache_size", SizeList) ->
-            Size = list_to_integer(SizeList),
-            ok = gen_server:call(?MODULE, {new_max_cache_size, Size}, infinity);
-        ("couch_httpd_auth", "authentication_db", _DbName) ->
-            ok = gen_server:call(?MODULE, reinit_cache, infinity)
-        end
-    ),
+    ok = config:listen_for_changes(?MODULE, nil),
     {ok, Notifier} = couch_db_update_notifier:start_link(fun handle_db_event/1),
     State = #state{
         db_notifier = Notifier,
@@ -201,6 +197,12 @@ handle_cast({cache_hit, UserName}, State) ->
     {noreply, State}.
 
 
+handle_info({gen_event_EXIT, {config_listener, ?MODULE}, _Reason}, State) ->
+    erlang:send_after(5000, self(), restart_config_listener),
+    {noreply, State};
+handle_info(restart_config_listener, State) ->
+    ok = config:listen_for_changes(?MODULE, nil),
+    {noreply, State};
 handle_info({'DOWN', Ref, _, _, _Reason}, #state{db_mon_ref = Ref} = State) ->
     {noreply, reinit_cache(State)}.
 
@@ -215,6 +217,15 @@ terminate(_Reason, #state{db_notifier = Notifier}) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+
+handle_config_change("couch_httpd_auth", "auth_cache_size", SizeList, _, _) ->
+    Size = list_to_integer(SizeList),
+    {ok, gen_server:call(?MODULE, {new_max_cache_size, Size}, infinity)};
+handle_config_change("couch_httpd_auth", "authentication_db", DbName, _, _) ->
+    {ok, gen_server:call(?MODULE, {new_auth_db, ?l2b(DbName)}, infinity)};
+handle_config_change(_, _, _, _, _) ->
+    {ok, nil}.
 
 
 clear_cache(State) ->
