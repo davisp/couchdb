@@ -15,8 +15,7 @@
 -behaviour(config_listener).
 
 
--export([start_link/1,stop/0, couch_config_start_link_wrapper/2,
-        restart_core_server/0]).
+-export([start_link/1,stop/0, restart_core_server/0]).
 
 -include_lib("couch/include/couch_db.hrl").
 
@@ -37,14 +36,6 @@ start_link(IniFiles) ->
 restart_core_server() ->
     init:restart().
 
-couch_config_start_link_wrapper(IniFiles, FirstConfigPid) ->
-    case is_process_alive(FirstConfigPid) of
-        true ->
-            link(FirstConfigPid),
-            {ok, FirstConfigPid};
-        false -> config:start_link(IniFiles)
-    end.
-
 start_server(IniFiles) ->
     case init:get_argument(pidfile) of
     {ok, [PidFile]} ->
@@ -56,8 +47,6 @@ start_server(IniFiles) ->
         end;
     _ -> ok
     end,
-
-    {ok, ConfigPid} = config:start_link(IniFiles),
 
     LogLevel = config:get("log", "level", "info"),
     % announce startup
@@ -74,13 +63,7 @@ start_server(IniFiles) ->
     end,
 
     BaseChildSpecs =
-    {{one_for_one, 10, 60},
-        [{couch_config,
-            {couch_server_sup, couch_config_start_link_wrapper, [IniFiles, ConfigPid]},
-            permanent,
-            brutal_kill,
-            worker,
-            [couch_config]},
+    {{one_for_one, 10, 60}, [
         {couch_primary_services,
             {couch_primary_sup, start_link, []},
             permanent,
@@ -103,8 +86,6 @@ start_server(IniFiles) ->
         {local, couch_server_sup}, couch_server_sup, BaseChildSpecs),
 
     ok = config:listen_for_changes(?MODULE, nil),
-
-    unlink(ConfigPid),
 
     Ip = config:get("httpd", "bind_address"),
     io:format("Apache CouchDB has started. Time to relax.~n"),
