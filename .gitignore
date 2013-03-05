@@ -62,6 +62,7 @@ src/couch_mrview/ebin/
 src/couch_replicator/ebin/
 src/couchdb/.deps/*
 src/couchdb/.libs/*
+src/couchdb/ebin/
 src/couchdb/couch.app
 src/couchdb/couchjs
 src/couchdb/edoc-info
