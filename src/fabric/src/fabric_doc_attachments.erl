@@ -14,8 +14,8 @@
 
 -module(fabric_doc_attachments).
 
--include("fabric.hrl").
--include_lib("couch/include/couch_db.hrl").
+-include_lib("fabric/include/fabric.hrl").
+-include_lib("couchdb/include/couch_db.hrl").
 
 %% couch api calls
 -export([receiver/2]).

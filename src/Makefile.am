@@ -22,4 +22,5 @@ SUBDIRS = \
     couch_replicator \
     couchdb \
 	ddoc_cache \
-	ets_lru
+	ets_lru \
+	fabric

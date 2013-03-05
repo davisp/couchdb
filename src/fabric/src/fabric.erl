@@ -15,7 +15,7 @@
 -module(fabric).
 
 -include_lib("mem3/include/mem3.hrl").
--include_lib("couch/include/couch_db.hrl").
+-include_lib("couchdb/include/couch_db.hrl").
 
 -define(ADMIN_CTX, {user_ctx, #user_ctx{roles = [<<"_admin">>]}}).
 
@@ -37,7 +37,7 @@
 -export([design_docs/1, reset_validation_funs/1, cleanup_index_files/0,
     cleanup_index_files/1]).
 
--include("fabric.hrl").
+-include_lib("fabric/include/fabric.hrl").
 
 -type dbname() :: (iodata() | #db{}).
 -type docid() :: iodata().

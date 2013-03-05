@@ -18,9 +18,9 @@
     transform_row/1, keydict/1, extract_view/4, get_shards/2,
     remove_down_shards/2]).
 
--include("fabric.hrl").
+-include_lib("fabric/include/fabric.hrl").
 -include_lib("mem3/include/mem3.hrl").
--include_lib("couch/include/couch_db.hrl").
+-include_lib("couchdb/include/couch_db.hrl").
 
 -spec remove_down_shards(#collector{}, node()) ->
     {ok, #collector{}} | {error, any()}.

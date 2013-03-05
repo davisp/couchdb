@@ -16,9 +16,9 @@
 
 -export([go/4]).
 
--include("fabric.hrl").
+-include_lib("fabric/include/fabric.hrl").
 -include_lib("mem3/include/mem3.hrl").
--include_lib("couch/include/couch_db.hrl").
+-include_lib("couchdb/include/couch_db.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 -record(state, {
