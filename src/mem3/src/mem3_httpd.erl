@@ -17,8 +17,8 @@
 -export([handle_membership_req/1]).
 
 %% includes
--include("mem3.hrl").
--include_lib("couch/include/couch_db.hrl").
+-include_lib("mem3/include/mem3.hrl").
+-include_lib("couchdb/include/couch_db.hrl").
 
 
 handle_membership_req(#httpd{method='GET',

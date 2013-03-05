@@ -22,8 +22,8 @@
 
 -import(queue, [in/2, out/1, to_list/1, join/2, from_list/1, is_empty/1]).
 
--include("mem3.hrl").
--include_lib("couch/include/couch_db.hrl").
+-include_lib("mem3/include/mem3.hrl").
+-include_lib("couchdb/include/couch_db.hrl").
 
 -record(state, {
     active = [],

@@ -23,4 +23,5 @@ SUBDIRS = \
     couchdb \
 	ddoc_cache \
 	ets_lru \
-	fabric
+	fabric \
+	mem3

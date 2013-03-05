@@ -22,8 +22,8 @@
 -export([quorum/1, group_by_proximity/1]).
 -export([live_shards/2]).
 
--include("mem3.hrl").
--include_lib("couch/include/couch_db.hrl").
+-include_lib("mem3/include/mem3.hrl").
+-include_lib("couchdb/include/couch_db.hrl").
 
 start() ->
     application:start(mem3).
