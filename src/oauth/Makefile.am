@@ -10,7 +10,7 @@
 ## License for the specific language governing permissions and limitations under
 ## the License.
 
-oauthebindir = $(localerlanglibdir)/erlang-oauth/ebin
+oauthebindir = $(localerlanglibdir)/oauth/ebin
 
 oauth_file_collection = \
 	src/oauth.app.in \
