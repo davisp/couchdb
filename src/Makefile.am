@@ -20,4 +20,5 @@ SUBDIRS = \
     couch_index \
     couch_mrview \
     couch_replicator \
-    couchdb
+    couchdb \
+	ddoc_cache
