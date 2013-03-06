@@ -25,4 +25,5 @@ SUBDIRS = \
 	ets_lru \
 	fabric \
 	mem3 \
-	rexi
+	rexi \
+	twig
