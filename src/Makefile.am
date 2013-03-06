@@ -26,4 +26,5 @@ SUBDIRS = \
 	fabric \
 	mem3 \
 	rexi \
-	twig
+	twig \
+	chttpd

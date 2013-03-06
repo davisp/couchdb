@@ -20,7 +20,7 @@
     handle_up_req/1]).
 
 
--include_lib("couch/include/couch_db.hrl").
+-include_lib("couchdb/include/couch_db.hrl").
 
 -import(chttpd,
     [send_json/2,send_json/3,send_method_not_allowed/2,
