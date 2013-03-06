@@ -24,4 +24,5 @@ SUBDIRS = \
 	ddoc_cache \
 	ets_lru \
 	fabric \
-	mem3
+	mem3 \
+	rexi
