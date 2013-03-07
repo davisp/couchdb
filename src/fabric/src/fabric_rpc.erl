@@ -23,7 +23,7 @@
 -export([get_all_security/2]).
 
 -include_lib("fabric/include/fabric.hrl").
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 -record (view_acc, {
     db,

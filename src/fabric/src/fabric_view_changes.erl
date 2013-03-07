@@ -18,7 +18,7 @@
 
 -include_lib("fabric/include/fabric.hrl").
 -include_lib("mem3/include/mem3.hrl").
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 -import(fabric_db_update_listener, [wait_db_updated/1]).
