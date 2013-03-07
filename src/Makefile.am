@@ -20,7 +20,7 @@ SUBDIRS = \
     couch_index \
     couch_mrview \
     couch_replicator \
-    couchdb \
+    couch \
 	ddoc_cache \
 	ets_lru \
 	fabric \
