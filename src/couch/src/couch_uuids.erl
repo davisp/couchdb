@@ -10,7 +10,7 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 -module(couch_uuids).
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 -behaviour(gen_server).
 

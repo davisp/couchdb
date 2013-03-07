@@ -23,7 +23,7 @@
 -export([mp_parse_doc/2]).
 -export([with_ejson_body/1]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 -spec to_path(#doc{}) -> path().
 to_path(#doc{revs={Start, RevIds}}=Doc) ->

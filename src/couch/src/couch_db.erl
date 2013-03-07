@@ -31,7 +31,7 @@
 -export([check_is_admin/1, check_is_member/1]).
 -export([reopen/1, is_system_db/1, compression/1]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 
 start_link(DbName, Filepath, Options) ->

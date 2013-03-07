@@ -30,7 +30,7 @@
 -export([with_db/2]).
 -export([rfc1123_date/0, rfc1123_date/1]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 % arbitrarily chosen amount of memory to use before flushing to disk
 -define(FLUSH_MAX_MEM, 10000000).

@@ -26,7 +26,7 @@
 % For 210-os-proc-pool.t
 -export([get_os_process/1, ret_os_process/1]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 -record(proc, {
     pid,

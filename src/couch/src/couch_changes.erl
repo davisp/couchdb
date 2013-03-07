@@ -11,7 +11,7 @@
 % the License.
 
 -module(couch_changes).
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 -export([handle_changes/3]).
 

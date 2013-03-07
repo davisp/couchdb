@@ -51,7 +51,7 @@
 -export([get_all_leafs/1, count_leafs/1, remove_leafs/2, get_all_leafs_full/1, stem/2]).
 -export([map/2, mapfold/3, map_leafs/2, fold/3]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 %% @doc Merge a path with a list of paths and stem to the given length.
 -spec merge([path()], path(), pos_integer()) -> {[path()],

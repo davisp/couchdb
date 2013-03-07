@@ -20,7 +20,7 @@
 -export([init/1, handle_call/3, handle_info/2, handle_cast/2]).
 -export([code_change/3, terminate/2]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 -define(CONFIG_ETS, couch_compaction_daemon_config).
 

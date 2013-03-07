@@ -17,7 +17,7 @@
 -export([start_link/1,stop/0, couch_config_start_link_wrapper/2,
         restart_core_server/0, config_change/2]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 %% supervisor callbacks
 -export([init/1]).

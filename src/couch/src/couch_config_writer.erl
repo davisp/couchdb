@@ -22,7 +22,7 @@
 
 -export([save_to_file/2]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 %% @spec save_to_file(
 %%           Config::{{Section::string(), Option::string()}, Value::string()},

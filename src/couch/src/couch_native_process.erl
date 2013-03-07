@@ -47,7 +47,7 @@
 -define(STATE, native_proc_state).
 -record(evstate, {ddocs, funs=[], query_config=[], list_pid=nil, timeout=5000}).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 start_link() ->
     gen_server:start_link(?MODULE, [], []).

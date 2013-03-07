@@ -14,7 +14,7 @@
 
 -export([before_doc_update/2, after_doc_read/2]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 -define(NAME, <<"name">>).
 -define(PASSWORD, <<"password">>).

@@ -15,7 +15,7 @@
 -export([simple/2, pbkdf2/3, pbkdf2/4, verify/2]).
 -export([hash_admin_password/1, get_unhashed_admins/0]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 -define(MAX_DERIVED_KEY_LENGTH, (1 bsl 32 - 1)).
 -define(SHA1_OUTPUT_LENGTH, 20).

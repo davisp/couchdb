@@ -17,7 +17,7 @@
 -export([fold_reduce/4, lookup/2, get_state/1, set_options/2]).
 -export([less/3]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 -define(CHUNK_THRESHOLD, 16#4ff).
 
 extract(#btree{extract_kv=Extract}, Value) ->

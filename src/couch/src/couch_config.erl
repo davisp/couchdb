@@ -19,7 +19,7 @@
 -module(couch_config).
 -behaviour(gen_server).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 
 -export([start_link/1, stop/0]).

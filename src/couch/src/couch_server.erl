@@ -19,7 +19,7 @@
 -export([handle_cast/2,code_change/3,handle_info/2,terminate/2]).
 -export([dev_start/0,is_admin/2,has_admins/0,get_stats/0]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 -record(server,{
     root_dir = [],
