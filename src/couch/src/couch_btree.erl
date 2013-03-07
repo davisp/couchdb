@@ -18,7 +18,6 @@
 -export([less/3]).
 
 -include_lib("couch/include/couch_db.hrl").
--define(CHUNK_THRESHOLD, 16#4ff).
 
 extract(#btree{extract_kv=Extract}, Value) ->
     Extract(Value).
@@ -278,9 +277,11 @@ complete_root(Bt, KPs) ->
 % it's probably really inefficient.
 
 chunkify(InList) ->
+    BaseChunkSize = list_to_integer(couch_config:get("couchdb",
+        "btree_chunk_size", "1279")),
     case ?term_size(InList) of
-    Size when Size > ?CHUNK_THRESHOLD ->
-        NumberOfChunksLikely = ((Size div ?CHUNK_THRESHOLD) + 1),
+    Size when Size > BaseChunkSize ->
+        NumberOfChunksLikely = ((Size div BaseChunkSize) + 1),
         ChunkThreshold = Size div NumberOfChunksLikely,
         chunkify(InList, ChunkThreshold, [], 0, []);
     _Else ->
