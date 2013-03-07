@@ -19,7 +19,7 @@
 -export([sum_stats/2, is_deleted/1]).
 -export([mp_parse_doc/2]).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 -include("couch_replicator_api_wrap.hrl").
 -include("couch_replicator.hrl").
 -include_lib("ibrowse/include/ibrowse.hrl").

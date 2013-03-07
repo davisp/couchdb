@@ -12,7 +12,7 @@
 
 -module(couch_replicator_httpc).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 -include("couch_replicator_api_wrap.hrl").
 -include_lib("ibrowse/include/ibrowse.hrl").
 

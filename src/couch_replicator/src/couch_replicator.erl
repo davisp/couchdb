@@ -26,7 +26,7 @@
 
 -define(LOWEST_SEQ, 0).
 
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 -include("couch_replicator_api_wrap.hrl").
 -include("couch_replicator.hrl").
 
