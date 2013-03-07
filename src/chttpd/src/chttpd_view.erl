@@ -11,7 +11,7 @@
 % the License.
 
 -module(chttpd_view).
--include_lib("couchdb/include/couch_db.hrl").
+-include_lib("couch/include/couch_db.hrl").
 
 -export([handle_view_req/3, handle_temp_view_req/2, get_reduce_type/1,
     parse_view_params/3, view_group_etag/2, view_group_etag/3,
