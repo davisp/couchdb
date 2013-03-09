@@ -25,6 +25,14 @@
     meta_state
 }).
 
+-record(merge_st, {
+    id_tree,
+    seq_tree,
+    curr,
+    rem_seqs,
+    infos
+}).
+
 init({DbName, Filepath, Fd, Options}) ->
     case lists:member(create, Options) of
     true ->
@@ -926,10 +934,13 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, MixedInfos, Retry) ->
 
     {ok, SeqTree} = couch_btree:add_remove(
             NewDb#db.seq_tree, NewInfos, RemoveSeqs),
-    {ok, IdTree} = couch_btree:add_remove(
-            NewDb#db.id_tree, NewInfos, []),
+
+    FDIKVs = lists:map(fun(#full_doc_info{id=Id, update_seq=Seq}=FDI) ->
+        {{Id, Seq}, FDI}
+    end, NewInfos),
+    {ok, IdEms} = couch_emsort:add(NewDb#db.id_tree, FDIKVs),
     update_compact_task(length(NewInfos)),
-    NewDb#db{id_tree=IdTree, seq_tree=SeqTree}.
+    NewDb#db{id_tree=IdEms, seq_tree=SeqTree}.
 
 
 copy_compact(Db, NewDb0, Retry) ->
@@ -1042,20 +1053,20 @@ open_compaction_files(DbName, DbFilePath, Options) ->
         {#comp_header{}=A, #comp_header{}=A} ->
             DbHeader = A#comp_header.db_header,
             Db0 = init_db(DbName, DataFile, DataFd, DbHeader, Options),
-            Db1 = bind_id_tree(Db0, MetaFd, A#comp_header.meta_state),
-            {ok, Db1, DataFile, DataFd, MetaFd, true};
+            Db1 = bind_emsort(Db0, MetaFd, A#comp_header.meta_state),
+            {ok, Db1, DataFile, DataFd, MetaFd, Db0#db.id_tree};
         {#db_header{}, _} ->
             ok = reset_compaction_file(MetaFd, #db_header{}),
             Db0 = init_db(DbName, DataFile, DataFd, DataHdr, Options),
-            Db1 = bind_id_tree(Db0, MetaFd, nil),
-            {ok, Db1, DataFile, DataFd, MetaFd, true};
+            Db1 = bind_emsort(Db0, MetaFd, nil),
+            {ok, Db1, DataFile, DataFd, MetaFd, Db0#db.id_tree};
         _ ->
             Header = #db_header{},
             ok = reset_compaction_file(DataFd, Header),
             ok = reset_compaction_file(MetaFd, Header),
             Db0 = init_db(DbName, DataFile, DataFd, Header, Options),
-            Db1 = bind_id_tree(Db0, MetaFd, nil),
-            {ok, Db1, DataFile, DataFd, MetaFd, false}
+            Db1 = bind_emsort(Db0, MetaFd, nil),
+            {ok, Db1, DataFile, DataFd, MetaFd, nil}
     end.
 
 
@@ -1099,7 +1110,7 @@ commit_compaction_data(#db{}=Db) ->
     % Compaction needs to write headers to both the data file
     % and the meta file so if we need to restart we can pick
     % back up from where we left off.
-    commit_compaction_data(Db, meta_fd(Db)),
+    commit_compaction_data(Db, couch_emsort:get_fd(Db#db.id_tree)),
     commit_compaction_data(Db, Db#db.fd).
 
 
@@ -1109,8 +1120,8 @@ commit_compaction_data(#db{header=OldHeader}=Db0, Fd) ->
     % fd instead of the Filepath stuff that commit_data/2
     % does.
     DataState = OldHeader#db_header.id_tree_state,
-    MetaState = couch_btree:get_state(Db0#db.id_tree),
-    MetaFd = meta_fd(Db0),
+    MetaFd = couch_emsort:get_fd(Db0#db.id_tree),
+    MetaState = couch_emsort:get_state(Db0#db.id_tree),
     Db1 = bind_id_tree(Db0, Db0#db.fd, DataState),
     Header = db_to_header(Db1, OldHeader),
     CompHeader = #comp_header{
@@ -1124,7 +1135,15 @@ commit_compaction_data(#db{header=OldHeader}=Db0, Fd) ->
         header=Header,
         committed_update_seq=Db1#db.update_seq
     },
-    bind_id_tree(Db2, MetaFd, MetaState).
+    bind_emsort(Db2, MetaFd, MetaState).
+
+
+bind_emsort(Db, Fd, nil) ->
+    {ok, Ems} = couch_emsort:open(Fd),
+    Db#db{id_tree=Ems};
+bind_emsort(Db, Fd, State) ->
+    {ok, Ems} = couch_emsort:open(Fd, [{root, State}]),
+    Db#db{id_tree=Ems}.
 
 
 bind_id_tree(Db, Fd, State) ->
@@ -1136,36 +1155,80 @@ bind_id_tree(Db, Fd, State) ->
     Db#db{id_tree=IdBtree}.
 
 
-meta_fd(Db) ->
-    % XXX: Hack to extract the meta compaction fd
-    %      from a btree record.
-    element(2, Db#db.id_tree).
-
-
 copy_meta_data(#db{fd=Fd, header=Header}=Db) ->
     Src = Db#db.id_tree,
     DstState = Header#db_header.id_tree_state,
-    {ok, Dst} = couch_btree:open(DstState, Fd, [
+    {ok, IdTree0} = couch_btree:open(DstState, Fd, [
         {split, fun ?MODULE:btree_by_id_split/1},
         {join, fun ?MODULE:btree_by_id_join/2},
         {reduce, fun ?MODULE:btree_by_id_reduce/2}
     ]),
-    {ok, NewBtree} = merge_btrees(Src, Dst),
-    Db#db{id_tree=NewBtree}.
+    {ok, Iter} = couch_emsort:sort(Src),
+    Acc0 = #merge_st{
+        id_tree=IdTree0,
+        seq_tree=Db#db.seq_tree,
+        rem_seqs=[],
+        infos=[]
+    },
+    {ok, Acc} = merge_docids(Iter, Acc0),
+    {ok, IdTree} = couch_btree:add(Acc#merge_st.id_tree, Acc#merge_st.infos),
+    {ok, SeqTree} = couch_btree:add_remove(
+        Acc#merge_st.seq_tree, [], Acc#merge_st.rem_seqs
+    ),
+    Db#db{id_tree=IdTree, seq_tree=SeqTree}.
 
 
-merge_btrees(Src, Dst) ->
-    FoldFun = fun(KV, _Reds, {TreeAcc0, KVs}) ->
-        case length(KVs) > 1000 of
-            true ->
-                {ok, TreeAcc1} = couch_btree:add(TreeAcc0, [KV | KVs]),
-                {ok, {TreeAcc1, []}};
-            false ->
-                {ok, {TreeAcc0, [KV | KVs]}}
-        end
-    end,
-    {ok, _, {Tree, Unwritten}} = couch_btree:foldl(Src, FoldFun, {Dst, []}),
-    couch_btree:add(Tree, Unwritten).
+merge_docids(Iter, #merge_st{infos=Infos}=Acc) when length(Infos) > 1000 ->
+    #merge_st{
+        id_tree=IdTree0,
+        seq_tree=SeqTree0,
+        rem_seqs=RemSeqs
+    } = Acc,
+    {ok, IdTree1} = couch_btree:add(IdTree0, Infos),
+    {ok, SeqTree1} = couch_btree:add_remove(SeqTree0, [], RemSeqs),
+    Acc1 = Acc#merge_st{
+        id_tree=IdTree1,
+        seq_tree=SeqTree1,
+        rem_seqs=[],
+        infos=[]
+    },
+    merge_docids(Iter, Acc1);
+merge_docids(Iter, #merge_st{curr=Curr}=Acc) ->
+    case next_info(Iter, Curr, []) of
+        {ok, NewCurr, FDI, Seqs} ->
+            Acc1 = Acc#merge_st{
+                infos = [FDI | Acc#merge_st.infos],
+                rem_seqs = Seqs ++ Acc#merge_st.rem_seqs,
+                curr = NewCurr
+            },
+            merge_docids(Iter, Acc1);
+        {finished, FDI, Seqs} ->
+            Acc#merge_st{
+                infos = [FDI | Acc#merge_st.infos],
+                rem_seqs = Seqs ++ Acc#merge_st.rem_seqs,
+                curr = undefined
+            };
+        empty ->
+            Acc
+    end.
+
+
+next_info(Iter, undefined, []) ->
+    case couch_emsort:next(Iter) of
+        {ok, {{Id, Seq}, FDI}, NextIter} ->
+            next_info(NextIter, {Id, Seq, FDI}, []);
+        finished ->
+            empty
+    end;
+next_info(Iter, {Id, Seq, FDI}, Seqs) ->
+    case couch_emsort:next(Iter) of
+        {ok, {{Id, NSeq}, NFDI}, NextIter} ->
+            next_info(NextIter, {Id, NSeq, NFDI}, [Seq | Seqs]);
+        {ok, {{NId, NSeq}, NFDI}, NextIter} ->
+            {NextIter, {NId, NSeq, NFDI}, FDI, Seqs};
+        finished ->
+            {finished, FDI, Seqs}
+    end.
 
 
 update_compact_task(NumChanges) ->
