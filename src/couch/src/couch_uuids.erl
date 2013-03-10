@@ -44,7 +44,7 @@ utc_suffix(Suffix) ->
     list_to_binary(Prefix ++ Suffix).
 
 init([]) ->
-    ok = couch_config:register(
+    ok = config:register(
         fun("uuids", _) -> gen_server:cast(?MODULE, change) end
     ),
     {ok, state()}.
@@ -87,14 +87,14 @@ inc() ->
     crypto:rand_uniform(1, 16#ffe).
 
 state() ->
-    AlgoStr = couch_config:get("uuids", "algorithm", "random"),
+    AlgoStr = config:get("uuids", "algorithm", "random"),
     case couch_util:to_existing_atom(AlgoStr) of
         random ->
             random;
         utc_random ->
             utc_random;
         utc_id ->
-            UtcIdSuffix = couch_config:get("uuids", "utc_id_suffix", ""),
+            UtcIdSuffix = config:get("uuids", "utc_id_suffix", ""),
             {utc_id, UtcIdSuffix};
         sequential ->
             {sequential, new_prefix(), inc()};

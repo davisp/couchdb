@@ -39,7 +39,7 @@ config_change("external", UrlName) ->
 init([]) ->
     process_flag(trap_exit, true),
     Handlers = ets:new(couch_external_manager_handlers, [set, private]),
-    couch_config:register(fun ?MODULE:config_change/2),
+    config:register(fun ?MODULE:config_change/2),
     {ok, Handlers}.
 
 terminate(_Reason, Handlers) ->
@@ -52,7 +52,7 @@ terminate(_Reason, Handlers) ->
 handle_call({get, UrlName}, _From, Handlers) ->
     case ets:lookup(Handlers, UrlName) of
     [] ->
-        case couch_config:get("external", UrlName, nil) of
+        case config:get("external", UrlName, nil) of
         nil ->
             Msg = lists:flatten(
                 io_lib:format("No server configured for ~p.", [UrlName])),

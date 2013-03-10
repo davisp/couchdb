@@ -27,12 +27,12 @@ utc_id_alg_config() ->
 
 % Run tests and wait for the gen_servers to shutdown
 run_test(IniFiles, Test) ->
-    {ok, Pid} = couch_config:start_link(IniFiles),
+    {ok, Pid} = config:start_link(IniFiles),
     erlang:monitor(process, Pid),
     couch_uuids:start(),
     Test(),
     couch_uuids:stop(),
-    couch_config:stop(),
+    config:stop(),
     receive
         {'DOWN', _, _, Pid, _} -> ok;
         _Other -> etap:diag("OTHER: ~p~n", [_Other])

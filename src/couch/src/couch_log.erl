@@ -75,7 +75,7 @@ init([]) ->
 
     % just stop if one of the config settings change. couch_server_sup
     % will restart us and then we will pick up the new settings.
-    ok = couch_config:register(
+    ok = config:register(
         fun("log", "file") ->
             ?MODULE:stop();
         ("log", "level") ->
@@ -86,10 +86,10 @@ init([]) ->
             ?MODULE:stop()
         end),
 
-    Filename = couch_config:get("log", "file", "couchdb.log"),
-    Level = level_integer(list_to_atom(couch_config:get("log", "level", "info"))),
-    Sasl = couch_config:get("log", "include_sasl", "true") =:= "true",
-    LevelByModule = couch_config:get("log_level_by_module"),
+    Filename = config:get("log", "file", "couchdb.log"),
+    Level = level_integer(list_to_atom(config:get("log", "level", "info"))),
+    Sasl = config:get("log", "include_sasl", "true") =:= "true",
+    LevelByModule = config:get("log_level_by_module"),
 
     case ets:info(?MODULE) of
     undefined -> ets:new(?MODULE, [named_table]);
@@ -231,10 +231,10 @@ get_log_messages(Pid, Level, Format, Args) ->
 % |__________| 100
 
 read(Bytes, Offset) ->
-    LogFileName = couch_config:get("log", "file"),
+    LogFileName = config:get("log", "file"),
     LogFileSize = filelib:file_size(LogFileName),
     MaxChunkSize = list_to_integer(
-        couch_config:get("httpd", "log_max_chunk_size", "1000000")),
+        config:get("httpd", "log_max_chunk_size", "1000000")),
     case Bytes > MaxChunkSize of
     true ->
         throw({bad_request, "'bytes' cannot exceed " ++

@@ -623,7 +623,7 @@ mp_parse_atts({body, Bytes}, {DataList, Offset, Counters, Waiting}) ->
             fun(Next) -> mp_parse_atts(Next, NewAcc) end
     end;
 mp_parse_atts(eof, {DataList, Offset, Counters, Waiting}) ->
-    N = list_to_integer(couch_config:get("cluster", "n", "3")),
+    N = list_to_integer(config:get("cluster", "n", "3")),
     M = length(Counters),
     case (M == N) andalso DataList == [] of
     true ->
@@ -674,7 +674,7 @@ maybe_send_data({ChunkList, Offset, Counters, Waiting}) ->
             SmallestIndex = lists:min(element(2, lists:unzip(Counters)))
         end,
         Size = length(Counters),
-        N = list_to_integer(couch_config:get("cluster", "n", "3")),
+        N = list_to_integer(config:get("cluster", "n", "3")),
         if Size == N andalso SmallestIndex == (Offset+1) ->
             NewChunkList = tl(ChunkList),
             NewOffset = Offset+1;

@@ -286,7 +286,7 @@ complete_root(Bt, KPs) ->
 % it's probably really inefficient.
 
 chunkify(InList) ->
-    BaseChunkSize = list_to_integer(couch_config:get("couchdb",
+    BaseChunkSize = list_to_integer(config:get("couchdb",
         "btree_chunk_size", "1279")),
     case ?term_size(InList) of
     Size when Size > BaseChunkSize ->

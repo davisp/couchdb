@@ -47,7 +47,7 @@ config_change(Section, Key) ->
 
 init(_) ->
     process_flag(trap_exit, true),
-    ok = couch_config:register(fun ?MODULE:config_change/2),
+    ok = config:register(fun ?MODULE:config_change/2),
     Table = ets:new(?MODULE, [protected, set, {keypos, #daemon.port}]),
     reload_daemons(Table),
     {ok, Table}.
@@ -209,13 +209,13 @@ stop_port(#daemon{port=Port}=D) ->
 
 
 handle_port_message(#daemon{port=Port}=Daemon, [<<"get">>, Section]) ->
-    KVs = couch_config:get(Section),
+    KVs = config:get(Section),
     Data = lists:map(fun({K, V}) -> {?l2b(K), ?l2b(V)} end, KVs),
     Json = iolist_to_binary(?JSON_ENCODE({Data})),
     port_command(Port, <<Json/binary, "\n">>),
     {ok, Daemon};
 handle_port_message(#daemon{port=Port}=Daemon, [<<"get">>, Section, Key]) ->
-    Value = case couch_config:get(Section, Key, null) of
+    Value = case config:get(Section, Key, null) of
         null -> null;
         String -> ?l2b(String)
     end,
@@ -260,7 +260,7 @@ handle_log_message(Name, Msg, Level) ->
 
 reload_daemons(Table) ->
     % List of daemons we want to have running.
-    Configured = lists:sort(couch_config:get("os_daemons")),
+    Configured = lists:sort(config:get("os_daemons")),
     
     % Remove records for daemons that were halted.
     MSpecHalted = #daemon{name='$1', cmd='$2', status=halted, _='_'},
@@ -350,7 +350,7 @@ find_to_stop(_, [], Acc) ->
     Acc.
 
 should_halt(Errors) ->
-    RetryTimeCfg = couch_config:get("os_daemon_settings", "retry_time", "5"),
+    RetryTimeCfg = config:get("os_daemon_settings", "retry_time", "5"),
     RetryTime = list_to_integer(RetryTimeCfg),
 
     Now = now(),
@@ -358,7 +358,7 @@ should_halt(Errors) ->
         timer:now_diff(Now, Time) =< RetryTime * 1000000
     end, Errors),
 
-    RetryCfg = couch_config:get("os_daemon_settings", "max_retries", "3"),
+    RetryCfg = config:get("os_daemon_settings", "max_retries", "3"),
     Retries = list_to_integer(RetryCfg),
 
     {length(RecentErrors) >= Retries, RecentErrors}.

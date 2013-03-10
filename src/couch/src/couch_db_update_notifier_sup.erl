@@ -29,9 +29,9 @@ start_link() ->
         couch_db_update_notifier_sup, []).
 
 init([]) ->
-    ok = couch_config:register(fun ?MODULE:config_change/3),
+    ok = config:register(fun ?MODULE:config_change/3),
 
-    UpdateNotifierExes = couch_config:get("update_notification"),
+    UpdateNotifierExes = config:get("update_notification"),
 
     {ok,
         {{one_for_one, 10, 3600},

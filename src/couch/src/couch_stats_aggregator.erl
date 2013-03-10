@@ -92,7 +92,7 @@ collect_sample() ->
 init(StatDescsFileName) ->
     % Create an aggregate entry for each {description, rate} pair.
     ets:new(?MODULE, [named_table, set, protected]),
-    SampleStr = couch_config:get("stats", "samples", "[0]"),
+    SampleStr = config:get("stats", "samples", "[0]"),
     {ok, Samples} = couch_util:parse_term(SampleStr),
     {ok, Descs} = file:consult(StatDescsFileName),
     lists:foreach(fun({Sect, Key, Value}) ->
@@ -106,11 +106,11 @@ init(StatDescsFileName) ->
     end, Descs),
     
     Self = self(),
-    ok = couch_config:register(
+    ok = config:register(
         fun("stats", _) -> exit(Self, config_change) end
     ),
     
-    Rate = list_to_integer(couch_config:get("stats", "rate", "1000")),
+    Rate = list_to_integer(config:get("stats", "rate", "1000")),
     % TODO: Add timer_start to kernel start options.
     {ok, TRef} = timer:apply_after(Rate, ?MODULE, collect_sample, []),
     {ok, {TRef, Rate}}.

@@ -88,7 +88,7 @@ handle_call(_Call, _From, State) ->
     {reply, ignored, State}.
 
 handle_cast({os_proc_idle, Pid}, #state{tab=Tab}=State) ->
-    Limit = couch_config:get("query_server_config", "os_process_soft_limit", "100"),
+    Limit = config:get("query_server_config", "os_process_soft_limit", "100"),
     case ets:lookup(Tab, Pid) of
         [#proc{client=nil}] ->
             case ets:info(Tab, size) > list_to_integer(Limit) of
@@ -198,9 +198,9 @@ new_proc(From, Lang, DDoc, DDocKey) ->
 new_proc_int(From, Lang) when is_binary(Lang) ->
     new_proc_int(From, binary_to_list(Lang));
 new_proc_int(From, Lang) when is_list(Lang) ->
-    case couch_config:get("query_servers", Lang) of
+    case config:get("query_servers", Lang) of
     undefined ->
-        case couch_config:get("native_query_servers", Lang) of
+        case config:get("native_query_servers", Lang) of
         undefined ->
             gen_server:reply(From, {unknown_query_language, Lang});
         SpecStr ->
@@ -239,7 +239,7 @@ return_proc(Tab, #proc{pid=Pid} = Proc) ->
     end.
 
 get_query_server_config() ->
-    Limit = couch_config:get("query_server_config", "reduce_limit", "true"),
+    Limit = config:get("query_server_config", "reduce_limit", "true"),
     {[{<<"reduce_limit">>, list_to_atom(Limit)}]}.
 
 proc_with_ddoc(DDoc, DDocKey, Procs) ->

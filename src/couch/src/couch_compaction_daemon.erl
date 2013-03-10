@@ -49,7 +49,7 @@ start_link() ->
 init(_) ->
     process_flag(trap_exit, true),
     ?CONFIG_ETS = ets:new(?CONFIG_ETS, [named_table, set, protected]),
-    ok = couch_config:register(fun ?MODULE:config_change/3),
+    ok = config:register(fun ?MODULE:config_change/3),
     load_config(),
     Server = self(),
     Loop = spawn_link(fun() -> compact_loop(Server) end),
@@ -123,7 +123,7 @@ compact_loop(Parent) ->
         receive {Parent, have_config} -> ok end;
     false ->
         PausePeriod = list_to_integer(
-            couch_config:get("compaction_daemon", "check_interval", "300")),
+            config:get("compaction_daemon", "check_interval", "300")),
         ok = timer:sleep(PausePeriod * 1000)
     end,
     compact_loop(Parent).
@@ -295,7 +295,7 @@ can_db_compact(#config{db_frag = Threshold} = Config, Db) ->
         false ->
             false;
         true ->
-            Free = free_space(couch_config:get("couchdb", "database_dir")),
+            Free = free_space(config:get("couchdb", "database_dir")),
             case Free >= SpaceRequired of
             true ->
                 true;
@@ -364,7 +364,7 @@ check_frag(Threshold, Frag) ->
 frag(Props) ->
     FileSize = couch_util:get_value(disk_size, Props),
     MinFileSize = list_to_integer(
-        couch_config:get("compaction_daemon", "min_file_size", "131072")),
+        config:get("compaction_daemon", "min_file_size", "131072")),
     case FileSize < MinFileSize of
     true ->
         {0, FileSize};
@@ -396,7 +396,7 @@ load_config() ->
                 ok
             end
         end,
-        couch_config:get("compactions")).
+        config:get("compactions")).
 
 parse_config(DbName, ConfigString) ->
     case (catch do_parse_config(ConfigString)) of

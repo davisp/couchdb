@@ -38,7 +38,7 @@ couch_config_start_link_wrapper(IniFiles, FirstConfigPid) ->
         true ->
             link(FirstConfigPid),
             {ok, FirstConfigPid};
-        false -> couch_config:start_link(IniFiles)
+        false -> config:start_link(IniFiles)
     end.
 
 start_server(IniFiles) ->
@@ -53,9 +53,9 @@ start_server(IniFiles) ->
     _ -> ok
     end,
 
-    {ok, ConfigPid} = couch_config:start_link(IniFiles),
+    {ok, ConfigPid} = config:start_link(IniFiles),
 
-    LogLevel = couch_config:get("log", "level", "info"),
+    LogLevel = config:get("log", "level", "info"),
     % announce startup
     io:format("Apache CouchDB ~s (LogLevel=~s) is starting.~n", [
         couch_server:get_version(),
@@ -65,7 +65,7 @@ start_server(IniFiles) ->
     "debug" ->
         io:format("Configuration Settings ~p:~n", [IniFiles]),
         [io:format("  [~s] ~s=~p~n", [Module, Variable, Value])
-            || {{Module, Variable}, Value} <- couch_config:all()];
+            || {{Module, Variable}, Value} <- config:all()];
     _ -> ok
     end,
 
@@ -100,11 +100,11 @@ start_server(IniFiles) ->
 
     % launch the icu bridge
     % just restart if one of the config settings change.
-    couch_config:register(fun ?MODULE:config_change/2, Pid),
+    config:register(fun ?MODULE:config_change/2, Pid),
 
     unlink(ConfigPid),
 
-    Ip = couch_config:get("httpd", "bind_address"),
+    Ip = config:get("httpd", "bind_address"),
     io:format("Apache CouchDB has started. Time to relax.~n"),
     Uris = [get_uri(Name, Ip) || Name <- [couch_httpd, https]],
     [begin
@@ -114,7 +114,7 @@ start_server(IniFiles) ->
         end
     end
     || Uri <- Uris],
-    case couch_config:get("couchdb", "uri_file", null) of 
+    case config:get("couchdb", "uri_file", null) of 
     null -> ok;
     UriFile ->
         Lines = [begin case Uri of

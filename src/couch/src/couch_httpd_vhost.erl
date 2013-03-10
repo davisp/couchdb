@@ -237,7 +237,7 @@ bind_path(_, _) ->
 %% create vhost list from ini
 
 host(MochiReq) ->
-    XHost = couch_config:get("httpd", "x_forwarded_host",
+    XHost = config:get("httpd", "x_forwarded_host",
                              "X-Forwarded-Host"),
     case MochiReq:get_header_value(XHost) of
         undefined ->
@@ -254,7 +254,7 @@ make_vhosts() ->
                     Acc;
                 ({Vhost, Path}, Acc) ->
                     [{parse_vhost(Vhost), split_path(Path)}|Acc]
-            end, [], couch_config:get("vhosts")),
+            end, [], config:get("vhosts")),
 
     lists:reverse(lists:usort(Vhosts)).
 
@@ -327,7 +327,7 @@ make_path(Parts) ->
      "/" ++ string:join(Parts,[?SEPARATOR]).
 
 init(_) ->
-    ok = couch_config:register(fun ?MODULE:config_change/2),
+    ok = config:register(fun ?MODULE:config_change/2),
 
     %% load configuration
     {VHostGlobals, VHosts, Fun} = load_conf(),
@@ -369,7 +369,7 @@ config_change("vhosts", _) ->
 
 load_conf() ->
     %% get vhost globals
-    VHostGlobals = re:split(couch_config:get("httpd",
+    VHostGlobals = re:split(config:get("httpd",
             "vhost_global_handlers",""), "\\s*,\\s*",[{return, list}]),
 
     %% build vhosts matching rules
@@ -377,7 +377,7 @@ load_conf() ->
 
     %% build vhosts handler fun
     DefaultVHostFun = "{couch_httpd_vhost, redirect_to_vhost}",
-    Fun = couch_httpd:make_arity_2_fun(couch_config:get("httpd",
+    Fun = couch_httpd:make_arity_2_fun(config:get("httpd",
             "redirect_vhost_handler", DefaultVHostFun)),
 
     {VHostGlobals, VHosts, Fun}.

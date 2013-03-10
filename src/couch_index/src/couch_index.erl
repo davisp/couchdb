@@ -77,7 +77,7 @@ config_change("query_server_config", "commit_freq", NewValue) ->
 
 
 init({Mod, IdxState}) ->
-    ok = couch_config:register(fun ?MODULE:config_change/3),
+    ok = config:register(fun ?MODULE:config_change/3),
     DbName = Mod:get(db_name, IdxState),
     Resp = couch_util:with_db(DbName, fun(Db) ->
         case Mod:open(Db, IdxState) of
@@ -92,7 +92,7 @@ init({Mod, IdxState}) ->
         {ok, NewIdxState} ->
             {ok, UPid} = couch_index_updater:start_link(self(), Mod),
             {ok, CPid} = couch_index_compactor:start_link(self(), Mod),
-            Delay = couch_config:get("query_server_config", "commit_freq", "5"),
+            Delay = config:get("query_server_config", "commit_freq", "5"),
             MsDelay = 1000 * list_to_integer(Delay),
             State = #st{
                 mod=Mod,

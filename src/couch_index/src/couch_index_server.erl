@@ -81,14 +81,14 @@ get_index(Module, IdxState) ->
 
 init([]) ->
     process_flag(trap_exit, true),
-    couch_config:register(fun ?MODULE:config_change/2),
+    config:register(fun ?MODULE:config_change/2),
     ets:new(?BY_SIG, [protected, set, named_table]),
     ets:new(?BY_PID, [private, set, named_table]),
     ets:new(?BY_DB, [protected, bag, named_table]),
     couch_db_update_notifier:start_link(fun ?MODULE:update_notify/1),
     RootDir = couch_index_util:root_dir(),
     % Deprecation warning if it wasn't index_dir
-    case couch_config:get("couchdb", "index_dir") of
+    case config:get("couchdb", "index_dir") of
         undefined ->
             Msg = "Deprecation warning: 'view_index_dir' is now 'index_dir'",
             ?LOG_ERROR(Msg, []);

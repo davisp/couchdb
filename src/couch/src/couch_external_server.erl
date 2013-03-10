@@ -36,10 +36,10 @@ init([Name, Command]) ->
     ?LOG_INFO("EXTERNAL: Starting process for: ~s", [Name]),
     ?LOG_INFO("COMMAND: ~s", [Command]),
     process_flag(trap_exit, true),
-    Timeout = list_to_integer(couch_config:get("couchdb", "os_process_timeout",
+    Timeout = list_to_integer(config:get("couchdb", "os_process_timeout",
         "5000")),
     {ok, Pid} = couch_os_process:start_link(Command, [{timeout, Timeout}]),
-    couch_config:register(fun("couchdb", "os_process_timeout", NewTimeout) ->
+    config:register(fun("couchdb", "os_process_timeout", NewTimeout) ->
         couch_os_process:set_timeout(Pid, list_to_integer(NewTimeout))
     end),
     {ok, {Name, Command, Pid}}.

@@ -42,7 +42,7 @@ get_user_creds(UserName) when is_list(UserName) ->
     get_user_creds(?l2b(UserName));
 
 get_user_creds(UserName) ->
-    UserCreds = case couch_config:get("admins", ?b2l(UserName)) of
+    UserCreds = case config:get("admins", ?b2l(UserName)) of
     "-hashed-" ++ HashedPwdAndSalt ->
         % the name is an admin, now check to see if there is a user doc
         % which has a matching name, salt, and password_sha
@@ -120,7 +120,7 @@ init(_) ->
     ?BY_USER = ets:new(?BY_USER, [set, protected, named_table]),
     ?BY_ATIME = ets:new(?BY_ATIME, [ordered_set, private, named_table]),
     process_flag(trap_exit, true),
-    ok = couch_config:register(
+    ok = config:register(
         fun("couch_httpd_auth", "auth_cache_size", SizeList) ->
             Size = list_to_integer(SizeList),
             ok = gen_server:call(?MODULE, {new_max_cache_size, Size}, infinity);
@@ -132,7 +132,7 @@ init(_) ->
     State = #state{
         db_notifier = Notifier,
         max_cache_size = list_to_integer(
-            couch_config:get("couch_httpd_auth", "auth_cache_size", "50")
+            config:get("couch_httpd_auth", "auth_cache_size", "50")
         )
     },
     {ok, reinit_cache(State)}.
@@ -226,7 +226,7 @@ clear_cache(State) ->
 
 reinit_cache(State) ->
     NewState = clear_cache(State),
-    AuthDbName = ?l2b(couch_config:get("couch_httpd_auth", "authentication_db")),
+    AuthDbName = ?l2b(config:get("couch_httpd_auth", "authentication_db")),
     true = ets:insert(?STATE, {auth_db_name, AuthDbName}),
     AuthDb = open_auth_db(),
     true = ets:insert(?STATE, {auth_db, AuthDb}),
