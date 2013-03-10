@@ -22,6 +22,6 @@
         "%localconfdir%/@defaultini@",
         "%localconfdir%/@localini@"
     ]}},
-    {applications, [kernel, stdlib, twig]},
+    {applications, [kernel, stdlib, twig, config]},
     {included_applications, [crypto, sasl, inets, oauth, ibrowse, mochiweb, os_mon]}
 ]}.
