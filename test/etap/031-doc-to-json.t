@@ -33,7 +33,7 @@ main(_) ->
     ok.
 
 test() ->
-    config:start_link(test_util:config_files()),
+    application:start(config),
     config:set("attachments", "compression_level", "0", false),
     ok = test_to_json_success(),
     ok.

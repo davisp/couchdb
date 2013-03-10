@@ -29,8 +29,7 @@ main(_) ->
     ok.
 
 test() ->
-    % start couch_config with default
-    config:start_link([default_config()]),
+    application:start(config),
 
 
     % Check that we can get values

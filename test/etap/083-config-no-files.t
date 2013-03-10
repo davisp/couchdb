@@ -27,7 +27,7 @@ main(_) ->
     ok.
 
 test() ->
-    config:start_link([]),
+    application:start(config),
 
     etap:fun_is(
         fun(KVPairs) -> length(KVPairs) == 0 end,

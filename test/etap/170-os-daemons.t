@@ -46,7 +46,7 @@ main(_) ->
     ok.
 
 test() ->
-    config:start_link(config_files()),
+    application:start(config),
     couch_os_daemons:start_link(),
 
     etap:diag("Daemons boot after configuration added."),

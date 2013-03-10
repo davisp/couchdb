@@ -44,7 +44,7 @@ main(_) ->
     ok.
 
 test() ->
-    config:start_link(test_util:config_files()),
+    application:start(config),
     couch_os_daemons:start_link(),
     
     DaemonCmd = daemon_cmd() ++ " 2> /dev/null",

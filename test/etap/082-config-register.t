@@ -29,7 +29,7 @@ main(_) ->
     ok.
 
 test() ->
-    config:start_link([default_config()]),
+    application:start(config),
 
     etap:is(
         config:get("httpd", "port"),

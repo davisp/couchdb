@@ -46,7 +46,7 @@ main(_) ->
     ok.
 
 test() ->
-    config:start_link(config_files()),
+    application:start(config),
     config:set("log", "level", "debug", false),
     couch_log:start_link(),
     couch_os_daemons:start_link(),

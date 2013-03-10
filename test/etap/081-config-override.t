@@ -27,7 +27,7 @@ local_config_write() ->
 
 % Run tests and wait for the config gen_server to shutdown.
 run_tests(IniFiles, Tests) ->
-    {ok, Pid} = config:start_link(IniFiles),
+    application:start(config),
     erlang:monitor(process, Pid),
     Tests(),
     config:stop(),
