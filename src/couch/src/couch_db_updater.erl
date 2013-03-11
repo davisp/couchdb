@@ -349,7 +349,7 @@ rev_tree(DiskTree) ->
             {#leaf{deleted=?i2b(IsDeleted), ptr=BodyPointer, seq=UpdateSeq, size=Size}, Acc};
         (_RevId, ?REV_MISSING, _Type, Acc) ->
             {?REV_MISSING, Acc}
-    end, DiskTree).
+    end, 0, DiskTree).
 
 disk_tree(RevTree) ->
     couch_key_tree:map(fun
