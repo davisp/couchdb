@@ -382,7 +382,7 @@ handle_call({set_db_pid, Pid}, _From, #file{db_pid=OldPid}=File) ->
         false -> ok
     end,
     link(Pid),
-    {reply, ok, File#file{db_pid=Pid}, 0};
+    {reply, ok, File#file{db_pid=Pid}};
 
 handle_call(sync, _From, #file{fd=Fd}=File) ->
     {reply, file:sync(Fd), File};
