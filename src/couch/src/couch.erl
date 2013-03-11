@@ -14,11 +14,36 @@
 
 -compile(export_all).
 
+
+deps() ->
+    [
+        sasl,
+        inets,
+        os_mon,
+        crypto,
+        public_key,
+        ssl,
+        oauth,
+        ibrowse,
+        mochiweb,
+        config,
+        twig
+    ].
+
+
 start() ->
-    ok = application:start(couch).
+    catch erlang:system_flag(scheduler_bind_type, default_bind),
+    case start_apps(deps()) of
+        ok ->
+            ok = application:start(couch);
+        Else ->
+            throw(Else)
+    end.
+
 
 stop() ->
     application:stop(couch).
+
 
 restart() ->
     case stop() of
@@ -28,4 +53,20 @@ restart() ->
         start();
     {error, Reason} ->
         {error, Reason}
+    end.
+
+
+start_apps([]) ->
+    ok;
+start_apps([App|Rest]) ->
+    case application:start(App) of
+    ok ->
+       start_apps(Rest);
+    {error, {already_started, App}} ->
+       start_apps(Rest);
+    {error, _Reason} when App =:= public_key ->
+       % ignore on R12B5
+       start_apps(Rest);
+    {error, _Reason} ->
+       {error, {app_would_not_start, App}}
     end.
