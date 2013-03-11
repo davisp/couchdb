@@ -716,12 +716,12 @@ update_docs_int(Db, DocsList, NonRepDocs, MergeConflicts, FullCommit) ->
     % the trees, the attachments are already written to disk)
     {ok, FlushedFullDocInfos} = flush_trees(Db2, NewFullDocInfos, []),
 
-    {IndexFullDocInfos, IndexDocInfos, UpdatedDDocIds} =
+    {IndexFullDocInfos, UpdatedDDocIds} =
             new_index_entries(FlushedFullDocInfos, [], []),
 
     % and the indexes
     {ok, DocInfoByIdBTree2} = couch_btree:add_remove(DocInfoByIdBTree, IndexFullDocInfos, []),
-    {ok, DocInfoBySeqBTree2} = couch_btree:add_remove(DocInfoBySeqBTree, IndexDocInfos, RemoveSeqs),
+    {ok, DocInfoBySeqBTree2} = couch_btree:add_remove(DocInfoBySeqBTree, IndexFullDocInfos, RemoveSeqs),
 
     Db3 = Db2#db{
         id_tree = DocInfoByIdBTree2,
