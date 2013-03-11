@@ -143,8 +143,13 @@ configure_filter("_view", Style, Req, Db) ->
     end;
 configure_filter([$_ | _], _Style, _Req, _Db) ->
     throw({bad_request, "unknown builtin filter name"});
+configure_filter("", main_only, _Req, _Db) ->
+    {default, main_only};
+configure_filter("", all_docs, _Req, _Db) ->
+    {default, all_docs};
 configure_filter(FilterName, Style, Req, Db) ->
-    JsonReq = chttpd_external:json_req_obj(Req, Db),
+    io:format("~p~n", [{FilterName, Style, Req, Db}]),
+    JsonReq = couch_httpd_external:json_req_obj(Req, Db),
     FilterNameParts = string:tokens(FilterName, "/"),
     case [?l2b(couch_httpd:unquote(Part)) || Part <- FilterNameParts] of
         [DName, FName] ->
