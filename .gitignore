@@ -78,7 +78,7 @@ src/couch/priv/stat_descriptions.cfg
 src/couch/stylesheet.css
 src/ejson/.deps/
 src/ejson/.libs/
-src/ejson/ejson.app
+src/ejson/ebin
 src/ejson/priv
 src/erlang-oauth/oauth.app
 src/erlang-oauth/oauth.app
