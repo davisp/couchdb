@@ -32,7 +32,6 @@ deps() ->
 
 
 start() ->
-    catch erlang:system_flag(scheduler_bind_type, default_bind),
     case start_apps(deps()) of
         ok ->
             ok = application:start(couch);
