@@ -31,7 +31,7 @@ couchTests.view_update_seq = function(debug) {
         map: "function(doc) { emit(doc.integer, doc.string) }"
       },
       summate: {
-        map:"function (doc) {emit(doc.integer, doc.integer)};",
+        map:"function (doc) { if (typeof doc.integer === 'number') { emit(doc.integer, doc.integer)}; }",
         reduce:"function (keys, values) { return sum(values); };"
       }
     }
@@ -101,6 +101,6 @@ couchTests.view_update_seq = function(debug) {
   T(resp.update_seq == 103);
 
   resp = db.view('test/summate',{group:true, update_seq:true},[0,1]);
-  T(resp.update_seq == 103);
+  TEquals(103, resp.update_seq);
 
 };
