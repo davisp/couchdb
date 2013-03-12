@@ -1053,6 +1053,8 @@ flush_att(Fd, #att{data={follows, Parser, Ref}}=Att) when is_pid(Parser) ->
     Fun = fun() ->
         Parser ! {get_bytes, Ref, self()},
         receive
+            {started_open_doc_revs, NewRef} ->
+                couch_doc:restart_open_doc_revs(Parser, Ref, NewRef);
             {bytes, Ref, Bytes} ->
                 Bytes;
             {'DOWN', ParserRef, _, _, Reason} ->

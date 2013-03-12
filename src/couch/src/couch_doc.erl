@@ -16,9 +16,9 @@
 -export([att_foldl/3,range_att_foldl/5,att_foldl_decode/3,get_validate_doc_fun/1]).
 -export([from_json_obj/1,to_json_obj/2,has_stubs/1, merge_stubs/2]).
 -export([validate_docid/1]).
--export([doc_from_multi_part_stream/2]).
+-export([doc_from_multi_part_stream/2, doc_from_multi_part_stream/3]).
 -export([doc_to_multi_part_stream/5, len_doc_to_multi_part_stream/4]).
--export([abort_multi_part_stream/1]).
+-export([abort_multi_part_stream/1, restart_open_doc_revs/3]).
 -export([to_path/1]).
 -export([mp_parse_doc/2]).
 -export([with_ejson_body/1]).
@@ -369,7 +369,25 @@ att_foldl(#att{data=Bin}, Fun, Acc) when is_binary(Bin) ->
 att_foldl(#att{data={Fd,Sp},md5=Md5}, Fun, Acc) ->
     couch_stream:foldl(Fd, Sp, Md5, Fun, Acc);
 att_foldl(#att{data=DataFun,att_len=Len}, Fun, Acc) when is_function(DataFun) ->
-   fold_streamed_data(DataFun, Len, Fun, Acc).
+   fold_streamed_data(DataFun, Len, Fun, Acc);
+att_foldl(#att{data={follows, Parser, Ref}}=Att, Fun, Acc) ->
+    ParserRef = erlang:monitor(process, Parser),
+    DataFun = fun() ->
+        Parser ! {get_bytes, Ref, self()},
+        receive
+            {started_open_doc_revs, NewRef} ->
+                couch_doc:restart_open_doc_revs(Parser, Ref, NewRef);
+            {bytes, Ref, Bytes} ->
+                Bytes;
+            {'DOWN', ParserRef, _, _, Reason} ->
+                throw({mp_parser_died, Reason})
+        end
+    end,
+    try
+        att_foldl(Att#att{data=DataFun}, Fun, Acc)
+    after
+        erlang:demonitor(ParserRef, [flush])
+    end.
 
 range_att_foldl(#att{data={Fd,Sp}}, From, To, Fun, Acc) ->
    couch_stream:range_foldl(Fd, Sp, From, To, Fun, Acc).
@@ -566,6 +584,10 @@ atts_to_mp([Att | RestAtts], Boundary, WriteFun,
 
 
 doc_from_multi_part_stream(ContentType, DataFun) ->
+    doc_from_multi_part_stream(ContentType, DataFun, make_ref()).
+
+
+doc_from_multi_part_stream(ContentType, DataFun, Ref) ->
     Parent = self(),
     NumMpWriters = num_mp_writers(),
     Parser = spawn_link(fun() ->
@@ -577,10 +599,11 @@ doc_from_multi_part_stream(ContentType, DataFun) ->
             fun(Next) -> mp_parse_doc(Next, []) end),
         unlink(Parent)
         end),
-    Ref = make_ref(),
     ParserRef = erlang:monitor(process, Parser),
     Parser ! {get_doc_bytes, Ref, self()},
     receive
+    {started_open_doc_revs, NewRef} ->
+        restart_open_doc_revs(Parser, Ref, NewRef);
     {doc_bytes, Ref, DocBytes} ->
         Doc = from_json_obj(?JSON_DECODE(DocBytes)),
         % we'll send the Parser process ID to the remote nodes so they can
@@ -597,6 +620,7 @@ doc_from_multi_part_stream(ContentType, DataFun) ->
         end,
         {ok, Doc#doc{atts=Atts2}, WaitFun, Parser}
     end.
+
 
 mp_parse_doc({headers, H}, []) ->
     case couch_util:get_value("content-type", H) of
@@ -729,6 +753,28 @@ abort_multi_part_stream(Parser) ->
         % wait this long to see if they just had an error
         % like a validate_doc_update failure.
         throw(multi_part_abort_timeout)
+    end.
+
+
+restart_open_doc_revs(Parser, Ref, NewRef) ->
+    unlink(Parser),
+    exit(Parser, kill),
+    flush_parser_messages(Ref),
+    erlang:error({restart_open_doc_revs, NewRef}).
+
+
+flush_parser_messages(Ref) ->
+    receive
+        {headers, Ref, _} ->
+            flush_parser_messages(Ref);
+        {body_bytes, Ref, _} ->
+            flush_parser_messages(Ref);
+        {body_done, Ref} ->
+            flush_parser_messages(Ref);
+        {done, Ref} ->
+            flush_parser_messages(Ref)
+    after 0 ->
+        ok
     end.
 
 
