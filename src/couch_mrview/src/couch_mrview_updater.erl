@@ -168,7 +168,7 @@ compute_map_results(#mrst{qserver = Qs}, Dequeued) ->
 
 write_results(Parent, State) ->
     case accumulate_writes(State, State#mrst.write_queue, nil) of
-        closed ->
+        stop ->
             Parent ! {new_state, State};
         {Go, {Seq, ViewKVs, DocIdKeys}} ->
             NewState = write_kvs(State, Seq, ViewKVs, DocIdKeys),
