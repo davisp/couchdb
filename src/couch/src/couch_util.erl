@@ -491,10 +491,10 @@ month(12) -> "Dec".
 
 integer_to_boolean(1) ->
     true;
-integer_to_boolean(_) ->
+integer_to_boolean(0) ->
     false.
 
 boolean_to_integer(true) ->
     1;
-boolean_to_integer(_) ->
+boolean_to_integer(false) ->
     0.

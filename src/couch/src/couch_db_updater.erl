@@ -360,7 +360,7 @@ disk_tree(RevTree) ->
     end, RevTree).
 
 btree_by_seq_split(#full_doc_info{id=Id, update_seq=Seq, deleted=Del, rev_tree=T}) ->
-    {Seq, {Id, if Del -> 1; true -> 0 end, disk_tree(T)}}.
+    {Seq, {Id, ?b2i(Del), disk_tree(T)}}.
 
 btree_by_seq_join(Seq, {Id, Del, DiskTree}) when is_integer(Del) ->
     {RevTree, LeafsSize} = rev_tree(DiskTree),
@@ -385,7 +385,7 @@ btree_by_seq_join(KeySeq, {Id, RevInfos, DeletedRevInfos}) ->
 
 btree_by_id_split(#full_doc_info{id=Id, update_seq=Seq,
         deleted=Deleted, rev_tree=Tree}) ->
-    {Id, {Seq, ?i2b(Deleted), disk_tree(Tree)}}.
+    {Id, {Seq, ?b2i(Deleted), disk_tree(Tree)}}.
 
 btree_by_id_join(Id, {HighSeq, Deleted, DiskTree}) ->
     {Tree, LeafsSize} = rev_tree(DiskTree),
