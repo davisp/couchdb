@@ -148,13 +148,12 @@ configure_filter("", main_only, _Req, _Db) ->
 configure_filter("", all_docs, _Req, _Db) ->
     {default, all_docs};
 configure_filter(FilterName, Style, Req, Db) ->
-    JsonReq = {json_req, couch_httpd_external:json_req_obj(Req, Db)},
     FilterNameParts = string:tokens(FilterName, "/"),
     case [?l2b(couch_httpd:unquote(Part)) || Part <- FilterNameParts] of
         [DName, FName] ->
             {ok, DDoc} = open_ddoc(Db, <<"_design/", DName/binary>>),
             check_member_exists(DDoc, [<<"filters">>, FName]),
-            {custom, Style, JsonReq, DDoc, FName};
+            {custom, Style, Req, DDoc, FName};
         [] ->
             {default, Style};
         _Else ->
@@ -185,7 +184,11 @@ filter(Db, DocInfo, {view, Style, DDoc, VName}) ->
     Docs = open_revs(Db, DocInfo, Style),
     {ok, Passes} = couch_query_servers:filter_view(DDoc, VName, Docs),
     filter_revs(Passes, Docs);
-filter(Db, DocInfo, {custom, Style, Req, DDoc, FName}) ->
+filter(Db, DocInfo, {custom, Style, Req0, DDoc, FName}) ->
+    Req = case Req0 of
+        {json_req, _} -> Req0;
+        #httpd{} -> {json_req, couch_httpd_external:json_req_obj(Req0, Db)}
+    end,
     Docs = open_revs(Db, DocInfo, Style),
     {ok, Passes} = couch_query_servers:filter_docs(Req, Db, DDoc, FName, Docs),
     filter_revs(Passes, Docs).
