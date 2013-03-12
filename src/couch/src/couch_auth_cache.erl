@@ -222,8 +222,8 @@ code_change(_OldVsn, State, _Extra) ->
 handle_config_change("couch_httpd_auth", "auth_cache_size", SizeList, _, _) ->
     Size = list_to_integer(SizeList),
     {ok, gen_server:call(?MODULE, {new_max_cache_size, Size}, infinity)};
-handle_config_change("couch_httpd_auth", "authentication_db", DbName, _, _) ->
-    {ok, gen_server:call(?MODULE, {new_auth_db, ?l2b(DbName)}, infinity)};
+handle_config_change("couch_httpd_auth", "authentication_db", _DbName, _, _) ->
+    {ok, gen_server:call(?MODULE, reinit_cache, infinity)};
 handle_config_change(_, _, _, _, _) ->
     {ok, nil}.
 
