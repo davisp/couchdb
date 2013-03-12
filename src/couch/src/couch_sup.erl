@@ -122,7 +122,7 @@ get_uris() ->
             undefined -> [];
             Else -> [Else]
         end
-    end, [http, https]).
+    end, [couch_httpd, https]).
 
 
 get_uri(Name, Ip) ->
