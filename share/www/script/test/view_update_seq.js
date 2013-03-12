@@ -68,12 +68,12 @@ couchTests.view_update_seq = function(debug) {
   T(resp.rows.length == 1);
   T(resp.update_seq == 101);
 
-  db.save({"id":"0"});
+  db.save({"id":"0", "integer": 1});
   resp = db.view('test/all_docs', {limit: 1,stale: "ok", update_seq:true});
   T(resp.rows.length == 1);
   T(resp.update_seq == 101);
 
-  db.save({"id":"00"});
+  db.save({"id":"00", "integer": 2});
   resp = db.view('test/all_docs',
     {limit: 1, stale: "update_after", update_seq: true});
   T(resp.rows.length == 1);
