@@ -1702,6 +1702,9 @@ couchTests.replication = function(debug) {
   TEquals(true, repResult.ok);
   TEquals('string', typeof repResult._local_id);
 
+  // Race conditions are awesome
+  wait(500);
+
   xhr = CouchDB.request("GET", "/_active_tasks");
   tasks = JSON.parse(xhr.responseText);
 
