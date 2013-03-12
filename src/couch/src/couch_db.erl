@@ -559,7 +559,13 @@ load_validation_funs(#db{main_pid=Pid, name = <<"shards/", _/binary>>}=Db) ->
             throw(internal_server_error)
     end;
 load_validation_funs(#db{main_pid=Pid}=Db) ->
-    {ok, DDocs} = get_design_docs(Db),
+    {ok, DDocInfos} = get_design_docs(Db),
+    OpenDocs = fun
+        (#full_doc_info{}=D) ->
+            {ok, Doc} = open_doc_int(Db, D, [ejson_body]),
+            Doc
+    end,
+    DDocs = lists:map(OpenDocs, DDocInfos),
     Funs = lists:flatmap(fun(DDoc) ->
         case couch_doc:get_validate_doc_fun(DDoc) of
             nil -> [];
