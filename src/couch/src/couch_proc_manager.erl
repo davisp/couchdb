@@ -1,13 +1,21 @@
 -module(couch_proc_manager).
 -behaviour(gen_server).
+-behaviour(config_listener).
+
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, 
     code_change/3]).
 
 -export([start_link/0, get_proc_count/0, new_proc/2, new_proc/4]).
 
+% config_listener api
+-export([handle_config_change/5]).
+
 -include_lib("couch/include/couch_db.hrl").
 
--record(state, {tab}).
+-record(state, {
+    tab,
+    config
+}).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -17,7 +25,11 @@ get_proc_count() ->
 
 init([]) ->
     process_flag(trap_exit, true),
-    {ok, #state{tab = ets:new(procs, [ordered_set, {keypos, #proc.pid}])}}.
+    ok = config:listen_for_changes(?MODULE, nil),
+    {ok, #state{
+        tab = ets:new(procs, [ordered_set, {keypos, #proc.pid}]),
+        config = get_proc_config()
+    }}.
 
 handle_call(get_table, _From, State) ->
     {reply, State#state.tab, State};
@@ -51,10 +63,10 @@ handle_call({get_proc, #doc{body={Props}}=DDoc, DDocKey}, From, State) ->
             spawn_link(?MODULE, new_proc, [From, Lang, DDoc, DDocKey]),
             {noreply, State};
         {ok, Proc} ->
-            {reply, {ok, Proc, get_query_server_config()}, State}
+            {reply, {ok, Proc, State#state.config}, State}
         end;
     {ok, Proc} ->
-        {reply, {ok, Proc, get_query_server_config()}, State}
+        {reply, {ok, Proc, State#state.config}, State}
     catch error:Reason ->
         ?LOG_ERROR("~p ~p ~p", [?MODULE, Reason, erlang:get_stacktrace()]),
         {reply, {error, Reason}, State}
@@ -69,7 +81,7 @@ handle_call({get_proc, Lang}, {Client, _} = From, State) ->
         spawn_link(?MODULE, new_proc, [From, Lang]),
         {noreply, State};
     {ok, Proc} ->
-        {reply, {ok, Proc, get_query_server_config()}, State}
+        {reply, {ok, Proc, State#state.config}, State}
     catch error:Reason ->
         ?LOG_ERROR("~p ~p ~p", [?MODULE, Reason, erlang:get_stacktrace()]),
         {reply, {error, Reason}, State}
@@ -109,13 +121,16 @@ handle_cast({os_proc_idle, Pid}, #state{tab=Tab}=State) ->
             ok
     end,
     {noreply, State};
+handle_cast(reload_config, State) ->
+    {noreply, State#state{config = get_proc_config()}};
 handle_cast(_Msg, State) ->
     {noreply, State}.
+
 
 handle_info({'EXIT', _, {ok, Proc0, {Client,_} = From}}, State) ->
     link(Proc0#proc.pid),
     Proc = assign_proc(State#state.tab, Client, Proc0),
-    gen_server:reply(From, {ok, Proc, get_query_server_config()}),
+    gen_server:reply(From, {ok, Proc, State#state.config}),
     {noreply, State};
 
 handle_info({'EXIT', Pid, Reason}, State) ->
@@ -132,6 +147,14 @@ handle_info({'DOWN', Ref, _, _, _Reason}, State) ->
     end,
     {noreply, State};
 
+handle_info({gen_event_EXIT, {config_listener, ?MODULE}, _Reason}, State) ->
+    erlang:send_after(5000, self(), restart_config_listener),
+    {noreply, State};
+
+handle_info(restart_config_lister, State) ->
+    ok = config:listen_for_changes(?MODULE, nil),
+    {noreply, State};
+
 handle_info(_Msg, State) ->
     {noreply, State}.
 
@@ -145,7 +168,11 @@ code_change(_OldVsn, #state{tab = Tab} = State, _Extra) ->
     true = ets:delete(Tab),
     {ok, State#state{tab = NewTab}}.
 
-
+handle_config_change("query_server_config", _, _, _, _) ->
+    gen_server:cast(?MODULE, reload_config),
+    {ok, nil};
+handle_config_change(_, _, _, _, _) ->
+    {ok, nil}.
 
 iter_procs(Tab, Lang, Fun, Acc) when is_binary(Lang) ->
     iter_procs(Tab, binary_to_list(Lang), Fun, Acc);
@@ -238,9 +265,13 @@ return_proc(Tab, #proc{pid=Pid} = Proc) ->
         ets:delete(Tab, Pid)
     end.
 
-get_query_server_config() ->
+get_proc_config() ->
     Limit = config:get("query_server_config", "reduce_limit", "true"),
-    {[{<<"reduce_limit">>, list_to_atom(Limit)}]}.
+    Timeout = config:get("couchdb", "os_process_timeout", "5000"),
+    {[
+        {<<"reduce_limit">>, list_to_atom(Limit)},
+        {<<"timeout">>, list_to_integer(Timeout)}
+    ]}.
 
 proc_with_ddoc(DDoc, DDocKey, Procs) ->
     Filter = fun(#proc{ddoc_keys=Keys}) -> not lists:member(DDocKey, Keys) end,
