@@ -886,12 +886,12 @@ copy_docs(Db, #db{fd = DestFd} = NewDb, MixedInfos, Retry) ->
     DocInfoIds = [Id || #doc_info{id=Id} <- MixedInfos],
     LookupResults = couch_btree:lookup(Db#db.id_tree, DocInfoIds),
     % COUCHDB-968, make sure we prune duplicates during compaction
-    NewInfos0 = lists:usort(fun(#doc_info{id=A}, #doc_info{id=B}) ->
+    NewInfos0 = lists:usort(fun(#full_doc_info{id=A}, #full_doc_info{id=B}) ->
         A =< B
     end, merge_lookups(MixedInfos, LookupResults)),
 
     NewInfos1 = lists:map(
-        fun({ok, #full_doc_info{rev_tree=RevTree}=Info}) ->
+        fun(#full_doc_info{rev_tree=RevTree}=Info) ->
             Info#full_doc_info{rev_tree=couch_key_tree:map(
                 fun(_, _, branch) ->
                     ?REV_MISSING;
