@@ -202,7 +202,7 @@ handle_config_change("couchdb", "max_dbs_open", Max, _, _) ->
     {ok, gen_server:call(couch_server,{set_max_dbs_open,list_to_integer(Max)})};
 handle_config_change("admins", _, _, Persist, _) ->
     % spawn here so couch event manager doesn't deadlock
-    spawn(fun() -> hash_admin_passwords(Persist) end);
+    {ok, spawn(fun() -> hash_admin_passwords(Persist) end)};
 handle_config_change("httpd", "authentication_handlers", _, _, _) ->
     {ok, couch_httpd:stop()};
 handle_config_change("httpd", "bind_address", _, _, _) ->
