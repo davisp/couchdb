@@ -12,7 +12,7 @@
 
 -module(couch_mrview).
 
--export([validate/1]).
+-export([validate/2]).
 -export([query_all_docs/2, query_all_docs/4]).
 -export([query_view/3, query_view/4, query_view/6]).
 -export([get_info/2]).
@@ -41,7 +41,7 @@
 }).
 
 
-validate(DDoc) ->
+validate(DbName, DDoc) ->
     GetName = fun
         (#mrview{map_names = [Name | _]}) -> Name;
         (#mrview{reduce_funs = [{Name, _} | _]}) -> Name;
@@ -56,7 +56,8 @@ validate(DDoc) ->
                 couch_query_servers:try_compile(Proc, reduce, RedName, RedSrc)
         end, Reds)
     end,
-    #mrst{language=Lang, views=Views} = couch_mrview_util:ddoc_to_mrst(DDoc),
+    {ok, #mrst{language=Lang, views=Views}}
+            = couch_mrview_util:ddoc_to_mrst(DbName, DDoc),
     try Views =/= [] andalso couch_query_servers:get_os_process(Lang) of
         false ->
             ok;

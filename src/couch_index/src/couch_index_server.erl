@@ -14,7 +14,7 @@
 -behaviour(gen_server).
 -behaviour(config_listener).
 
--export([start_link/0, validate/1, get_index/4, get_index/3, get_index/2]).
+-export([start_link/0, validate/2, get_index/4, get_index/3, get_index/2]).
 -export([update_notify/1]).
 
 -export([init/1, terminate/2, code_change/3]).
@@ -36,7 +36,7 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 
-validate(DDoc) ->
+validate(DbName, DDoc) ->
     LoadModFun = fun
         ({ModNameList, "true"}) ->
             try
@@ -50,7 +50,7 @@ validate(DDoc) ->
     ValidateFun = fun
         (ModName, ok) ->
             try
-                ModName:validate(DDoc)
+                ModName:validate(DbName, DDoc)
             catch Type:Reason ->
                 {Type, Reason}
             end;
