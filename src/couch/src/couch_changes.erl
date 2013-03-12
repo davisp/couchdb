@@ -148,7 +148,7 @@ configure_filter("", main_only, _Req, _Db) ->
 configure_filter("", all_docs, _Req, _Db) ->
     {default, all_docs};
 configure_filter(FilterName, Style, Req, Db) ->
-    JsonReq = couch_httpd_external:json_req_obj(Req, Db),
+    JsonReq = {json_req, couch_httpd_external:json_req_obj(Req, Db)},
     FilterNameParts = string:tokens(FilterName, "/"),
     case [?l2b(couch_httpd:unquote(Part)) || Part <- FilterNameParts] of
         [DName, FName] ->
