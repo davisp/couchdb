@@ -161,8 +161,7 @@ handle_call({purge_docs, IdRevs}, _From, Db) ->
                 fun(_RevId, Leaf) ->
                     Leaf#leaf{seq=SeqAcc+1}
                 end, Tree),
-            {couch_doc:to_doc_info(FullInfo#full_doc_info{rev_tree=Tree2}),
-                SeqAcc + 1}
+            {FullInfo#full_doc_info{rev_tree=Tree2}, SeqAcc + 1}
         end, LastSeq, FullDocInfoToUpdate),
 
     IdsToRemove = [Id || {#full_doc_info{id=Id,rev_tree=[]},_}
