@@ -198,7 +198,7 @@ accumulate_writes(State, W, Acc0) ->
         _ -> Acc0
     end,
     case couch_work_queue:dequeue(W) of
-        closed when length(DocIdKVs) == 0->
+        closed when Seq == 0 ->
             stop;
         closed ->
             {stop, {Seq, ViewKVs, DocIdKVs}};
