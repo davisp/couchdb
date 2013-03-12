@@ -636,12 +636,8 @@ prep_and_validate_updates(Db, [DocBucket|RestBuckets],
         AllowConflict, AccPrepped, AccErrors) ->
     Leafs = couch_key_tree:get_all_leafs(OldRevTree),
     LeafRevsDict = dict:from_list([
-        begin
-            Deleted = element(1, LeafVal),
-            Sp = element(2, LeafVal),
-            {{Start, RevId}, {Deleted, Sp, Revs}}
-        end ||
-        {LeafVal, {Start, [RevId | _]} = Revs} <- Leafs
+        {{Start, RevId}, {Leaf, Revs}} ||
+        {Leaf, {Start, [RevId | _]} = Revs} <- Leafs
     ]),
     {PreppedBucket, AccErrors3} = lists:foldl(
         fun({Doc, Ref}, {Docs2Acc, AccErrors2}) ->
