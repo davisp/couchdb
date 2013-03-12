@@ -308,45 +308,51 @@ handle_request_int(MochiReq, DefaultFun,
         end
     catch
         throw:{http_head_abort, Resp0} ->
+            ?LOG_ERROR("Stacktrace:~n~p", [erlang:get_stacktrace()]),
             {ok, Resp0};
         throw:{invalid_json, S} ->
+            ?LOG_ERROR("Stacktrace:~n~p", [erlang:get_stacktrace()]),
             ?LOG_ERROR("attempted upload of invalid JSON (set log_level to debug to log it)", []),
             ?LOG_DEBUG("Invalid JSON: ~p",[S]),
             send_error(HttpReq, {bad_request, invalid_json});
         throw:unacceptable_encoding ->
+            ?LOG_ERROR("Stacktrace:~n~p", [erlang:get_stacktrace()]),
             ?LOG_ERROR("unsupported encoding method for the response", []),
             send_error(HttpReq, {not_acceptable, "unsupported encoding"});
         throw:bad_accept_encoding_value ->
+            ?LOG_ERROR("Stacktrace:~n~p", [erlang:get_stacktrace()]),
             ?LOG_ERROR("received invalid Accept-Encoding header", []),
             send_error(HttpReq, bad_request);
         exit:normal ->
             exit(normal);
         exit:snappy_nif_not_loaded ->
+            ?LOG_ERROR("Stacktrace:~n~p", [erlang:get_stacktrace()]),
             ErrorReason = "To access the database or view index, Apache CouchDB"
                 " must be built with Erlang OTP R13B04 or higher.",
             ?LOG_ERROR("~s", [ErrorReason]),
             send_error(HttpReq, {bad_otp_release, ErrorReason});
         exit:{body_too_large, _} ->
+            ?LOG_ERROR("Stacktrae:~n~p", [erlang:get_stacktrace()]),
             send_error(HttpReq, request_entity_too_large);
         throw:Error ->
             Stack = erlang:get_stacktrace(),
-            ?LOG_DEBUG("Minor error in HTTP request: ~p",[Error]),
-            ?LOG_DEBUG("Stacktrace: ~p",[Stack]),
+            ?LOG_ERROR("Minor error in HTTP request: ~p",[Error]),
+            ?LOG_ERROR("Stacktrace:~n~p",[Stack]),
             send_error(HttpReq, Error);
         error:badarg ->
             Stack = erlang:get_stacktrace(),
             ?LOG_ERROR("Badarg error in HTTP request",[]),
-            ?LOG_INFO("Stacktrace: ~p",[Stack]),
+            ?LOG_ERROR("Stacktrace:~n~p",[Stack]),
             send_error(HttpReq, badarg);
         error:function_clause ->
             Stack = erlang:get_stacktrace(),
             ?LOG_ERROR("function_clause error in HTTP request",[]),
-            ?LOG_INFO("Stacktrace: ~p",[Stack]),
+            ?LOG_ERROR("Stacktrace:~n~p",[Stack]),
             send_error(HttpReq, function_clause);
         Tag:Error ->
             Stack = erlang:get_stacktrace(),
             ?LOG_ERROR("Uncaught error in HTTP request: ~p",[{Tag, Error}]),
-            ?LOG_INFO("Stacktrace: ~p",[Stack]),
+            ?LOG_ERROR("Stacktrace:~n~p",[Stack]),
             send_error(HttpReq, Error)
     end,
     RequestTime = round(timer:now_diff(now(), Begin)/1000),
