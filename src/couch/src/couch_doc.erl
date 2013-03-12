@@ -567,24 +567,27 @@ atts_to_mp([Att | RestAtts], Boundary, WriteFun,
 
 doc_from_multi_part_stream(ContentType, DataFun) ->
     Parent = self(),
+    NumMpWriters = num_mp_writers(),
     Parser = spawn_link(fun() ->
         ParentRef = erlang:monitor(process, Parent),
         put(mp_parent_ref, ParentRef),
+        put(num_mp_writers, NumMpWriters),
         {<<"--",_/binary>>, _, _} = couch_httpd:parse_multipart_request(
             ContentType, DataFun,
             fun(Next) -> mp_parse_doc(Next, []) end),
         unlink(Parent)
         end),
+    Ref = make_ref(),
     ParserRef = erlang:monitor(process, Parser),
-    Parser ! {get_doc_bytes, self()},
+    Parser ! {get_doc_bytes, Ref, self()},
     receive
-    {doc_bytes, DocBytes} ->
+    {doc_bytes, Ref, DocBytes} ->
         Doc = from_json_obj(?JSON_DECODE(DocBytes)),
         % we'll send the Parser process ID to the remote nodes so they can
         % retrieve their own copies of the attachment data
         Atts2 = lists:map(
             fun(#att{data=follows}=A) ->
-                A#att{data={follows, Parser}};
+                A#att{data={follows, Parser, Ref}};
             (A) ->
                 A
             end, Doc#doc.atts),
@@ -611,24 +614,24 @@ mp_parse_doc(body_end, AccBytes) ->
         From ! {doc_bytes, Ref, lists:reverse(AccBytes)}
     end,
     fun(Next) ->
-        mp_parse_atts(Next, {[], 0, orddict:new(), []})
+        mp_parse_atts(Next, {Ref, [], 0, orddict:new(), []})
     end.
 
 mp_parse_atts({headers, _}, Acc) ->
     fun(Next) -> mp_parse_atts(Next, Acc) end;
 mp_parse_atts(body_end, Acc) ->
     fun(Next) -> mp_parse_atts(Next, Acc) end;
-mp_parse_atts({body, Bytes}, {DataList, Offset, Counters, Waiting}) ->
-    case maybe_send_data({DataList++[Bytes], Offset, Counters, Waiting}) of
+mp_parse_atts({body, Bytes}, {Ref, Chunks, Offset, Counters, Waiting}) ->
+    case maybe_send_data({Ref, Chunks++[Bytes], Offset, Counters, Waiting}) of
         abort_parsing ->
             fun(Next) -> mp_abort_parse_atts(Next, nil) end;
         NewAcc ->
             fun(Next) -> mp_parse_atts(Next, NewAcc) end
     end;
-mp_parse_atts(eof, {DataList, Offset, Counters, Waiting}) ->
-    N = list_to_integer(config:get("cluster", "n", "3")),
+mp_parse_atts(eof, {Ref, Chunks, Offset, Counters, Waiting}) ->
+    N = num_mp_writers(),
     M = length(Counters),
-    case (M == N) andalso DataList == [] of
+    case (M == N) andalso Chunks == [] of
     true ->
         ok;
     false ->
@@ -636,9 +639,9 @@ mp_parse_atts(eof, {DataList, Offset, Counters, Waiting}) ->
         receive
         abort_parsing ->
             ok;
-        {get_bytes, From} ->
+        {get_bytes, Ref, From} ->
             C2 = orddict:update_counter(From, 1, Counters),
-            NewAcc = maybe_send_data({DataList, Offset, C2, [From|Waiting]}),
+            NewAcc = maybe_send_data({Ref, Chunks, Offset, C2, [From|Waiting]}),
             mp_parse_atts(eof, NewAcc);
         {'DOWN', ParentRef, _, _, _} ->
             exit(mp_reader_coordinator_died)
@@ -652,17 +655,17 @@ mp_abort_parse_atts(eof, _) ->
 mp_abort_parse_atts(_, _) ->
     fun(Next) -> mp_abort_parse_atts(Next, nil) end.
 
-maybe_send_data({ChunkList, Offset, Counters, Waiting}) ->
-    receive {get_bytes, From} ->
+maybe_send_data({Ref, Chunks, Offset, Counters, Waiting}) ->
+    receive {get_bytes, Ref, From} ->
         NewCounters = orddict:update_counter(From, 1, Counters),
-        maybe_send_data({ChunkList, Offset, NewCounters, [From|Waiting]})
+        maybe_send_data({Ref, Chunks, Offset, NewCounters, [From|Waiting]})
     after 0 ->
         % reply to as many writers as possible
         NewWaiting = lists:filter(fun(Writer) ->
             WhichChunk = orddict:fetch(Writer, Counters),
             ListIndex = WhichChunk - Offset,
-            if ListIndex =< length(ChunkList) ->
-                Writer ! {bytes, lists:nth(ListIndex, ChunkList)},
+            if ListIndex =< length(Chunks) ->
+                Writer ! {bytes, Ref, lists:nth(ListIndex, Chunks)},
                 false;
             true ->
                 true
@@ -677,20 +680,20 @@ maybe_send_data({ChunkList, Offset, Counters, Waiting}) ->
             SmallestIndex = lists:min(element(2, lists:unzip(Counters)))
         end,
         Size = length(Counters),
-        N = list_to_integer(config:get("cluster", "n", "3")),
+        N = num_mp_writers(),
         if Size == N andalso SmallestIndex == (Offset+1) ->
-            NewChunkList = tl(ChunkList),
+            NewChunks = tl(Chunks),
             NewOffset = Offset+1;
         true ->
-            NewChunkList = ChunkList,
+            NewChunks = Chunks,
             NewOffset = Offset
         end,
 
         % we should wait for a writer if no one has written the last chunk
         LargestIndex = lists:max([0|element(2, lists:unzip(Counters))]),
-        if LargestIndex  >= (Offset + length(ChunkList)) ->
+        if LargestIndex  >= (Offset + length(Chunks)) ->
             % someone has written all possible chunks, keep moving
-            {NewChunkList, NewOffset, Counters, NewWaiting};
+            {Ref, NewChunks, NewOffset, Counters, NewWaiting};
         true ->
             ParentRef = get(mp_parent_ref),
             receive
@@ -698,11 +701,18 @@ maybe_send_data({ChunkList, Offset, Counters, Waiting}) ->
                 abort_parsing;
             {'DOWN', ParentRef, _, _, _} ->
                 exit(mp_reader_coordinator_died);
-            {get_bytes, X} ->
+            {get_bytes, Ref, X} ->
                 C2 = orddict:update_counter(X, 1, Counters),
-                maybe_send_data({NewChunkList, NewOffset, C2, [X|NewWaiting]})
+                maybe_send_data({Ref, NewChunks, NewOffset, C2, [X|NewWaiting]})
             end
         end
+    end.
+
+
+num_mp_writers() ->
+    case erlang:get(mp_att_writers) of
+        undefined -> 1;
+        Count -> Count
     end.
 
 
