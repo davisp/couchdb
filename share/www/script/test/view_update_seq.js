@@ -100,7 +100,7 @@ couchTests.view_update_seq = function(debug) {
   resp = db.view('test/all_docs',{update_seq:true},["0","1"]);
   T(resp.update_seq == 103);
 
-  resp = db.view('test/summate',{group:true, update_seq:true},["0","1"]);
+  resp = db.view('test/summate',{group:true, update_seq:true},[0,1]);
   T(resp.update_seq == 103);
 
 };
