@@ -33,7 +33,7 @@ init([]) ->
             {list_to_atom(Name),
                 {Module, Fun, Args},
                 permanent,
-                brutal_kill,
+                1,
                 worker,
                 [Module]}
         end

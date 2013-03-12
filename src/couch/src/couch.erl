@@ -45,14 +45,7 @@ stop() ->
 
 
 restart() ->
-    case stop() of
-    ok ->
-        start();
-    {error, {not_started,couch}} ->
-        start();
-    {error, Reason} ->
-        {error, Reason}
-    end.
+    init:restart().
 
 
 start_apps([]) ->
