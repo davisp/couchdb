@@ -1086,7 +1086,7 @@ copy_purge_info(OldDb, NewDb) ->
     if OldHdr#db_header.purge_seq > 0 ->
         {ok, PurgedIdsRevs} = couch_db:get_last_purged(OldDb),
         Opts = [{compression, NewDb#db.compression}],
-        {ok, Ptr} = couch_file:append_term(NewDb#db.fd, PurgedIdsRevs, Opts),
+        {ok, Ptr, _} = couch_file:append_term(NewDb#db.fd, PurgedIdsRevs, Opts),
         NewDb#db{
             header=NewHdr#db_header{
                 purge_seq=OldHdr#db_header.purge_seq,
