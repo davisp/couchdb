@@ -209,7 +209,8 @@ check_docids(DocIds) when is_list(DocIds) ->
             Msg = "`doc_ids` filter parameter is not a list of binaries.",
             throw({bad_request, Msg});
         (_) -> ok
-    end, DocIds);
+    end, DocIds),
+    DocIds;
 check_docids(_) ->
     Msg = "`doc_ids` filter parameter is not a list of binaries.",
     throw({bad_request, Msg}).
