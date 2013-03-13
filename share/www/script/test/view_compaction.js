@@ -27,7 +27,7 @@ couchTests.view_compaction = function(debug) {
         map: "function(doc) { emit(doc._id, doc.value) }"
       },
       view2: {
-        map: "function(doc) { if (typeof(doc.value) === 'number') {emit(doc._id, doc.value);} }",
+        map: "function(doc) { if (typeof(doc.integer) === 'number') {emit(doc._id, doc.integer);} }",
         reduce: "function(keys, values, rereduce) { return sum(values); }"
       }
     }
