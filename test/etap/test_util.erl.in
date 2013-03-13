@@ -55,13 +55,18 @@ config_files() ->
 run(Plan, Fun) ->
     test_util:init_code_path(),
     etap:plan(Plan),
-    case (catch Fun()) of
+    try Fun() of
         ok ->
             etap:end_tests();
-        Other ->
-            etap:diag(io_lib:format("Test died abnormally:~n~p", [Other])),
-            timer:sleep(500),
-            etap:bail(Other)
+        Else ->
+            etap:diag("Bad return:~n~p", [Else]),
+            timer:sleep(100),
+            etap:bail(Else)
+    catch Type:Reason ->
+        etap:diag("Test died: ~p~n  ~p~n  ~p~n",
+                [Type, Reason, erlang:get_stacktrace()]),
+        timer:sleep(1000),
+        etap:bail({Type, Reason})
     end,
     ok.
 
