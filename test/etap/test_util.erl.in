@@ -16,6 +16,7 @@
 -export([source_file/1, build_file/1, config_files/0]).
 -export([run/2]).
 -export([request/3, request/4]).
+-export([start_couch/0, start_couch/1, stop_couch/0]).
 
 srcdir() ->
     "@abs_top_srcdir@".
@@ -92,3 +93,18 @@ request(Url, Headers, Method, Body, N) ->
     Error ->
         Error
     end.
+
+start_couch() ->
+    start_couch(config_files()).
+
+start_couch(IniFiles) ->
+    ok = application:set_env(config, ini_files, test_util:config_files()),
+    ok = application:start(config),
+    ok = application:start(twig),
+    ok = application:start(couch),
+    ok.
+
+stop_couch() ->
+    ok = application:stop(couch),
+    ok = application:stop(twig),
+    ok = application:stop(config).
