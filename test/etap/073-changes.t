@@ -51,19 +51,7 @@ test_db_name() -> <<"couch_test_changes">>.
 
 
 main(_) ->
-    test_util:init_code_path(),
-
-    etap:plan(43),
-    try test() of
-        ok ->
-            etap:end_tests()
-    catch T:R ->
-        etap:diag(io_lib:format("Test died abnormally: ~p", [{T, R}])),
-        etap:diag(io_lib:format("Stack: ~p", [erlang:get_stacktrace()])),
-        timer:sleep(1000),
-        etap:bail(fail)
-    end,
-    ok.
+    test_util:run(43, fun() -> test() end).
 
 
 test() ->
