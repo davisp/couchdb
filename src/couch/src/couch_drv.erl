@@ -56,7 +56,7 @@ code_change(_OldVsn, State, _Extra) ->
 util_driver_dir() ->
     case config:get("couchdb", "util_driver_dir", null) of
     null ->
-        filename:join(couch_util:priv_dir(), "lib");
+        couch_util:priv_dir();
     LibDir0 ->
         LibDir0
     end.
