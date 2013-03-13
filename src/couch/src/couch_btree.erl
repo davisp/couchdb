@@ -286,8 +286,7 @@ complete_root(Bt, KPs) ->
 % it's probably really inefficient.
 
 chunkify(InList) ->
-    BaseChunkSize = list_to_integer(config:get("couchdb",
-        "btree_chunk_size", "1279")),
+    BaseChunkSize = get_chunk_size(),
     case ?term_size(InList) of
     Size when Size > BaseChunkSize ->
         NumberOfChunksLikely = ((Size div BaseChunkSize) + 1),
@@ -307,6 +306,14 @@ chunkify([InElement | RestInList], ChunkThreshold, OutList, OutListSize, OutputC
         chunkify(RestInList, ChunkThreshold, [], 0, [lists:reverse([InElement | OutList]) | OutputChunks]);
     Size ->
         chunkify(RestInList, ChunkThreshold, [InElement | OutList], OutListSize + Size, OutputChunks)
+    end.
+
+-compile({inline,[get_chunk_size/0]}).
+get_chunk_size() ->
+    try
+        list_to_integer(config:get("couchdb", "btree_chunk_size", "1279"))
+    catch error:badarg ->
+        1279
     end.
 
 modify_node(Bt, RootPointerInfo, Actions, QueryOutput) ->
