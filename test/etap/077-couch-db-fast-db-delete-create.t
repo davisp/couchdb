@@ -40,7 +40,7 @@ cycle() ->
     ok.
 
 test() ->
-    couch_server_sup:start_link(test_util:config_files()),
+    test_util:start_couch(),
 
     {ok, _Db} = couch_db:create(<<"etap-test-db">>, []),
 
