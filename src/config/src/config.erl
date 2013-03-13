@@ -135,11 +135,27 @@ handle_call({delete, Sec, Key, Persist}, _From, Config) ->
     gen_event:sync_notify(config_event, Event),
     {reply, ok, Config};
 handle_call(reload, _From, Config) ->
-    ets:delete_all_objects(?MODULE),
-    lists:map(fun(IniFile) ->
+    DiskKVs = lists:foldl(fun(IniFile, DiskKVs0) ->
         {ok, ParsedIniValues} = parse_ini_file(IniFile),
-        ets:insert(?MODULE, ParsedIniValues)
-    end, Config#config.ini_files),
+        lists:foldl(fun({K, V}, DiskKVs1) ->
+            dict:store(K, V, DiskKVs1)
+        end, DiskKVs0, ParsedIniValues)
+    end, dict:new(), Config#config.ini_files),
+    % Update ets with anything we just read
+    % from disk
+    dict:fold(fun(K, V, _) ->
+        ets:insert(?MODULE, {K, V})
+    end, nil, DiskKVs),
+    % And remove anything in ets that wasn't
+    % on disk.
+    ets:foldl(fun({K, _}, _) ->
+        case dict:is_key(K, DiskKVs) of
+            true ->
+                ok;
+            false ->
+                ets:delete(?MODULE, K)
+        end
+    end, nil, ?MODULE),
     {reply, ok, Config}.
 
 
