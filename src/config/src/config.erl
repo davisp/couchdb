@@ -19,7 +19,7 @@
 -module(config).
 -behaviour(gen_server).
 
--export([start_link/1, stop/0]).
+-export([start_link/1, stop/0, reload/0]).
 -export([all/0, get/1, get/2, get/3, set/3, set/4, delete/2, delete/3]).
 -export([listen_for_changes/2]).
 -export([parse_ini_file/1]).
@@ -29,6 +29,7 @@
 
 -record(config, {
     notify_funs=[],
+    ini_files=undefined,
     write_filename=undefined
 }).
 
@@ -39,6 +40,9 @@ start_link(IniFiles) ->
 stop() ->
     gen_server:cast(?MODULE, stop).
 
+
+reload() ->
+    gen_server:call(?MODULE, reload).
 
 all() ->
     lists:sort(gen_server:call(?MODULE, all, infinity)).
@@ -94,7 +98,7 @@ init(IniFiles) ->
         _ -> undefined
     end,
     debug_config(),
-    {ok, #config{write_filename=WriteFile}}.
+    {ok, #config{ini_files=IniFiles, write_filename=WriteFile}}.
 
 
 terminate(_Reason, _State) ->
@@ -129,6 +133,13 @@ handle_call({delete, Sec, Key, Persist}, _From, Config) ->
     end,
     Event = {config_change, Sec, Key, deleted, Persist},
     gen_event:sync_notify(config_event, Event),
+    {reply, ok, Config};
+handle_call(reload, _From, Config) ->
+    ets:delete_all_objects(?MODULE),
+    lists:map(fun(IniFile) ->
+        {ok, ParsedIniValues} = parse_ini_file(IniFile),
+        ets:insert(?MODULE, ParsedIniValues)
+    end, Config#config.ini_files),
     {reply, ok, Config}.
 
 
