@@ -375,6 +375,8 @@ handle_config_change("httpd", "vhost_global_handlers", _, _, _) ->
     {ok, ?MODULE:reload()};
 handle_config_change("httpd", "redirect_vhost_handler", _, _, _) ->
     {ok, ?MODULE:reload()};
+handle_config_change("vhosts", _, _, _, _) ->
+    {ok, ?MODULE:reload()};
 handle_config_change(_, _, _, _, _) ->
     {ok, nil}.
 
