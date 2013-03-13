@@ -329,12 +329,12 @@ build_acc(Args, Callback, UserAcc, Db, StartSeq, Prepend, Timeout, TimeoutFun) -
 
 send_changes(Args, Acc0, FirstRound) ->
     #changes_args{
-        dir = Dir,
-        filter = Filter
+        dir = Dir
     } = Args,
     #changes_acc{
         db = Db,
-        seq = StartSeq
+        seq = StartSeq,
+        filter = Filter
     } = Acc0,
     EnumFun = fun ?MODULE:changes_enumerator/2,
     case can_optimize(FirstRound, Filter) of
