@@ -108,8 +108,8 @@ replication_error(#rep{id = {BaseId, _} = RepId}, Error) ->
 
 
 handle_config_change("replicator", "db", _, _, S) ->
-    ok = gen_server:cast(S, rep_db_changed),
-    {ok, S};
+    ok = gen_server:call(S, rep_db_changed),
+    remove_handler;
 handle_config_change("replicator", "max_replication_retry_count", V, _, S) ->
     ok = gen_server:cast(S, {set_max_retries, retries_value(V)}),
     {ok, S};
@@ -126,11 +126,15 @@ init(_) ->
     Server = self(),
     ok = config:listen_for_changes(?MODULE, Server),
     ScanPid = spawn_link(fun() -> scan_all_dbs(Server) end),
+    % Automatically start node local changes feed loop
+    LocalRepDb = ?l2b(config:get("replicator", "db", "_replicator")),
+    Pid = changes_feed_loop(LocalRepDb, 0),
     {ok, #state{
         db_notifier = db_update_notifier(),
         scan_pid = ScanPid,
         max_retries = retries_value(
-            config:get("replicator", "max_replication_retry_count", "10"))
+            config:get("replicator", "max_replication_retry_count", "10")),
+        rep_start_pids = [Pid]
     }}.
 
 
@@ -182,14 +186,13 @@ handle_call({rep_db_checkpoint, DbName, EndSeq}, _From, State) ->
     true = ets:insert(?DB_TO_SEQ, {DbName, EndSeq}),
     {reply, ok, State};
 
+handle_call(rep_db_changed, _From, State) ->
+    {stop, shutdown, ok, State};
+
 handle_call(Msg, From, State) ->
     twig:log(error, "Replication manager received unexpected call ~p from ~p",
         [Msg, From]),
     {stop, {error, {unexpected_call, Msg}}, State}.
-
-handle_cast(rep_db_changed, State) ->
-    ensure_rep_db_exists(?l2b(config:get("replicator", "db", "_replicator"))),
-    {noreply, State};
 
 handle_cast({set_max_retries, MaxRetries}, State) ->
     {noreply, State#state{max_retries = MaxRetries}};
@@ -722,7 +725,14 @@ ensure_rep_ddoc_exists(RepDb) ->
                 {<<"language">>, <<"javascript">>},
                 {<<"validate_doc_update">>, ?REP_DB_DOC_VALIDATE_FUN}
             ]}),
-            {ok, _} = save_rep_doc(RepDb, DDoc)
+            try
+                {ok, _} = save_rep_doc(RepDb, DDoc)
+            catch
+                throw:conflict ->
+                    % NFC what to do about this other than
+                    % not kill the process.
+                    ok
+            end
     end.
 
 

@@ -278,6 +278,8 @@ couchTests.replicator_db = function(debug) {
     // stop replication by deleting the replication document
     T(repDb.deleteDoc(repDoc1).ok);
 
+    wait(200);
+
     // add another doc to source, it will NOT be replicated to target
     var docY = {
       _id: "foo666",
