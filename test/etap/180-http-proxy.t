@@ -26,17 +26,7 @@ proxy() ->
 external() -> "https://www.google.com/".
 
 main(_) ->
-    test_util:init_code_path(),
-
-    etap:plan(61),
-    case (catch test()) of
-        ok ->
-            etap:end_tests();
-        Other ->
-            etap:diag("Test died abnormally: ~p", [Other]),
-            etap:bail("Bad return value.")
-    end,
-    ok.
+    test_util:run(61, fun() -> test() end).
 
 check_request(Name, Req, Remote, Local) ->
     case Remote of
