@@ -24,7 +24,7 @@ test_db_name() -> <<"couch_test_update_conflicts">>.
 
 
 main(_) ->
-    test_util:run(35, fun() -> test() end).
+    test_util:run(25, fun() -> test() end).
 
 
 test() ->
