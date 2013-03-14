@@ -372,7 +372,6 @@ db() ->
 
 save_doc(Json) ->
     Doc = couch_doc:from_json_obj(Json),
-    etap:diag("~p", [Doc]),
     {ok, Rev} = couch_db:update_doc(db(), Doc, []),
     {ok, couch_doc:rev_to_str(Rev)}.
 
@@ -456,17 +455,14 @@ spawn_consumer(DbName, ChangesArgs0, Req) ->
     spawn(fun() ->
         put(heartbeat_count, 0),
         Callback = fun({change, {Change}, _}, _, Acc) ->
-            etap:diag("C ~p", [{Change}]),
             Id = couch_util:get_value(<<"id">>, Change),
             Seq = couch_util:get_value(<<"seq">>, Change),
             Del = couch_util:get_value(<<"deleted">>, Change, false),
             [#row{id = Id, seq = Seq, deleted = Del} | Acc];
         ({stop, LastSeq}, _, Acc) ->
-            etap:diag("LS ~p", [LastSeq]),
             Parent ! {consumer_finished, lists:reverse(Acc), LastSeq},
             stop_loop(Parent, Acc);
         (timeout, _, Acc) ->
-            etap:diag("TO: ~p", [timeout]),
             put(heartbeat_count, get(heartbeat_count) + 1),
             maybe_pause(Parent, Acc);
         (_, _, Acc) ->
