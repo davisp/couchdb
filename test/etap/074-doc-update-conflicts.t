@@ -33,7 +33,7 @@ test() ->
 
     lists:foreach(
         fun(NumClients) -> test_concurrent_doc_update(NumClients) end,
-        [100, 500, 1000, 2000, 5000]),
+        [100, 500, 1000]),
 
     test_bulk_delete_create(),
 
