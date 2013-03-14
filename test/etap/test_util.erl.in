@@ -103,7 +103,7 @@ start_couch() ->
     start_couch(config_files()).
 
 start_couch(IniFiles) ->
-    ok = application:set_env(config, ini_files, test_util:config_files()),
+    ok = application:set_env(config, ini_files, IniFiles),
     ok = application:start(config),
     ok = application:start(twig),
     ok = application:start(couch),
