@@ -94,7 +94,7 @@ handle_info({'EXIT', Port, Reason}, Table) ->
         [#daemon{status=stopping}] ->
             true = ets:delete(Table, Port);
         [#daemon{name=Name, status=restarting}=D] ->
-            ?LOG_INFO("Daemon ~P restarting after config change.", [Name]),
+            ?LOG_INFO("Daemon ~p restarting after config change.", [Name]),
             true = ets:delete(Table, Port),
             {ok, Port2} = start_port(D#daemon.cmd),
             true = ets:insert(Table, D#daemon{
