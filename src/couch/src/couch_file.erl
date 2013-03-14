@@ -344,7 +344,7 @@ file_open_options(Options) ->
     end.
 
 maybe_track_open_os_files(Options) ->
-    case lists:member(sys_db, Options) of
+    case not lists:member(sys_db, Options) of
         true ->
             couch_stats_collector:track_process_count({couchdb, open_os_files});
         false ->
