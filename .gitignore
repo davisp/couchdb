@@ -70,6 +70,7 @@ src/couch/erlang.png
 src/couch/priv/.deps/
 src/couch/priv/.libs/
 src/couch/priv/couch_icu_driver.la
+src/couch/priv/couch_icu_driver.*
 src/couch/priv/couchjs
 src/couch/priv/couchjs.1
 src/couch/priv/couchspawnkillable
